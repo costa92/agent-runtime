@@ -1,0 +1,112 @@
+package agentruntime
+
+import (
+	"container/list"
+	"context"
+	"sync"
+
+	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+)
+
+// GraphSource loads a graph that was compiled at publish time.
+//
+// Loading, never compiling. The Runtime does not own a Compiler at execution
+// time on purpose: a Run that recompiled its Definition on resume would come
+// back as whatever the current deployment's compiler produces, which is exactly
+// the drift the pinned digest exists to detect.
+type GraphSource interface {
+	Load(ctx context.Context, ref run.ExecutionGraphRef) (*workflow.ExecutionGraph, error)
+}
+
+// GraphCache is a bounded, digest-keyed, read-only cache.
+//
+// Digest-keyed rather than ref-keyed because the digest is what makes a hit
+// safe: two entries under the same ID and version but different digests are
+// different graphs, and a ref-keyed cache would serve one Run the other's
+// shape.
+type GraphCache struct {
+	mu       sync.Mutex
+	capacity int
+	source   GraphSource
+	entries  map[string]*list.Element
+	order    *list.List
+}
+
+type cacheEntry struct {
+	digest string
+	graph  *workflow.ExecutionGraph
+}
+
+// NewGraphCache bounds the cache. A cache with no ceiling is a leak with a
+// hit rate: one graph per published version, held forever.
+func NewGraphCache(source GraphSource, capacity int) *GraphCache {
+	if capacity <= 0 {
+		capacity = 64
+	}
+	return &GraphCache{
+		capacity: capacity,
+		source:   source,
+		entries:  make(map[string]*list.Element, capacity),
+		order:    list.New(),
+	}
+}
+
+// Get returns the pinned graph, failing closed.
+//
+// A ref with no digest, a source that cannot produce it, or a graph whose own
+// ref does not match what was asked for are all refusals. None of them is
+// recoverable by running anyway: the Run would execute a shape nobody pinned.
+func (c *GraphCache) Get(ctx context.Context, ref run.ExecutionGraphRef) (*workflow.ExecutionGraph, error) {
+	if ref.Digest == "" {
+		return nil, run.NewError("unpinned_graph", run.ErrorInvalid, run.RetryNever)
+	}
+
+	c.mu.Lock()
+	if element, ok := c.entries[ref.Digest]; ok {
+		c.order.MoveToFront(element)
+		graph := element.Value.(cacheEntry).graph
+		c.mu.Unlock()
+		// Verified on the way out of the cache too. A cached entry is still a
+		// value someone could have keyed wrongly, and the check is free next to
+		// executing the wrong graph.
+		if err := graph.Verify(ref); err != nil {
+			return nil, err
+		}
+		return graph, nil
+	}
+	c.mu.Unlock()
+
+	graph, err := c.source.Load(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if graph == nil {
+		return nil, run.NewError("missing_graph", run.ErrorConflict, run.RetryNever)
+	}
+	if err := graph.Verify(ref); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if element, ok := c.entries[ref.Digest]; ok {
+		c.order.MoveToFront(element)
+		return element.Value.(cacheEntry).graph, nil
+	}
+	element := c.order.PushFront(cacheEntry{digest: ref.Digest, graph: graph})
+	c.entries[ref.Digest] = element
+	for c.order.Len() > c.capacity {
+		oldest := c.order.Back()
+		c.order.Remove(oldest)
+		delete(c.entries, oldest.Value.(cacheEntry).digest)
+	}
+	return graph, nil
+}
+
+// Len reports how many graphs are held, for tests and for a startup metric.
+func (c *GraphCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.order.Len()
+}

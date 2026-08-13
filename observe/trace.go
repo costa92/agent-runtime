@@ -6,27 +6,14 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
-// TraceContext is the durable half of a trace.
+// TraceContext is the durable half of a trace, defined with the Run state it is
+// persisted in.
 //
-// It is persisted with the Run and never held only in a call stack. A Run can
-// be parked for a day waiting on a human, resumed by a different worker in a
-// different process, and delegated to children that outlive their parent's
-// goroutine — an in-memory parent span would be gone in every one of those
-// cases, and the child would open a new trace that nothing links back.
-//
-// It carries identifiers only: no claims, no baggage, nothing a later reader
-// could mistake for a live authorization.
-type TraceContext struct {
-	TraceID string `json:"trace_id"`
-	SpanID  string `json:"span_id"`
-	// Sampled travels with the context so that a resumed Run makes the same
-	// sampling decision the Run that started it made. Re-deciding on resume
-	// would produce traces with holes exactly where a Run waited.
-	Sampled bool `json:"sampled,omitempty"`
-}
-
-// Zero reports whether no trace was started.
-func (c TraceContext) Zero() bool { return c.TraceID == "" }
+// It is an alias rather than a parallel type: two structs with the same fields
+// would need a conversion at the Snapshot boundary, and a conversion is a place
+// a field can be forgotten. It carries identifiers only — no claims, no
+// baggage, nothing a later reader could mistake for a live authorization.
+type TraceContext = run.TraceContext
 
 // SpanKind is what a span measures.
 type SpanKind string

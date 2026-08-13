@@ -32,6 +32,38 @@ type ExecutionGraphRef struct {
 	Digest   string `json:"digest"`
 }
 
+// TraceContext is the durable half of a trace: identifiers only.
+//
+// It lives in the Snapshot rather than in a call stack because a Run can be
+// parked overnight, resumed in another process, and delegated to children that
+// outlive their parent's goroutine. In every one of those cases an in-memory
+// parent span is gone, and the continuation would open a new trace nothing
+// links back to the original.
+type TraceContext struct {
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
+	// Sampled travels with the context so a resumed Run makes the same sampling
+	// decision the Run that started it made. Re-deciding on resume produces
+	// traces with holes exactly where a Run waited.
+	Sampled bool `json:"sampled,omitempty"`
+}
+
+// Zero reports whether no trace was started.
+func (c TraceContext) Zero() bool { return c.TraceID == "" }
+
+// Pins are the versioned decisions a Run captured at creation and holds for its
+// whole life.
+//
+// Digests rather than the rule sets themselves: the sets are large, they are
+// already stored as published resources, and what a Run needs to be reproducible
+// is which version it was judged against. A publish that lands mid-flight cannot
+// reach a Run that pinned the version before it.
+type Pins struct {
+	PolicyDigest string       `json:"policy_digest,omitempty"`
+	QuotaDigest  string       `json:"quota_digest,omitempty"`
+	Trace        TraceContext `json:"trace,omitzero"`
+}
+
 // NodeState is one node's progress within the graph.
 type NodeState struct {
 	Status State `json:"status"`
@@ -63,6 +95,8 @@ type Snapshot struct {
 	ParentID ID `json:"parent_id,omitempty"`
 
 	Principal authorization.PrincipalRef `json:"principal"`
+
+	Pins Pins `json:"pins,omitzero"`
 
 	// RootCancellationEpoch fences work issued before a cancellation against
 	// work issued after it. A child that was already in flight when the root

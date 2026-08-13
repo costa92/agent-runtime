@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
+	"github.com/kart-io/wechat-account/agent-runtime/llm"
+	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
@@ -28,6 +30,33 @@ type Request struct {
 	// Remaining is what the budget has left. Passed so an implementation can
 	// choose a cheaper path rather than discovering the ceiling by hitting it.
 	Remaining run.Limits
+	// Ports is the only way an implementation reaches a model, a tool or
+	// memory. It is handed in per invocation rather than injected into the
+	// implementation at registration, because every call through it is fenced,
+	// budgeted and recorded against *this* Run — a port captured at
+	// construction would outlive the Run it was governed for.
+	Ports Ports
+}
+
+// Ports is the governed effect surface.
+//
+// Nothing here is a client the implementation could have built itself. Each
+// method runs the Runtime's full path — reserve budget, commit the
+// invocation-begin fact, perform the effect, settle — so an agent cannot make
+// an ungoverned call by choosing a different code path, only by not calling at
+// all.
+type Ports interface {
+	// Model runs one model call. Attempt limits and retries belong to the
+	// Runtime, so an implementation asking twice is spending twice and can be
+	// seen doing it.
+	Model(ctx context.Context, request llm.Request) (llm.Response, error)
+	// Tool invokes a declared tool by name.
+	Tool(ctx context.Context, name string, arguments json.RawMessage) (json.RawMessage, error)
+	// Recall reads memory under the Definition's declared scope and ceilings.
+	Recall(ctx context.Context, key, text string) ([]memory.Record, error)
+	// Remember writes memory. The idempotency key is required: a memory write
+	// is a side effect the Runtime cannot roll back.
+	Remember(ctx context.Context, key, ref, text, idempotencyKey string) error
 }
 
 // ID re-exports the Runtime's identifier type so implementations do not import

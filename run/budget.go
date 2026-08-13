@@ -72,6 +72,27 @@ func (b Budget) Affords(want Limits) bool {
 	return !b.Envelope.ExceededBy(b.Committed().Add(want))
 }
 
+// Settle closes a reservation: the charge moves into Used, and the unspent
+// remainder is released only when the outcome is known.
+//
+// An unknown reservation stays held. Releasing it would let the budget be spent
+// twice if the effect turns out to have happened, and "we could not tell" is
+// not the same answer as "it did not happen".
+func (b Budget) Settle(reserved, charged Limits, release bool) Budget {
+	next := b
+	next.Used = b.Used.Add(charged)
+	next.Slices = copySlices(b.Slices)
+	if !release {
+		return next
+	}
+	next.Reserved = Limits{
+		LLMCalls:  max(0, b.Reserved.LLMCalls-reserved.LLMCalls),
+		Tokens:    max(0, b.Reserved.Tokens-reserved.Tokens),
+		ToolCalls: max(0, b.Reserved.ToolCalls-reserved.ToolCalls),
+	}
+	return next
+}
+
 // reserve returns a copy with want moved into Reserved.
 func (b Budget) reserve(want Limits) Budget {
 	next := b

@@ -65,6 +65,10 @@ type CreateCommand struct {
 	Graph      run.ExecutionGraphRef
 	Principal  authorization.PrincipalRef
 	Budget     run.Budget
+	// Pins are the rule-set versions and trace context the Run is created
+	// with. They are set once and never updated: that is what makes a Run
+	// reproducible against the rules that actually judged it.
+	Pins run.Pins
 
 	// RootID and ParentID are set for a delegated child.
 	RootID   run.ID

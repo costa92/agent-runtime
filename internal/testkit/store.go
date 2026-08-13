@@ -175,6 +175,7 @@ func (s *MemoryStore) createLocked(command store.CreateCommand) (run.Snapshot, e
 		RootID:                command.RootID,
 		ParentID:              command.ParentID,
 		Principal:             command.Principal,
+		Pins:                  command.Pins,
 		Budget:                command.Budget,
 		RootCancellationEpoch: s.epochs[root],
 	}
