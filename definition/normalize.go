@@ -186,7 +186,12 @@ func normalizeGraph(graph GraphSpec) GraphSpec {
 	}
 	nodes := make([]NodeSpec, len(graph.Nodes))
 	for i, node := range graph.Nodes {
-		nodes[i] = NodeSpec{Name: node.Name, Agent: node.Agent}
+		nodes[i] = NodeSpec{
+			Name:     node.Name,
+			Agent:    node.Agent,
+			Input:    strings.TrimSpace(node.Input),
+			Optional: node.Optional,
+		}
 		if len(node.DependsOn) > 0 {
 			depends := append([]string(nil), node.DependsOn...)
 			sort.Strings(depends)

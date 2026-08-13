@@ -68,11 +68,20 @@ type GraphSpec struct {
 	Nodes []NodeSpec `json:"nodes,omitempty"`
 }
 
-// NodeSpec is one step and what it waits for.
+// NodeSpec is one step, what it waits for, and where its input comes from.
 type NodeSpec struct {
 	Name      string   `json:"name"`
 	Agent     string   `json:"agent"`
 	DependsOn []string `json:"depends_on,omitempty"`
+	// Input names the node whose output feeds this one. Empty means the Run's
+	// own input. It is declared rather than inferred from DependsOn because
+	// "runs after" and "reads from" are different facts: a node can wait on
+	// three predecessors and consume one of them.
+	Input string `json:"input,omitempty"`
+	// Optional lets this node fail without failing the Run, which is what makes
+	// a partial result a declared outcome instead of a judgement call made
+	// after something broke.
+	Optional bool `json:"optional,omitempty"`
 }
 
 // RoutingPolicy bounds an orchestrator's delegation. The limits live in the
