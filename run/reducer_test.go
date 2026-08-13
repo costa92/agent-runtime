@@ -358,3 +358,26 @@ func TestSnapshotCarriesPrincipalRefButNoRequestScopedIdentity(t *testing.T) {
 		t.Error("Snapshot does not carry a PrincipalRef; the durable identity is missing")
 	}
 }
+
+// A transition that emits two events advances the sequence twice. Sharing one
+// number would make the second event invisible to a consumer keyed by sequence,
+// and would break the contiguity that lets a consumer detect a gap at all.
+func TestMultiEventTransitionsNumberEveryEvent(t *testing.T) {
+	snapshot := runningSnapshot()
+	snapshot.LastEventSequence = 4
+
+	got, err := Reduce(snapshot, Command{Kind: CommandRecordUnknown, InvocationID: "inv-1"})
+	if err != nil {
+		t.Fatalf("reduce: %v", err)
+	}
+
+	if len(got.Events) != 2 {
+		t.Fatalf("events=%d want=2", len(got.Events))
+	}
+	if got.Events[0].Sequence != 5 || got.Events[1].Sequence != 6 {
+		t.Fatalf("sequences=%d,%d want=5,6", got.Events[0].Sequence, got.Events[1].Sequence)
+	}
+	if got.Next.LastEventSequence != 6 {
+		t.Fatalf("last sequence=%d want=6", got.Next.LastEventSequence)
+	}
+}

@@ -130,12 +130,10 @@ func reserveEffect(snapshot Snapshot, command Command, kind EffectKind) (Transit
 		})
 	}
 
-	result := advance(snapshot, next)
-	result.Events = append(result.Events, Event{
-		Sequence: result.Next.LastEventSequence,
-		Kind:     EventBudgetReserved,
-		RunID:    snapshot.ID,
-		Reserve:  command.Reserve,
+	result := emit(advance(snapshot, next), snapshot, Event{
+		Kind:    EventBudgetReserved,
+		RunID:   snapshot.ID,
+		Reserve: command.Reserve,
 	})
 	result.Effects = []Effect{{Kind: kind, InvocationID: command.InvocationID, Reserve: command.Reserve}}
 	return result, nil
@@ -163,12 +161,10 @@ func grantChildren(snapshot Snapshot, command Command) (Transition, error) {
 	next := snapshot
 	next.Budget = snapshot.Budget.grantSlices(command.Slices)
 
-	result := advance(snapshot, next)
-	result.Events = append(result.Events, Event{
-		Sequence: result.Next.LastEventSequence,
-		Kind:     EventChildrenGranted,
-		RunID:    snapshot.ID,
-		Reserve:  total,
+	result := emit(advance(snapshot, next), snapshot, Event{
+		Kind:    EventChildrenGranted,
+		RunID:   snapshot.ID,
+		Reserve: total,
 	})
 	result.Effects = []Effect{{Kind: EffectChildCreate, Slices: copySlices(command.Slices)}}
 	return result, nil
@@ -190,11 +186,9 @@ func recordUnknown(snapshot Snapshot, command Command) (Transition, error) {
 	next.State = StateWaitingResolution
 	next.Invocations = putInvocation(snapshot.Invocations, existing)
 
-	result := advance(snapshot, next)
-	result.Events = append(result.Events,
-		stateEvent(result.Next.LastEventSequence, snapshot, StateWaitingResolution),
+	result := emit(advance(snapshot, next), snapshot,
+		stateEvent(snapshot, StateWaitingResolution),
 		Event{
-			Sequence:     result.Next.LastEventSequence,
 			Kind:         EventInvocationParked,
 			RunID:        snapshot.ID,
 			InvocationID: command.InvocationID,
@@ -240,34 +234,28 @@ func resolveInvocation(snapshot Snapshot, command Command) (Transition, error) {
 		next.State = StateRunning
 	}
 
-	result := advance(snapshot, next)
-	result.Events = append(result.Events, Event{
-		Sequence:     result.Next.LastEventSequence,
+	events := []Event{{
 		Kind:         EventInvocationResolved,
 		RunID:        snapshot.ID,
 		InvocationID: command.InvocationID,
-	})
+	}}
 	if next.State != snapshot.State {
-		result.Events = append(result.Events, stateEvent(result.Next.LastEventSequence, snapshot, next.State))
+		events = append(events, stateEvent(snapshot, next.State))
 	}
-	return result, nil
+	return emit(advance(snapshot, next), snapshot, events...), nil
 }
 
 // transition moves the Run to a new state and emits the state event.
 func transition(snapshot Snapshot, to State) Transition {
 	next := snapshot
 	next.State = to
-	result := advance(snapshot, next)
-	result.Events = append(result.Events, stateEvent(result.Next.LastEventSequence, snapshot, to))
-	return result
+	return emit(advance(snapshot, next), snapshot, stateEvent(snapshot, to))
 }
 
-// advance bumps the revision and the event sequence exactly once per accepted
-// command, and detaches the maps so the returned snapshot shares no mutable
-// state with the caller's.
+// advance bumps the revision exactly once per accepted command and detaches the
+// maps so the returned snapshot shares no mutable state with the caller's.
 func advance(previous, next Snapshot) Transition {
 	next.Revision = previous.Revision + 1
-	next.LastEventSequence = previous.LastEventSequence + 1
 	if next.Invocations == nil {
 		next.Invocations = copyInvocations(previous.Invocations)
 	}
@@ -277,13 +265,30 @@ func advance(previous, next Snapshot) Transition {
 	return Transition{Next: next}
 }
 
-func stateEvent(sequence uint64, previous Snapshot, to State) Event {
+// emit numbers a transition's events.
+//
+// Sequences are contiguous within a Run: that is what lets a consumer detect a
+// gap rather than silently miss an event. A transition that emits two events
+// therefore advances the sequence twice — they were two things that happened,
+// and sharing one number would make the second invisible to a consumer keyed by
+// sequence.
+func emit(result Transition, previous Snapshot, events ...Event) Transition {
+	sequence := previous.LastEventSequence
+	for i := range events {
+		sequence++
+		events[i].Sequence = sequence
+	}
+	result.Events = append(result.Events, events...)
+	result.Next.LastEventSequence = sequence
+	return result
+}
+
+func stateEvent(previous Snapshot, to State) Event {
 	return Event{
-		Sequence: sequence,
-		Kind:     EventStateChanged,
-		RunID:    previous.ID,
-		From:     previous.State,
-		To:       to,
+		Kind:  EventStateChanged,
+		RunID: previous.ID,
+		From:  previous.State,
+		To:    to,
 	}
 }
 
