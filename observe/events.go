@@ -1,0 +1,167 @@
+package observe
+
+import (
+	"fmt"
+	"sort"
+
+	"github.com/kart-io/wechat-account/agent-runtime/run"
+)
+
+// The declared decision events. Every governance decision the Runtime makes is
+// one of these, because a decision that was only logged cannot be queried, and
+// "why did this Run refuse" is asked long after the log line has rotated away.
+const (
+	EventRouterPlanSelected   = "runtime.router.plan_selected"
+	EventModelSelected        = "runtime.model.selected"
+	EventPolicyEvaluated      = "runtime.policy.evaluated"
+	EventQuotaRejected        = "runtime.quota.rejected"
+	EventQuotaDegraded        = "runtime.quota.degraded"
+	EventBudgetRefused        = "runtime.budget.refused"
+	EventApprovalRequested    = "runtime.approval.requested"
+	EventApprovalDecided      = "runtime.approval.decided"
+	EventEgressHostResolved   = "runtime.egress.host_resolved"
+	EventInvocationReconciled = "runtime.invocation.reconciled"
+)
+
+// The declared attribute keys. Named constants rather than string literals at
+// the call site so that a typo is a compile error instead of an attribute the
+// registry silently rejects at run time.
+const (
+	AttrAgent          = "agent"
+	AttrNode           = "node"
+	AttrPlan           = "plan"
+	AttrProfile        = "profile"
+	AttrCapability     = "capability"
+	AttrPolicyName     = "policy_name"
+	AttrPolicyVersion  = "policy_version"
+	AttrPolicyDigest   = "policy_digest"
+	AttrDecision       = "decision"
+	AttrShadow         = "shadow"
+	AttrQuotaName      = "quota_name"
+	AttrQuotaScope     = "quota_scope"
+	AttrLimit          = "limit"
+	AttrObserved       = "observed"
+	AttrUnit           = "unit"
+	AttrApprovalID     = "approval_id"
+	AttrApproved       = "approved"
+	AttrInvocationID   = "invocation_id"
+	AttrIdempotencyKey = "idempotency_key"
+	AttrOutcome        = "outcome"
+	AttrHost           = "host"
+	AttrTool           = "tool"
+)
+
+// BuiltinEventSpecs is the frozen set the Runtime itself emits.
+//
+// Note what no spec declares: no credential, no claim, no prompt, no tool
+// argument, no model output. The closed field set is the enforcement — an
+// attribute nobody declared cannot be recorded, so putting a secret in an event
+// requires declaring a field for it, in review, on purpose.
+func BuiltinEventSpecs() []EventSpec {
+	return []EventSpec{
+		{
+			Name: EventRouterPlanSelected, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrPlan, AttrAgent, AttrNode},
+		},
+		{
+			Name: EventModelSelected, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrProfile, AttrAgent, AttrNode, AttrCapability},
+		},
+		{
+			Name: EventPolicyEvaluated, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{
+				AttrTool, AttrDecision, AttrPolicyName, AttrPolicyVersion,
+				AttrPolicyDigest, AttrShadow,
+			},
+		},
+		{
+			Name: EventQuotaRejected, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrQuotaName, AttrQuotaScope, AttrLimit, AttrObserved, AttrUnit},
+		},
+		{
+			Name: EventQuotaDegraded, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrQuotaName, AttrQuotaScope, AttrLimit, AttrObserved, AttrUnit},
+		},
+		{
+			Name: EventBudgetRefused, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrUnit, AttrLimit, AttrObserved, AttrTool},
+		},
+		{
+			Name: EventApprovalRequested, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrApprovalID, AttrTool, AttrPolicyName},
+		},
+		{
+			Name: EventApprovalDecided, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrApprovalID, AttrApproved},
+		},
+		{
+			// The resolved host, not the URL: the path and query are where
+			// identifiers and tokens end up, and the governance question is
+			// only ever which host was reached.
+			Name: EventEgressHostResolved, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrHost, AttrTool},
+		},
+		{
+			Name: EventInvocationReconciled, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrInvocationID, AttrIdempotencyKey, AttrOutcome},
+		},
+	}
+}
+
+// Attribute is one declared key and its rendered value. Values are strings
+// because an event is read by operators and by consumers in other languages;
+// a typed payload would push the Runtime into shipping a schema for each event.
+type Attribute struct {
+	Key   string
+	Value string
+}
+
+// Decision is one governance decision, ready to commit alongside the Run
+// transition that produced it.
+type Decision struct {
+	Name       string
+	RunID      run.ID
+	Attributes []Attribute
+}
+
+// Attr builds an attribute.
+func Attr(key, value string) Attribute { return Attribute{Key: key, Value: value} }
+
+// Validate checks a decision against the frozen registry.
+//
+// Both directions matter. An undeclared event has no consumer contract, and an
+// undeclared attribute is the path by which something that was never reviewed —
+// a credential, a claim, a prompt — reaches durable storage.
+func (r *EventSpecRegistry) Validate(decision Decision) error {
+	spec, err := r.Lookup(decision.Name)
+	if err != nil {
+		return err
+	}
+	if decision.RunID == "" {
+		return run.NewError("unattributed_event", run.ErrorInvalid, run.RetryNever,
+			fmt.Errorf("event %q names no Run", decision.Name))
+	}
+
+	declared := make(map[string]bool, len(spec.Fields))
+	for _, field := range spec.Fields {
+		declared[field] = true
+	}
+	var undeclared []string
+	seen := map[string]bool{}
+	for _, attribute := range decision.Attributes {
+		if !declared[attribute.Key] {
+			undeclared = append(undeclared, attribute.Key)
+		}
+		if seen[attribute.Key] {
+			return run.NewError("duplicate_event_attribute", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("event %q carries %q twice", decision.Name, attribute.Key))
+		}
+		seen[attribute.Key] = true
+	}
+	if len(undeclared) > 0 {
+		sort.Strings(undeclared)
+		return run.NewError("undeclared_event_attribute", run.ErrorInvalid, run.RetryNever,
+			fmt.Errorf("event %q carries undeclared %v", decision.Name, undeclared))
+	}
+	return nil
+}
