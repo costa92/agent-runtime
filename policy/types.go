@@ -165,6 +165,10 @@ type Policy struct {
 	ScopeName  string      `json:"scope_name,omitempty"`
 	Conditions []Condition `json:"conditions"`
 	Decision   Decision    `json:"decision"`
+	// Shadow evaluates the policy and reports what it would have decided
+	// without enforcing it. That is what makes it safe to publish a rule and
+	// watch it before it starts refusing things.
+	Shadow bool `json:"shadow,omitempty"`
 }
 
 // Validate rejects a policy the evaluator could not run deterministically.
