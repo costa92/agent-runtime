@@ -293,10 +293,13 @@ func (g *Gateway) ticketFor(id run.ID, tool string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// allowlisted refuses anything the Definition did not declare.
+//
+// An empty allowlist denies everything, the same rule the egress host list
+// follows and for the same reason: a Definition that declares no tools is one
+// that may call none, and reading the empty case as "unrestricted" makes the
+// least-configured Definition the most powerful one.
 func allowlisted(spec Spec, allowlist []string) error {
-	if len(allowlist) == 0 {
-		return nil
-	}
 	if slices.Contains(allowlist, spec.Name) {
 		return nil
 	}

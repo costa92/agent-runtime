@@ -34,6 +34,10 @@ func publishRequest() tool.InvocationRequest {
 		Principal:      principal(),
 		IdempotencyKey: "k1",
 		Policies:       allowAll(),
+		// Declared by the fixture Definition. An empty allowlist denies
+		// everything, so a request that omitted this would be refused at the
+		// allowlist stage and never reach what the test is about.
+		Allowlist: []string{"publish", "search"},
 	}
 }
 
