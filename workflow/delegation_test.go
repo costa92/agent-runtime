@@ -261,7 +261,7 @@ func TestCommandsProduceChildrenLinksAndReservationsTogether(t *testing.T) {
 	plan := researchPlan()
 	generation := plan.Generation(nil)
 
-	children, links, reservations := plan.Commands("root-1", "root-1", testPrincipal(), generation,
+	children, links, reservations := plan.Commands("root-1", "root-1", testPrincipal(), generation, nil,
 		func(key string) run.ID { return run.ID("child-" + key) })
 
 	if len(children) != 1 || len(links) != 1 || len(reservations) != 1 {
@@ -310,7 +310,7 @@ func TestDelegationCreatesWholeGraphAtomically(t *testing.T) {
 	}
 
 	plan := workflow.DelegationPlan{Children: []workflow.ChildSpec{child("research"), child("survey")}}
-	children, links, reservations := plan.Commands(root.ID, root.ID, testPrincipal(), plan.Generation(nil),
+	children, links, reservations := plan.Commands(root.ID, root.ID, testPrincipal(), plan.Generation(nil), nil,
 		func(key string) run.ID { return run.ID("child-" + key) })
 
 	_, err = memory.CreateChildren(context.Background(), store.CreateChildrenCommand{

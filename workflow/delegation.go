@@ -296,7 +296,13 @@ func (p DelegationPlan) Generation(settled map[string]run.State) []ChildSpec {
 // All three are produced together and committed together: children without
 // their links leave a tree that cannot be walked after a crash, and children
 // without their reservations are spend nobody charged for.
-func (p DelegationPlan) Commands(rootID, parentID run.ID, principal authorization.PrincipalRef, generation []ChildSpec, ids func(key string) run.ID) ([]store.CreateCommand, []store.LinkFact, []store.BudgetReservation) {
+// Commands turns one generation into the commands that create it.
+//
+// outputs is where every settled child's output was stored, by plan key. A
+// child's own upstreams are selected from it rather than the whole map being
+// handed over: a child can read what it declared a dependency on, and nothing
+// else, which is the same rule the graph applies to node bindings.
+func (p DelegationPlan) Commands(rootID, parentID run.ID, principal authorization.PrincipalRef, generation []ChildSpec, outputs map[string]string, ids func(key string) run.ID) ([]store.CreateCommand, []store.LinkFact, []store.BudgetReservation) {
 	children := make([]store.CreateCommand, 0, len(generation))
 	links := make([]store.LinkFact, 0, len(generation))
 	reservations := make([]store.BudgetReservation, 0, len(generation))
@@ -316,7 +322,8 @@ func (p DelegationPlan) Commands(rootID, parentID run.ID, principal authorizatio
 			Budget:    run.Budget{Envelope: child.Budget},
 			// The child's task. Dropped here, the child would execute with no
 			// idea what it was delegated to do.
-			Input: child.Input,
+			Input:     child.Input,
+			Upstreams: upstreamsFor(child, outputs),
 		})
 		links = append(links, store.LinkFact{
 			ParentID: parentID, ChildID: id, NodeName: child.Key,
@@ -427,4 +434,26 @@ func reachableChild(plan DelegationPlan, settled map[string]run.State, child Chi
 		}
 	}
 	return true
+}
+
+// upstreamsFor selects the refs one child may see.
+//
+// A dependency that settled without an output is left out rather than mapped to
+// an empty string: "it produced nothing" and "it produced something I cannot
+// find" are different facts, and a child handed an empty ref would fetch
+// nothing and carry on as if it had.
+func upstreamsFor(child ChildSpec, outputs map[string]string) map[string]string {
+	if len(child.DependsOn) == 0 || len(outputs) == 0 {
+		return nil
+	}
+	upstreams := make(map[string]string, len(child.DependsOn))
+	for _, key := range child.DependsOn {
+		if ref := outputs[key]; ref != "" {
+			upstreams[key] = ref
+		}
+	}
+	if len(upstreams) == 0 {
+		return nil
+	}
+	return upstreams
 }

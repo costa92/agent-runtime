@@ -128,6 +128,14 @@ type Snapshot struct {
 	// changed after the Run began would make the Run's own pins describe an
 	// execution nobody can reproduce.
 	Input json.RawMessage `json:"input,omitempty"`
+
+	// Upstreams is where each dependency's output was stored, by plan key.
+	//
+	// Set once at creation for a delegated child, empty for every other Run. A
+	// child that depends on another and cannot see what it produced executes on
+	// a task that says "use the result above" with no result attached — and it
+	// answers anyway, which is the failure mode this exists to prevent.
+	Upstreams map[string]string `json:"upstreams,omitempty"`
 }
 
 // CommandKind is the closed set of things that can happen to a Run. Nothing

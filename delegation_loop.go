@@ -64,7 +64,7 @@ func (s *session) delegate(ctx context.Context) (bool, error) {
 
 	generation := state.Plan.Generation(settled)
 	if len(generation) > 0 {
-		if err := s.createChildren(ctx, state, generation); err != nil {
+		if err := s.createChildren(ctx, state, generation, outputs); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -206,14 +206,17 @@ func childOutputRef(child run.Snapshot) (string, error) {
 
 // createChildren commits one whole generation, its links and its reservations
 // in a single typed command.
-func (s *session) createChildren(ctx context.Context, state *delegationState, generation []workflow.ChildSpec) error {
+func (s *session) createChildren(
+	ctx context.Context, state *delegationState,
+	generation []workflow.ChildSpec, outputs map[string]string,
+) error {
 	rootID := s.snapshot.RootID
 	if rootID == "" {
 		rootID = s.snapshot.ID
 	}
 
 	children, links, reservations := state.Plan.Commands(
-		rootID, s.snapshot.ID, s.snapshot.Principal, generation,
+		rootID, s.snapshot.ID, s.snapshot.Principal, generation, outputs,
 		func(key string) run.ID { return s.runtime.deps.IDs.NewID("child") },
 	)
 	for i, child := range children {

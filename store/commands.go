@@ -84,6 +84,18 @@ type CreateCommand struct {
 	// nothing else to learn it from.
 	Input json.RawMessage
 
+	// Upstreams maps a dependency's plan key to where its output was stored.
+	//
+	// Beside the input rather than merged into it: the input is the host's own
+	// JSON and the Runtime declares it opaque, so splicing refs into it would be
+	// the Runtime rewriting a payload it says it does not read — the same
+	// mutation the input column avoids by not being jsonb.
+	//
+	// Refs rather than outputs: the Runtime does not hold outputs, and a parent
+	// that copied them into each child would write the whole tree's results into
+	// every row of it.
+	Upstreams map[string]string
+
 	// Projections are enqueued in the same transaction that creates the Run.
 	//
 	// This is how a host records the turn that caused the Run — the one Kind

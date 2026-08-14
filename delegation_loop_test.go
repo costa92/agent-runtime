@@ -611,3 +611,67 @@ func TestAChildCarriesTheTaskItWasDelegated(t *testing.T) {
 		t.Fatalf("child input = %s, want %s", created[0].Input, spec.Input)
 	}
 }
+
+// A dependent child is told where its upstream stored its output.
+//
+// Without this the second stage runs on a task that says "use the result of the
+// first" with no result attached — and it answers anyway. The failure is
+// invisible: both children succeed, the root synthesises, and only the content
+// is wrong.
+func TestADependentChildIsGivenItsUpstreamsOutput(t *testing.T) {
+	first := childSpec("research")
+	second := childSpec("survey", "research")
+	children := []workflow.ChildSpec{first, second}
+	h := orchestrator(t, &scriptedRouter{decision: delegatePlan(children...)}, children)
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	finishChild(t, h, started.ID, "research")
+	resume(t, h, started.ID)
+
+	created := h.store.Children(started.ID)
+	if len(created) != 2 {
+		t.Fatalf("children=%d; the second generation never ran", len(created))
+	}
+
+	var dependent run.Snapshot
+	for _, child := range created {
+		if len(child.Upstreams) > 0 {
+			dependent = child
+		}
+	}
+	if dependent.ID == "" {
+		t.Fatal("no child was told where its upstream stored anything")
+	}
+	if ref := dependent.Upstreams["research"]; ref == "" {
+		t.Fatalf("upstreams=%v; the dependency it declared is missing", dependent.Upstreams)
+	}
+}
+
+// A child sees what it declared a dependency on, and nothing else.
+//
+// The same rule the graph applies to node bindings: handing over the whole
+// tree's refs would let a child read a sibling it never declared, which is a
+// dependency nobody reviewed and an ordering nothing enforces.
+func TestAChildSeesOnlyTheUpstreamsItDeclared(t *testing.T) {
+	children := []workflow.ChildSpec{
+		childSpec("research"), childSpec("interviews"), childSpec("survey", "research"),
+	}
+	h := orchestrator(t, &scriptedRouter{decision: delegatePlan(children...)}, children)
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	finishChild(t, h, started.ID, "research")
+	finishChild(t, h, started.ID, "interviews")
+	resume(t, h, started.ID)
+
+	for _, child := range h.store.Children(started.ID) {
+		if _, leaked := child.Upstreams["interviews"]; leaked {
+			t.Fatalf("a child was handed %q, which it never declared", "interviews")
+		}
+	}
+}

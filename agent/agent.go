@@ -27,6 +27,11 @@ type Request struct {
 	// already validated against the declared schema.
 	Prompt string
 	Input  json.RawMessage
+	// Upstreams is where each dependency's output was stored, by the plan key
+	// the orchestrator gave it. Empty unless this Run is a delegated child with
+	// dependencies. The implementation reads them through its ports; the
+	// Runtime hands over refs, never the outputs themselves.
+	Upstreams map[string]string
 	// Remaining is what the budget has left. Passed so an implementation can
 	// choose a cheaper path rather than discovering the ceiling by hitting it.
 	Remaining run.Limits

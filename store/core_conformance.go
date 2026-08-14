@@ -548,6 +548,43 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("AChildKeepsTheUpstreamRefsItWasCreatedWith", func(t *testing.T) {
+		// A child that cannot see what its dependency produced executes on a
+		// task saying "use the result above" with no result attached, and
+		// answers anyway. The Store is the only place that fact can survive the
+		// parent's own commit.
+		harness := newHarness(t)
+		ctx := context.Background()
+
+		create := sampleCreate("run-1")
+		create.Upstreams = map[string]string{"research": "out-research"}
+		created, err := harness.Store.Create(ctx, create)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if created.Upstreams["research"] != "out-research" {
+			t.Fatalf("upstreams = %v", created.Upstreams)
+		}
+
+		reloaded, err := harness.Store.Get(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if reloaded.Upstreams["research"] != "out-research" {
+			t.Fatalf("upstreams after reload = %v", reloaded.Upstreams)
+		}
+
+		// A Run with no dependencies is distinguishable from one whose
+		// dependencies were lost on the way in.
+		plain, err := harness.Store.Create(ctx, sampleCreate("run-2"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if len(plain.Upstreams) != 0 {
+			t.Fatalf("a Run with no dependencies came back with %v", plain.Upstreams)
+		}
+	})
+
 	t.Run("TheTurnThatCausedARunIsCommittedWithIt", func(t *testing.T) {
 		// The host enqueues the user turn with Create because it cannot enqueue
 		// it afterwards: a Run created and then a transcript written loses the

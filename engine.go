@@ -409,6 +409,7 @@ func (s *session) request(node workflow.Node, ports *governedPorts) agent.Reques
 		Principal: s.snapshot.Principal,
 		Prompt:    s.declared.Prompt,
 		Input:     s.input(node),
+		Upstreams: s.snapshot.Upstreams,
 		Remaining: remaining,
 		Ports:     ports,
 	}
