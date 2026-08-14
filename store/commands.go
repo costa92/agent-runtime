@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -76,6 +77,12 @@ type CreateCommand struct {
 
 	// NextRunnableAt orders claiming. Zero means immediately.
 	NextRunnableAt time.Time
+
+	// Input is what the Run executes on. Written once here and never updated:
+	// the Store is the only thing that can make it durable, and every later
+	// reader — a worker that claimed the Run, a takeover after a crash — has
+	// nothing else to learn it from.
+	Input json.RawMessage
 
 	// Projections are enqueued in the same transaction that creates the Run.
 	//

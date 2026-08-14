@@ -291,6 +291,7 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 		Graph:       graphRef,
 		Principal:   principal,
 		Budget:      run.Budget{Envelope: envelopeFor(request.Budget, declared.Budget)},
+		Input:       request.Input,
 		Projections: request.Projections,
 		Pins: run.Pins{
 			PolicyDigest: policies.Digest,

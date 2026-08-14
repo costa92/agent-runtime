@@ -314,6 +314,9 @@ func (p DelegationPlan) Commands(rootID, parentID run.ID, principal authorizatio
 			// else would be a privilege escalation the tree performs on itself.
 			Principal: principal,
 			Budget:    run.Budget{Envelope: child.Budget},
+			// The child's task. Dropped here, the child would execute with no
+			// idea what it was delegated to do.
+			Input: child.Input,
 		})
 		links = append(links, store.LinkFact{
 			ParentID: parentID, ChildID: id, NodeName: child.Key,

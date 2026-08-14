@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -517,6 +518,36 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("ARunKeepsTheInputItWasCreatedOn", func(t *testing.T) {
+		// A Run outlives the request that started it. A worker claiming it
+		// later, or taking it over after a crash, has nothing but the stored
+		// row — an input the Store dropped leaves that worker executing an
+		// agent with no idea what it was asked.
+		harness := newHarness(t)
+		ctx := context.Background()
+
+		create := sampleCreate("run-1")
+		create.Input = json.RawMessage(`{"q":"why is the sky blue"}`)
+		created, err := harness.Store.Create(ctx, create)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if string(created.Input) != string(create.Input) {
+			t.Fatalf("input = %s, want %s", created.Input, create.Input)
+		}
+
+		// And it survives the commits that follow, because it is what every
+		// later attempt re-executes against.
+		claimed := mustStart(t, harness, "run-2")
+		reloaded, err := harness.Store.Get(ctx, claimed.Snapshot.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if string(reloaded.Input) != string(sampleCreate("run-2").Input) {
+			t.Fatalf("input after commits = %s", reloaded.Input)
+		}
+	})
+
 	t.Run("TheTurnThatCausedARunIsCommittedWithIt", func(t *testing.T) {
 		// The host enqueues the user turn with Create because it cannot enqueue
 		// it afterwards: a Run created and then a transcript written loses the
@@ -732,6 +763,9 @@ func sampleCreate(id run.ID) CreateCommand {
 		Graph:      run.ExecutionGraphRef{ID: "writer", Version: 1, Protocol: 1, Digest: "sha-1"},
 		Principal:  samplePrincipal(),
 		Budget:     run.Budget{Envelope: run.Limits{LLMCalls: 100, Tokens: 100000, ToolCalls: 100}},
+		// Every sample Run carries an input, so a Store that drops it fails
+		// the whole suite rather than only the one case that looks for it.
+		Input: json.RawMessage(`{"task":"sample"}`),
 	}
 }
 

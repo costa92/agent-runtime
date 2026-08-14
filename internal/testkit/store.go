@@ -182,6 +182,7 @@ func (s *MemoryStore) createLocked(command store.CreateCommand) (run.Snapshot, e
 		Principal:             command.Principal,
 		Pins:                  command.Pins,
 		Budget:                command.Budget,
+		Input:                 command.Input,
 		RootCancellationEpoch: s.epochs[root],
 	}
 	// Enqueued with the Run, in the same critical section that creates it.

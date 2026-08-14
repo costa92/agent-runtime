@@ -734,3 +734,25 @@ func (c scriptedClient) Stream(ctx context.Context, request llm.Request, _ func(
 }
 
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
+
+// The agent is handed what the Run was started on.
+//
+// This is the whole point of the input: an implementation that receives nil has
+// no question to answer, and an assistant would run every turn on the prompt
+// alone. It was accepted at Start, stored nowhere and dropped in silence — the
+// Run still succeeded, having answered nothing.
+func TestTheAgentReceivesTheRunsInput(t *testing.T) {
+	var seen agent.Request
+	h := newHarness(t, scriptedAgent{execute: func(_ context.Context, request agent.Request) (agent.Response, error) {
+		seen = request
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}})
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if string(seen.Input) != `{"q":"x"}` {
+		t.Fatalf("input = %s; the agent executed without what it was asked", seen.Input)
+	}
+}

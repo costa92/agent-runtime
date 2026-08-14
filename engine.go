@@ -414,13 +414,24 @@ func (s *session) request(node workflow.Node, ports *governedPorts) agent.Reques
 	}
 }
 
+// input is what one node executes on.
+//
+// Answered from the node's declared binding, never guessed: a node that reads
+// another node's output reads its ref, and every other node reads the Run's own
+// input. Returning nothing for the latter is what made a Run's input
+// unreachable — the value was accepted at Start, stored nowhere, and the agent
+// was handed nil, so an assistant ran every turn without the question.
 func (s *session) input(node workflow.Node) json.RawMessage {
 	if node.Input.Source == workflow.SourceNode {
 		if state, ok := s.snapshot.Nodes[node.Input.From]; ok && state.OutputRef != "" {
 			return json.RawMessage(`{"from":"` + state.OutputRef + `"}`)
 		}
+		// The binding names an upstream that produced no ref. Falling back to
+		// the Run's input here would hand the node something it did not ask
+		// for, and it would look like it worked.
+		return nil
 	}
-	return nil
+	return s.snapshot.Input
 }
 
 // renewing starts a bounded renew loop and returns a context that is cancelled

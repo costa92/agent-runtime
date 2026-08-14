@@ -116,6 +116,18 @@ type Snapshot struct {
 	// Checkpoint is opaque to the Runtime: it is the executing graph's own
 	// resume state, and the Runtime only carries it.
 	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
+
+	// Input is what the Run was started on, opaque to the Runtime and set once
+	// at creation.
+	//
+	// It is held rather than passed through because the Run outlives the
+	// request that started it: a worker picking the Run up minutes later — or a
+	// takeover after a crash — has nothing but the Snapshot, and an input that
+	// lived only in the Start call would leave that worker executing an agent
+	// with no idea what it was asked. It is never rewritten: an input that
+	// changed after the Run began would make the Run's own pins describe an
+	// execution nobody can reproduce.
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // CommandKind is the closed set of things that can happen to a Run. Nothing

@@ -587,3 +587,27 @@ func TestAChildWithSeveralOutputsIsRefusedRatherThanPickedFrom(t *testing.T) {
 		t.Fatal("a root synthesized from a child with no declared answer")
 	}
 }
+
+// A child executes on the task it was delegated.
+//
+// ChildSpec.Input was carried through the plan and dropped at the Store
+// boundary, so every child ran on its Definition's prompt alone — the
+// orchestrator's decomposition reached nothing that could act on it.
+func TestAChildCarriesTheTaskItWasDelegated(t *testing.T) {
+	spec := childSpec("research")
+	spec.Input = json.RawMessage(`{"task":"survey the literature"}`)
+	h := orchestrator(t, &scriptedRouter{decision: delegatePlan(spec)}, []workflow.ChildSpec{spec})
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	created := h.store.Children(started.ID)
+	if len(created) != 1 {
+		t.Fatalf("children=%d", len(created))
+	}
+	if string(created[0].Input) != string(spec.Input) {
+		t.Fatalf("child input = %s, want %s", created[0].Input, spec.Input)
+	}
+}
