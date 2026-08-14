@@ -20,6 +20,44 @@ type AdmissionResult struct {
 	Detail  string
 }
 
+// ApproveResourceCommand admits one pending version.
+//
+// It carries the same CAS as a publish: a version approved against a head that
+// has since moved would silently roll back whatever moved it. ApprovedBy is
+// separate from the version's publisher because the right to propose a change
+// is not the right to admit it — if one principal could do both, the pending
+// state would be decoration.
+type ApproveResourceCommand struct {
+	ExpectedHeadVersion uint64
+	Kind                resource.Kind
+	Name                string
+	// Version is the pending version being admitted. Named explicitly rather
+	// than "the latest pending one": two pending versions can exist, and
+	// admitting whichever is newest is not a decision anybody made.
+	Version uint64
+
+	ApprovedBy       authorization.PrincipalRef
+	AdmissionResults []AdmissionResult
+}
+
+func (c ApproveResourceCommand) Validate() error {
+	if !c.Kind.Valid() {
+		return run.NewError("unknown_kind", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.Name == "" {
+		return run.NewError("missing_name", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.Version == 0 {
+		return run.NewError("missing_version", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.ApprovedBy.Zero() {
+		// Admitting a change is the act the gate exists to record. An
+		// unattributable approval is not an approval.
+		return run.NewError("missing_approver", run.ErrorInvalid, run.RetryNever)
+	}
+	return nil
+}
+
 // PublishResourceCommand is an atomic compare-and-swap on one Kind's head.
 //
 // ExpectedHeadVersion is the CAS. Two operators publishing concurrently must
