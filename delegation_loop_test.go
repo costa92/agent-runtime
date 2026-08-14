@@ -37,10 +37,14 @@ func (c fixedCandidates) Candidates(context.Context, workflow.RouteRequest) ([]w
 	return c.candidates, nil
 }
 
-type countingSynthesis struct{ calls int }
+type countingSynthesis struct {
+	calls    int
+	children []workflow.ChildResult
+}
 
-func (s *countingSynthesis) Synthesize(context.Context, workflow.SynthesisRequest) (json.RawMessage, error) {
+func (s *countingSynthesis) Synthesize(_ context.Context, request workflow.SynthesisRequest) (json.RawMessage, error) {
 	s.calls++
+	s.children = append([]workflow.ChildResult(nil), request.Children...)
 	return json.RawMessage(`"combined"`), nil
 }
 
@@ -445,12 +449,26 @@ func settleChild(t *testing.T, h *harness, parentID run.ID, key string, terminal
 	if err != nil {
 		t.Fatalf("finish child: %v", err)
 	}
+	// A succeeding child commits an output ref, exactly as runNode does. Without
+	// one the parent cannot tell "produced nothing" from "produced something we
+	// dropped on the way".
+	// A succeeding child's node map carries where its output was stored, which
+	// is what ApplyNodeResult writes on the production path. Built here by hand
+	// because this helper drives the Store directly rather than running a node.
+	outputRef := ""
+	nodes := map[string]run.NodeState{"run": {Status: finished.Next.State}}
+	if terminal == run.CommandSucceed {
+		outputRef = "out-" + string(childID)
+		nodes["run"] = run.NodeState{Status: finished.Next.State, OutputRef: outputRef}
+	}
+	finished.Next.Nodes = nodes
 	if _, err := h.store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
 		Fence: store.ExecutionFence{
 			RunID: childID, ExpectedRevision: afterStart.Revision, LeaseToken: lease.Token,
 		},
-		NodeName: "run",
-		Commit:   store.CommitContext{Transition: finished, Events: finished.Events},
+		NodeName:  "run",
+		OutputRef: outputRef,
+		Commit:    store.CommitContext{Transition: finished, Events: finished.Events},
 	}); err != nil {
 		t.Fatalf("commit child terminal: %v", err)
 	}
@@ -480,4 +498,92 @@ func resume(t *testing.T, h *harness, id run.ID) agentruntime.AdvanceResult {
 		t.Fatalf("resume: %v", err)
 	}
 	return result
+}
+
+// The root synthesises from its children's outputs, not from their states alone.
+//
+// ChildResult carries an OutputRef and synthesis is the only consumer of it, so
+// a root handed empty refs combines nothing while reporting success — the whole
+// delegation produces an answer assembled from no answers.
+func TestSynthesisReceivesEachChildsOutput(t *testing.T) {
+	children := []workflow.ChildSpec{childSpec("research"), childSpec("survey")}
+	synthesis := &countingSynthesis{}
+	h := orchestrator(t, &scriptedRouter{decision: delegatePlan(children...)}, children,
+		withSynthesis(synthesis))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	finishChild(t, h, started.ID, "research")
+	finishChild(t, h, started.ID, "survey")
+	resume(t, h, started.ID)
+
+	if len(synthesis.children) != 2 {
+		t.Fatalf("synthesis saw %d children", len(synthesis.children))
+	}
+	for _, child := range synthesis.children {
+		if child.OutputRef == "" {
+			t.Errorf("%s reached synthesis with no output ref; the root would "+
+				"combine nothing and still report success", child.Key)
+		}
+	}
+}
+
+// A failed child has no output, and that is not the same as a lost one.
+func TestAFailedChildReachesSynthesisWithNoOutput(t *testing.T) {
+	children := []workflow.ChildSpec{childSpec("research"), childSpec("survey")}
+	synthesis := &countingSynthesis{}
+	h := orchestrator(t, &scriptedRouter{decision: delegatePlan(children...)}, children,
+		withSynthesis(synthesis))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	finishChild(t, h, started.ID, "research")
+	failChild(t, h, started.ID, "survey")
+	resume(t, h, started.ID)
+
+	byKey := map[string]workflow.ChildResult{}
+	for _, child := range synthesis.children {
+		byKey[child.Key] = child
+	}
+	if byKey["research"].OutputRef == "" {
+		t.Error("the child that succeeded reached synthesis with no output")
+	}
+	if byKey["survey"].OutputRef != "" {
+		t.Errorf("a failed child carried an output ref %q", byKey["survey"].OutputRef)
+	}
+}
+
+// A child graph with outputs on more than one node has no declared answer.
+//
+// Picking one by map order would make the root synthesise from whichever the
+// runtime happened to iterate first — a different answer on each takeover, and
+// no way to tell which one a user was shown.
+func TestAChildWithSeveralOutputsIsRefusedRatherThanPickedFrom(t *testing.T) {
+	children := []workflow.ChildSpec{childSpec("research")}
+	h := orchestrator(t, &scriptedRouter{decision: delegatePlan(children...)}, children,
+		withSynthesis(&countingSynthesis{}))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	finishChild(t, h, started.ID, "research")
+
+	// Give the finished child a second node that also produced something.
+	child := h.store.Children(started.ID)[0]
+	nodes := map[string]run.NodeState{}
+	for name, node := range child.Nodes {
+		nodes[name] = node
+	}
+	nodes["extra"] = run.NodeState{Status: run.StateSucceeded, OutputRef: "out-extra"}
+	h.store.OverwriteNodes(child.ID, nodes)
+
+	h.clock.Advance(time.Hour)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err == nil {
+		t.Fatal("a root synthesized from a child with no declared answer")
+	}
 }

@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/observe"
@@ -56,7 +57,7 @@ func (s *session) delegate(ctx context.Context) (bool, error) {
 		state.Children = map[string]run.ID{}
 	}
 
-	settled, err := s.childStates(ctx, state)
+	settled, outputs, err := s.childStates(ctx, state)
 	if err != nil {
 		return false, err
 	}
@@ -71,7 +72,9 @@ func (s *session) delegate(ctx context.Context) (bool, error) {
 
 	results := make([]workflow.ChildResult, 0, len(settled))
 	for key, childState := range settled {
-		results = append(results, workflow.ChildResult{Key: key, State: childState})
+		results = append(results, workflow.ChildResult{
+			Key: key, State: childState, OutputRef: outputs[key],
+		})
 	}
 	outcome := workflow.Outcome(state.Plan, results)
 	if !outcome.Complete {
@@ -154,16 +157,51 @@ func (s *session) depth() int {
 }
 
 // childStates reads every created child's current state.
-func (s *session) childStates(ctx context.Context, state *delegationState) (map[string]run.State, error) {
+func (s *session) childStates(
+	ctx context.Context, state *delegationState,
+) (map[string]run.State, map[string]string, error) {
 	settled := make(map[string]run.State, len(state.Children))
+	outputs := make(map[string]string, len(state.Children))
 	for key, id := range state.Children {
 		child, err := s.runtime.deps.Store.Get(ctx, id)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		settled[key] = child.State
+		ref, err := childOutputRef(child)
+		if err != nil {
+			return nil, nil, err
+		}
+		outputs[key] = ref
 	}
-	return settled, nil
+	return settled, outputs, nil
+}
+
+// childOutputRef is what a finished child contributes to its parent.
+//
+// A Run does not record "its" output — nodes do — so the child's answer is the
+// ref of the node that produced one. Exactly one node may have produced it: a
+// child graph with several outputs has no declared answer, and picking one by
+// map order would make the root synthesise from whichever the runtime happened
+// to iterate first, differently on each takeover.
+//
+// Refusing is deliberately louder than returning nothing. An empty ref reaches
+// synthesis as a child that ran and produced nothing, and the root then answers
+// from an empty set without anything reporting a problem.
+func childOutputRef(child run.Snapshot) (string, error) {
+	found := ""
+	for name, node := range child.Nodes {
+		if node.OutputRef == "" {
+			continue
+		}
+		if found != "" {
+			return "", run.NewError("ambiguous_child_output", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("child %s has outputs on more than one node (%s and %s) "+
+					"and no declared answer", child.ID, found, name))
+		}
+		found = node.OutputRef
+	}
+	return found, nil
 }
 
 // createChildren commits one whole generation, its links and its reservations

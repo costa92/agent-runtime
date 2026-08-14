@@ -746,3 +746,16 @@ func lastSequence(events []run.Event) uint64 {
 func Principal(subject string) authorization.PrincipalRef {
 	return authorization.PrincipalRef{Subject: subject, Tenant: "t", Kind: authorization.PrincipalUser}
 }
+
+// OverwriteNodes replaces a Run's node map.
+//
+// Fault injection for the conformance and delegation tests: it produces a shape
+// no commit path can currently build — a child with outputs on several nodes —
+// so the guard against it can be exercised at all.
+func (s *MemoryStore) OverwriteNodes(id run.ID, nodes map[string]run.NodeState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record, ok := s.runs[id]; ok {
+		record.snapshot.Nodes = nodes
+	}
+}
