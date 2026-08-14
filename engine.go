@@ -85,6 +85,19 @@ func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) 
 		}
 	}
 
+	// An effect left in flight by a worker that is gone has to be classified
+	// before anything else happens to this Run.
+	//
+	// The begin fact is committed before the effect is issued, so an invocation
+	// still in flight after its owner's lease lapsed is one nobody can classify:
+	// the model call may have been issued and charged, the tool may have
+	// published. Scheduling the node again is the duplicate side effect the
+	// reserve-before-effect order exists to prevent — and it is invisible,
+	// because the second attempt succeeds and looks like the only one.
+	if err := current.parkUnclassifiedEffects(ctx); err != nil {
+		return AdvanceResult{Run: current.snapshot}, err
+	}
+
 	for {
 		if current.snapshot.State.Terminal() {
 			return AdvanceResult{Run: current.snapshot}, nil
@@ -335,6 +348,38 @@ func (s *session) finish(ctx context.Context) (AdvanceResult, error) {
 	}
 	s.snapshot = committed
 	return AdvanceResult{Run: committed}, nil
+}
+
+// parkUnclassifiedEffects moves the Run to waiting_resolution for the first
+// invocation left in flight.
+//
+// One at a time, because waiting_resolution accepts nothing but a resolution:
+// the next claim parks the next one. Resolving is a deliberate act — a human or
+// a reconciler establishing whether the effect happened — and it is the only
+// thing that releases the reservation, which is what stops the budget being
+// spent twice on one call.
+func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
+	if s.snapshot.State != run.StateRunning {
+		return nil
+	}
+	for id, invocation := range s.snapshot.Invocations {
+		if invocation.Outcome != run.OutcomeInFlight {
+			continue
+		}
+		transition, err := run.Reduce(s.snapshot, run.Command{
+			Kind: run.CommandRecordUnknown, InvocationID: id,
+		})
+		if err != nil {
+			return err
+		}
+		committed, err := s.commitNode(ctx, transition, "", "", run.Limits{})
+		if err != nil {
+			return err
+		}
+		s.snapshot = committed
+		return nil
+	}
+	return nil
 }
 
 // commitNode seals the lease and submits one typed command.

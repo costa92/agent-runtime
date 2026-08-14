@@ -756,3 +756,102 @@ func TestTheAgentReceivesTheRunsInput(t *testing.T) {
 		t.Fatalf("input = %s; the agent executed without what it was asked", seen.Input)
 	}
 }
+
+// A Run whose effect was left in flight is not simply run again.
+//
+// A worker that dies between committing the invocation-begin fact and settling
+// it leaves an effect nobody can classify: the model call may have been issued
+// and charged, the tool may have published. The next worker to claim the Run
+// cannot schedule the node again — re-executing is the duplicate side effect the
+// whole reserve-before-effect order exists to prevent, and refusing it is what
+// the legacy delegation worker did by failing closed on a child that had already
+// emitted events.
+func TestARunWithAnInFlightEffectIsNotReExecuted(t *testing.T) {
+	attempts := 0
+	h := newHarness(t, scriptedAgent{execute: func(context.Context, agent.Request) (agent.Response, error) {
+		attempts++
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}})
+	started := start(t, h)
+
+	// The crash is injected at the Store, which is where it happens: the begin
+	// fact is committed and nothing settles it, exactly as a killed process
+	// leaves it.
+	ctx := t.Context()
+	lease, snapshot, err := h.store.Claim(ctx, store.ClaimCommand{
+		RunID: started.ID, Owner: "dying-worker", LeaseFor: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	running, err := run.Reduce(snapshot, run.Command{Kind: run.CommandStart})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	committed, err := h.store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
+		Fence:    store.ExecutionFence{RunID: started.ID, ExpectedRevision: snapshot.Revision, LeaseToken: lease.Token},
+		NodeName: "run",
+		Commit:   store.CommitContext{Transition: running, Events: running.Events},
+	})
+	if err != nil {
+		t.Fatalf("commit start: %v", err)
+	}
+
+	begun, err := run.Reduce(committed, run.Command{
+		Kind: run.CommandInvokeModel, InvocationID: "inv-1",
+		IdempotencyKey: "key-1", Reserve: run.Limits{LLMCalls: 1, Tokens: 10},
+	})
+	if err != nil {
+		t.Fatalf("reduce begin: %v", err)
+	}
+	if _, err := h.store.BeginInvocation(ctx, store.BeginInvocationCommand{
+		Fence: store.ExecutionFence{RunID: started.ID, ExpectedRevision: committed.Revision, LeaseToken: lease.Token},
+		Invocation: store.InvocationBegin{
+			ID: "inv-1", IdempotencyKey: "key-1",
+			Reservation: store.BudgetReservation{ID: "inv-1", Amount: run.Limits{LLMCalls: 1, Tokens: 10}},
+		},
+		Commit: store.CommitContext{Transition: begun, Events: begun.Events},
+	}); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+
+	// The worker is gone. Its lease lapses and the Run is claimable again.
+	before := attempts
+	h.clock.Advance(time.Hour)
+	result, err := h.runtime.Advance(ctx, started.ID)
+
+	if attempts > before {
+		t.Fatalf("the node ran again; its effect may already have happened")
+	}
+	if err == nil && result.Run.State != run.StateWaitingResolution {
+		t.Fatalf("state = %s; an effect nobody can classify has to be resolved, "+
+			"not stepped over", result.Run.State)
+	}
+}
+
+// A Run whose effects all settled is not parked.
+//
+// Without this the guard above would park every Run that ever made a call, and
+// the whole runtime would stop at the first model request waiting for a human.
+func TestASettledEffectDoesNotParkTheRun(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: "user", Content: "hi"}},
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}})
+	started := start(t, h)
+
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if result.Run.State == run.StateWaitingResolution {
+		t.Fatal("a Run whose call completed is waiting for somebody to classify it")
+	}
+	if !result.Run.State.Terminal() {
+		t.Fatalf("state = %s", result.Run.State)
+	}
+}
