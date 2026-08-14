@@ -36,6 +36,21 @@ const (
 	StateCancelled State = "cancelled"
 )
 
+// States returns every state, in lifecycle order.
+//
+// Declared as a list so that a consumer outside this module — a transport, a
+// browser — can be checked against the machine rather than against somebody's
+// memory of it. A test in this package parses the constants and fails if one is
+// missing here, so the list cannot fall behind the type.
+func States() []State {
+	return []State{
+		StateQueued, StateRunning,
+		StateWaitingApproval, StateWaitingChildren,
+		StateWaitingRetry, StateWaitingResolution,
+		StateSucceeded, StatePartial, StateFailed, StateCancelled,
+	}
+}
+
 // Terminal reports whether the Run has finished. A terminal Run accepts no
 // command at all.
 func (s State) Terminal() bool {
