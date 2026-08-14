@@ -65,7 +65,11 @@ type MemoryStore struct {
 	runs        map[run.ID]*runRecord
 	events      map[run.ID][]run.Event
 	projections []store.ProjectionFact
-	links       []store.LinkFact
+	// projectionSequence is the per-Run outbox counter. Per Run rather than
+	// global, so a fact's sequence means the same thing to a projector reading
+	// one Run as it does to the Store writing it.
+	projectionSequence map[run.ID]uint64
+	links              []store.LinkFact
 	// reservations are held per root, because a child's spend is charged
 	// against the root envelope rather than its own.
 	reservations map[run.ID]store.BudgetReservation
@@ -92,13 +96,14 @@ func FailChildCreateAt(index int) MemoryStoreOption {
 
 func NewMemoryStore(clock *Clock, options ...MemoryStoreOption) *MemoryStore {
 	s := &MemoryStore{
-		clock:             clock,
-		runs:              make(map[run.ID]*runRecord),
-		events:            make(map[run.ID][]run.Event),
-		reservations:      make(map[run.ID]store.BudgetReservation),
-		syntheses:         make(map[run.ID]bool),
-		epochs:            make(map[run.ID]uint64),
-		failChildCreateAt: -1,
+		clock:              clock,
+		runs:               make(map[run.ID]*runRecord),
+		events:             make(map[run.ID][]run.Event),
+		reservations:       make(map[run.ID]store.BudgetReservation),
+		syntheses:          make(map[run.ID]bool),
+		epochs:             make(map[run.ID]uint64),
+		projectionSequence: make(map[run.ID]uint64),
+		failChildCreateAt:  -1,
 	}
 	for _, option := range options {
 		option(s)
@@ -705,12 +710,20 @@ func (s *MemoryStore) commitLocked(record *runRecord, commit store.CommitContext
 			return run.Snapshot{}, err
 		}
 	}
+	// Sequences are assigned here, under the same lock as the commit, because
+	// the producer cannot know the next one without reading the outbox.
+	assigned := make([]store.ProjectionFact, 0, len(commit.Projections))
+	for _, projection := range commit.Projections {
+		projection.Sequence = s.projectionSequence[projection.RunID] + 1
+		s.projectionSequence[projection.RunID] = projection.Sequence
+		assigned = append(assigned, projection)
+	}
 
 	next.RootCancellationEpoch = record.snapshot.RootCancellationEpoch
 	next.Invocations = maps.Clone(next.Invocations)
 	record.snapshot = next
 	s.events[record.snapshot.ID] = append(s.events[record.snapshot.ID], commit.Events...)
-	s.projections = append(s.projections, commit.Projections...)
+	s.projections = append(s.projections, assigned...)
 	return record.snapshot, nil
 }
 

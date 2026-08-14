@@ -44,23 +44,30 @@ type ProjectionFact struct {
 	// RunID and Sequence make a fact idempotent: a projector that replays the
 	// outbox writes each fact at most once, keyed by this pair, so a redelivery
 	// is free rather than duplicated.
+	//
+	// Sequence is assigned by the Store at commit, and is zero on the way in.
+	// The producer cannot assign it: it is per-Run monotonic, so knowing the
+	// next value means reading the outbox, and the Store is already holding the
+	// Run's row lock when it writes. A producer guessing — reusing the event
+	// sequence, say — collides with itself the moment one commit carries two
+	// facts, and the second is dropped by the outbox's own conflict clause
+	// rather than reported.
 	RunID    run.ID
 	Sequence uint64
 	Payload  json.RawMessage
 }
 
 // Validate rejects a fact the projector could not apply idempotently.
+//
+// Sequence is not checked: it is not the producer's to set. A Store that failed
+// to assign one is caught by the conformance suite, which is where a Store bug
+// belongs — refusing here would refuse every legitimate enqueue instead.
 func (f ProjectionFact) Validate() error {
 	if !f.Kind.Valid() {
 		return run.NewError("unknown_projection_kind", run.ErrorInvalid, run.RetryNever)
 	}
 	if f.RunID == "" {
 		return run.NewError("missing_run_id", run.ErrorInvalid, run.RetryNever)
-	}
-	if f.Sequence == 0 {
-		// Sequence zero would make two facts for the same Run collide on the
-		// idempotency key, so the second would be silently dropped.
-		return run.NewError("missing_sequence", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
 }
@@ -73,29 +80,44 @@ func (f ProjectionFact) Validate() error {
 // reading a field the producer stopped writing and records an empty transcript
 // line rather than failing.
 //
-// Every struct below carries the identity the projector needs to write into the
-// host's own tables. None of them carries Run state: a projection is a fact
-// about something that happened, and a projector that re-derived state from it
-// would be a second reader of a Run's status with no fence over it.
+// None of them carries a session: the Runtime has no session concept, and a
+// field only the host could fill would be written as empty by the only code
+// that enqueues it. The fact's RunID is the correlation key, and the host
+// already knows which session it started that Run for.
+//
+// None of them carries Run state either: a projection is a fact about something
+// that happened, and a projector that re-derived state from it would be a
+// second reader of a Run's status with no fence over it.
 
 // UserTurnPayload is one accepted user message.
 //
 // Recorded on acceptance rather than on completion, so a turn that fails still
 // has the message that caused it — a transcript missing the question but
 // showing the error is the shape that makes an incident unreadable.
+//
+// Produced by the host, not by the engine: CreateCommand carries neither a
+// commit context nor the user's text, so this is the one Kind the Runtime
+// cannot enqueue for itself.
 type UserTurnPayload struct {
-	SessionID string `json:"session_id"`
-	Text      string `json:"text"`
+	Text string `json:"text"`
 }
 
-// AssistantMessagePayload is one assistant message.
+// AssistantMessagePayload is one agent output.
+//
+// Output is the agent's own opaque result, carried verbatim. The engine does
+// not know it is a message — an Agent's output is json.RawMessage by design —
+// so rendering it is the host's job. A field called Text here would be the
+// engine asserting a shape it never had.
 type AssistantMessagePayload struct {
-	SessionID string `json:"session_id"`
-	Text      string `json:"text"`
-	// AgentKey names which Agent spoke. A delegated tree produces messages from
-	// several, and a transcript that attributed all of them to the root would
-	// be wrong in exactly the case somebody is reading it to understand.
+	Output json.RawMessage `json:"output"`
+	// OutputRef is the ref the node result was committed under, so a projection
+	// and the Run's own node map can be lined up after the fact.
+	OutputRef string `json:"output_ref,omitempty"`
+	// AgentKey and NodeID name which Agent spoke. A delegated tree produces
+	// output from several, and a transcript attributing all of it to the root
+	// would be wrong in exactly the case somebody is reading it to understand.
 	AgentKey string `json:"agent_key"`
+	NodeID   string `json:"node_id"`
 }
 
 // PendingApprovalPayload is one decision waiting on a human.
@@ -104,21 +126,27 @@ type AssistantMessagePayload struct {
 // carried rather than looked up, because the approval must be answerable from
 // the projection alone — a projector that had to read Runtime tables to render
 // the prompt would be reaching across the seam this outbox exists to be.
+//
+// No engine path parks a Run for approval yet, so nothing enqueues this today.
 type PendingApprovalPayload struct {
-	SessionID  string `json:"session_id"`
 	ApprovalID string `json:"approval_id"`
 	Action     string `json:"action"`
 	Detail     string `json:"detail,omitempty"`
 }
 
-// ProgressPayload is one human-readable step marker.
+// ProgressPayload marks one node finishing.
 //
 // Advisory by construction: it has no ordering guarantee beyond the fact's own
 // Sequence and no meaning to any decision. Anything a decision depends on is a
 // Run event, not a progress line.
+//
+// It carries identity rather than prose. The engine has no sentence to write
+// that the host could not write better, and a message composed here would be
+// wording the host cannot change without a Runtime release.
 type ProgressPayload struct {
-	SessionID string `json:"session_id"`
-	Message   string `json:"message"`
+	NodeID   string `json:"node_id"`
+	AgentKey string `json:"agent_key"`
+	Failed   bool   `json:"failed,omitempty"`
 }
 
 // TerminalResultPayload is the settled outcome of a Run.
@@ -128,8 +156,7 @@ type ProgressPayload struct {
 // user, and collapsing them to "done" loses the only distinction that matters
 // after the fact.
 type TerminalResultPayload struct {
-	SessionID string `json:"session_id"`
-	State     string `json:"state"`
+	State string `json:"state"`
 	// Error is set for the non-successful states. Its code, not its prose: the
 	// host renders the message, so a wording change is not a schema change.
 	Error string `json:"error,omitempty"`
@@ -155,14 +182,14 @@ func (TerminalResultPayload) ProjectionKind() ProjectionKind  { return Projectio
 
 // NewProjectionFact is the only supported way to enqueue a fact.
 func NewProjectionFact(
-	runID run.ID, sequence uint64, payload ProjectionPayload,
+	runID run.ID, payload ProjectionPayload,
 ) (ProjectionFact, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return ProjectionFact{}, run.NewError("unencodable_projection", run.ErrorInvalid, run.RetryNever, err)
 	}
 	fact := ProjectionFact{
-		Kind: payload.ProjectionKind(), RunID: runID, Sequence: sequence, Payload: encoded,
+		Kind: payload.ProjectionKind(), RunID: runID, Payload: encoded,
 	}
 	if err := fact.Validate(); err != nil {
 		return ProjectionFact{}, err

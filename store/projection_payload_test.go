@@ -47,8 +47,10 @@ func TestEveryProjectionKindHasAPayloadType(t *testing.T) {
 
 // A fact's Kind comes from its payload, so the two cannot disagree.
 func TestTheKindComesFromThePayload(t *testing.T) {
-	fact, err := store.NewProjectionFact("run-1", 3,
-		store.AssistantMessagePayload{SessionID: "s1", Text: "hi", AgentKey: "writer"})
+	fact, err := store.NewProjectionFact("run-1",
+		store.AssistantMessagePayload{
+			Output: json.RawMessage(`{"answer":"hi"}`), AgentKey: "writer", NodeID: "draft",
+		})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -60,7 +62,8 @@ func TestTheKindComesFromThePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded.Text != "hi" || decoded.AgentKey != "writer" || decoded.SessionID != "s1" {
+	if string(decoded.Output) != `{"answer":"hi"}` ||
+		decoded.AgentKey != "writer" || decoded.NodeID != "draft" {
 		t.Fatalf("round trip = %+v", decoded)
 	}
 }
@@ -72,8 +75,7 @@ func TestTheKindComesFromThePayload(t *testing.T) {
 // so the host writes a blank transcript line and nothing anywhere reports a
 // problem.
 func TestDecodingTheWrongPayloadTypeIsRefused(t *testing.T) {
-	fact, err := store.NewProjectionFact("run-1", 1,
-		store.UserTurnPayload{SessionID: "s1", Text: "question"})
+	fact, err := store.NewProjectionFact("run-1", store.UserTurnPayload{Text: "question"})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -83,16 +85,12 @@ func TestDecodingTheWrongPayloadTypeIsRefused(t *testing.T) {
 	}
 }
 
-// The constructor applies the same validation the Store does, at the point the
-// fact is made rather than at the point it is committed.
+// The constructor applies the identity checks at the point the fact is made
+// rather than at the point it is committed. The sequence is not among them: it
+// is the Store's to assign.
 func TestAnUnidentifiableFactIsRefusedAtConstruction(t *testing.T) {
-	if _, err := store.NewProjectionFact("", 1, store.ProgressPayload{}); err == nil {
+	if _, err := store.NewProjectionFact("", store.ProgressPayload{}); err == nil {
 		t.Error("a fact with no Run was constructed")
-	}
-	// Sequence zero would collide with another fact for the same Run on the
-	// idempotency key, and the second would be dropped silently.
-	if _, err := store.NewProjectionFact("run-1", 0, store.ProgressPayload{}); err == nil {
-		t.Error("a fact with no sequence was constructed")
 	}
 }
 
@@ -103,8 +101,8 @@ func TestAnUnidentifiableFactIsRefusedAtConstruction(t *testing.T) {
 // place for them to be right, and the projector would have to decide which one
 // to believe.
 func TestThePayloadCarriesNoEnvelope(t *testing.T) {
-	fact, err := store.NewProjectionFact("run-1", 7,
-		store.TerminalResultPayload{SessionID: "s1", State: "failed", Error: "tool_denied"})
+	fact, err := store.NewProjectionFact("run-1",
+		store.TerminalResultPayload{State: "failed", Error: "tool_denied"})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}

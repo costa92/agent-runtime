@@ -484,9 +484,11 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		fact := ProjectionFact{
-			Kind: ProjectionPendingApproval, RunID: "run-1",
-			Sequence: transition.Events[0].Sequence,
+		fact, err := NewProjectionFact("run-1", PendingApprovalPayload{
+			ApprovalID: "ap-1", Action: "publish",
+		})
+		if err != nil {
+			t.Fatalf("fact: %v", err)
 		}
 		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
@@ -502,7 +504,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 
 		// A rejected command must leave no projection behind, or the host's
 		// tables would describe a Run that never advanced.
-		bad := ProjectionFact{Kind: "invented", RunID: "run-1", Sequence: 9}
+		bad := ProjectionFact{Kind: "invented", RunID: "run-1"}
 		before := len(harness.Projections())
 		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
 			Fence: fenceFor(claimed, 999), ApprovalID: "ap-2",
@@ -512,6 +514,55 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 		if len(harness.Projections()) != before {
 			t.Fatal("a rejected command still wrote a projection")
+		}
+	})
+
+	t.Run("TheStoreAssignsADistinctSequenceToEveryFact", func(t *testing.T) {
+		// The producer leaves Sequence zero: it cannot know the next value
+		// without reading the outbox, and the Store is already holding the
+		// Run's row lock. If the Store did not assign, two facts in one commit
+		// would share a key and the outbox's conflict clause would drop the
+		// second one — silently, which is the whole problem.
+		harness := newHarness(t)
+		ctx := context.Background()
+		claimed := mustStart(t, harness, "run-1")
+
+		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		if err != nil {
+			t.Fatalf("reduce: %v", err)
+		}
+		first, err := NewProjectionFact("run-1", ProgressPayload{NodeID: "a", AgentKey: "writer"})
+		if err != nil {
+			t.Fatalf("fact: %v", err)
+		}
+		second, err := NewProjectionFact("run-1", ProgressPayload{NodeID: "b", AgentKey: "writer"})
+		if err != nil {
+			t.Fatalf("fact: %v", err)
+		}
+
+		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
+			Commit: CommitContext{
+				Transition: transition, Events: transition.Events,
+				Projections: []ProjectionFact{first, second},
+			},
+		}); err != nil {
+			t.Fatalf("enter approval: %v", err)
+		}
+
+		projections := harness.Projections()
+		if len(projections) != 2 {
+			t.Fatalf("%d facts survived the commit; two were enqueued", len(projections))
+		}
+		seen := map[uint64]bool{}
+		for _, fact := range projections {
+			if fact.Sequence == 0 {
+				t.Fatalf("%s was stored with no sequence", fact.Kind)
+			}
+			if seen[fact.Sequence] {
+				t.Fatalf("sequence %d was assigned twice", fact.Sequence)
+			}
+			seen[fact.Sequence] = true
 		}
 	})
 
