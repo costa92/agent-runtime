@@ -3,8 +3,11 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
+
+	"github.com/kart-io/wechat-account/agent-runtime/tool"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
@@ -212,6 +215,40 @@ func (s *session) start(ctx context.Context) error {
 	return nil
 }
 
+func approvalRequired(err error) bool {
+	var runtimeErr *run.Error
+	return errors.As(err, &runtimeErr) && runtimeErr.Code == tool.ApprovalRequired.Code
+}
+
+func (s *session) parkForApproval(ctx context.Context) error {
+	transition, err := run.Reduce(s.snapshot, run.Command{Kind: run.CommandWaitApproval})
+	if err != nil {
+		return err
+	}
+	approvalID := s.runtime.deps.IDs.NewID("approval")
+	s.runtime.record(observe.Decision{
+		Name:  observe.EventApprovalRequested,
+		RunID: s.snapshot.ID,
+		Attributes: []observe.Attribute{
+			observe.Attr(observe.AttrApprovalID, string(approvalID)),
+			observe.Attr(observe.AttrTool, ""),
+			observe.Attr(observe.AttrPolicyName, "require_approval"),
+		},
+	})
+	committed, err := s.runtime.deps.Store.EnterApproval(ctx, store.EnterApprovalCommand{
+		Fence:      s.fence(),
+		ApprovalID: approvalID,
+		Commit: store.CommitContext{
+			Transition: transition, Events: transition.Events,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	s.snapshot = committed
+	return nil
+}
+
 // runNode executes one node and commits its result.
 func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	factory, err := s.runtime.deps.Agents.Lookup(node.Implementation)
@@ -239,6 +276,10 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	ports := &governedPorts{session: s, node: node}
 	response, executeErr := implementation.Execute(effectCtx, s.request(node, ports))
 	renewErr := stop()
+
+	if executeErr != nil && approvalRequired(executeErr) {
+		return s.parkForApproval(ctx)
+	}
 
 	if renewErr != nil {
 		// Ownership was lost while the effect was in flight. The result is

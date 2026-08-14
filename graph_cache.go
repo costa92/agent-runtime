@@ -64,16 +64,17 @@ func (c *GraphCache) Get(ctx context.Context, ref run.ExecutionGraphRef) (*workf
 
 	c.mu.Lock()
 	if element, ok := c.entries[ref.Digest]; ok {
-		c.order.MoveToFront(element)
 		graph := element.Value.(cacheEntry).graph
-		c.mu.Unlock()
-		// Verified on the way out of the cache too. A cached entry is still a
-		// value someone could have keyed wrongly, and the check is free next to
-		// executing the wrong graph.
-		if err := graph.Verify(ref); err != nil {
-			return nil, err
+		if err := graph.Verify(ref); err == nil {
+			c.order.MoveToFront(element)
+			c.mu.Unlock()
+			return graph, nil
 		}
-		return graph, nil
+		// Same digest, different ref (a new version of an identical graph).
+		// Serving the cached value would fail Verify and look like the new
+		// version was unpublished. Drop the stale entry and reload.
+		c.order.Remove(element)
+		delete(c.entries, ref.Digest)
 	}
 	c.mu.Unlock()
 
@@ -91,8 +92,13 @@ func (c *GraphCache) Get(ctx context.Context, ref run.ExecutionGraphRef) (*workf
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, ok := c.entries[ref.Digest]; ok {
-		c.order.MoveToFront(element)
-		return element.Value.(cacheEntry).graph, nil
+		cached := element.Value.(cacheEntry).graph
+		if err := cached.Verify(ref); err == nil {
+			c.order.MoveToFront(element)
+			return cached, nil
+		}
+		c.order.Remove(element)
+		delete(c.entries, ref.Digest)
 	}
 	element := c.order.PushFront(cacheEntry{digest: ref.Digest, graph: graph})
 	c.entries[ref.Digest] = element

@@ -73,6 +73,7 @@ type Gateway struct {
 	schema     SchemaValidator
 	strategies []policy.Strategy
 	observers  []Observer
+	bindings   BindingLookup
 
 	// defaultMaxResultBytes caps a result that declares no cap of its own.
 	defaultMaxResultBytes int
@@ -114,7 +115,7 @@ func NewGateway(registry *Registry, authorizer Authorizer, options ...Option) *G
 // may Execute run — which is what makes "we are about to do this" durable
 // before "we did this" can be true.
 func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (PreparedInvocation, error) {
-	spec, err := g.registry.Lookup(request.Tool)
+	spec, handler, err := g.resolve(ctx, request.Tool)
 	g.observe(StageResolve, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
@@ -210,7 +211,25 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 		Explanation: explanation,
 		Reserve:     reserve,
 		ticket:      g.ticketFor(request.InvocationID, spec.Name),
+		handler:     handler,
 	}, nil
+}
+
+func (g *Gateway) resolve(ctx context.Context, name string) (Spec, Handler, error) {
+	spec, err := g.registry.Lookup(name)
+	if err == nil {
+		found, lookupErr := g.registry.handlerFor(name)
+		if lookupErr != nil {
+			return Spec{}, nil, lookupErr
+		}
+		return spec, found.handler, nil
+	}
+	if g.bindings != nil {
+		if spec, handler, ok := g.bindings.Lookup(ctx, name); ok {
+			return spec, handler, nil
+		}
+	}
+	return Spec{}, nil, err
 }
 
 // Execute calls the handler, exactly once, for a committed invocation.
@@ -222,12 +241,16 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 		return ResultMutation{}, run.NewError("uncommitted_invocation", run.ErrorInvalid, run.RetryNever)
 	}
 
-	found, err := g.registry.handlerFor(prepared.Spec.Name)
-	if err != nil {
-		return ResultMutation{}, err
+	handler := prepared.handler
+	if handler == nil {
+		found, err := g.registry.handlerFor(prepared.Spec.Name)
+		if err != nil {
+			return ResultMutation{}, err
+		}
+		handler = found.handler
 	}
 
-	result, err := found.handler.Invoke(ctx, prepared.Invocation)
+	result, err := handler.Invoke(ctx, prepared.Invocation)
 	if err != nil {
 		mutation := ResultMutation{InvocationID: prepared.Invocation.ID, Used: result.Used}
 		switch {

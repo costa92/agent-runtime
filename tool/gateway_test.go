@@ -336,3 +336,39 @@ func TestRefusingSideEffectsStillAllowsAReadOnlyTool(t *testing.T) {
 		t.Fatalf("a read-only tool was refused: %v", err)
 	}
 }
+
+func TestGatewayResolvesABindingPublishedAfterFreeze(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Freeze()
+	bindings := tool.NewBindingMap()
+	handler := testkit.ToolSucceeding(`{"hits":1}`)
+	gateway := tool.NewGateway(registry, testkit.AllowAllToolAuthorizer(), tool.WithBindings(bindings))
+
+	request := publishRequest()
+	request.Tool = "external.search"
+	request.Allowlist = []string{"external.search"}
+
+	if _, err := gateway.Prepare(context.Background(), request); err == nil {
+		t.Fatal("an unpublished binding was resolved")
+	}
+
+	bindings.Publish(tool.Spec{
+		Name: "external.search", Description: "search",
+		RiskLevel: policy.RiskLow, SideEffect: policy.SideEffectRead, Idempotent: true,
+	}, handler)
+
+	prepared, err := gateway.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatalf("published binding was not resolved: %v", err)
+	}
+	mutation, err := gateway.Execute(context.Background(), tool.CommittedInvocation{Prepared: prepared})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if mutation.Outcome != run.OutcomeApplied {
+		t.Fatalf("outcome=%s", mutation.Outcome)
+	}
+	if handler.Calls() != 1 {
+		t.Fatalf("calls=%d", handler.Calls())
+	}
+}

@@ -130,7 +130,8 @@ type PreparedInvocation struct {
 	Reserve run.Limits
 	// ticket is unexported so a caller cannot fabricate a committed invocation
 	// and skip the commit. Execute accepts only a ticket this gateway issued.
-	ticket string
+	ticket  string
+	handler Handler
 }
 
 // CommittedInvocation is the Runtime's confirmation that the begin fact is
