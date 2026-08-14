@@ -278,11 +278,11 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 // step that failed.
 func (s *session) nodeFact(node workflow.Node, result workflow.NodeResult) (store.ProjectionFact, error) {
 	if result.Failed {
-		return store.NewProjectionFact(s.snapshot.ID, store.ProgressPayload{
+		return store.NewProjectionFact(store.ProgressPayload{
 			NodeID: node.ID, AgentKey: node.Implementation, Failed: true,
 		})
 	}
-	return store.NewProjectionFact(s.snapshot.ID, store.AssistantMessagePayload{
+	return store.NewProjectionFact(store.AssistantMessagePayload{
 		Output: result.Output, OutputRef: result.OutputRef,
 		AgentKey: node.Implementation, NodeID: node.ID,
 	})
@@ -361,8 +361,7 @@ func (s *session) commitNode(
 		name = "run"
 	}
 	if transition.Next.State.Terminal() {
-		terminal, err := store.NewProjectionFact(s.snapshot.ID,
-			store.TerminalResultPayload{State: string(transition.Next.State)})
+		terminal, err := store.NewProjectionFact(store.TerminalResultPayload{State: string(transition.Next.State)})
 		if err != nil {
 			return run.Snapshot{}, err
 		}

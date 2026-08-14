@@ -76,6 +76,16 @@ type CreateCommand struct {
 
 	// NextRunnableAt orders claiming. Zero means immediately.
 	NextRunnableAt time.Time
+
+	// Projections are enqueued in the same transaction that creates the Run.
+	//
+	// This is how a host records the turn that caused the Run — the one Kind
+	// the engine cannot produce, because a Run carries no session and no user
+	// text. Committing it here rather than afterwards is not a convenience: a
+	// host that created the Run and then wrote the transcript loses the message
+	// on any crash in between, and the user is left looking at an answer to a
+	// question that is not there.
+	Projections []ProjectionFact
 }
 
 func (c CreateCommand) Validate() error {
@@ -96,6 +106,11 @@ func (c CreateCommand) Validate() error {
 	}
 	if (c.RootID == "") != (c.ParentID == "") {
 		return run.NewError("half_linked_child", run.ErrorInvalid, run.RetryNever)
+	}
+	for _, projection := range c.Projections {
+		if err := projection.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

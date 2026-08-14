@@ -88,6 +88,14 @@ type StartRequest struct {
 	Definition run.DefinitionRef
 	Input      json.RawMessage
 	Budget     run.Limits
+
+	// Projections are enqueued in the transaction that creates the Run.
+	//
+	// The host's only way to record the turn that caused a Run atomically with
+	// it. The Runtime does not inspect them beyond the Store's own validation:
+	// a session id and a user's message are host vocabulary, and a Runtime that
+	// understood them would be a Runtime with a session concept.
+	Projections []store.ProjectionFact
 }
 
 // AdvanceResult is what one Advance accomplished.
@@ -278,11 +286,12 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 	id := r.deps.IDs.NewID("run")
 	traceID := r.deps.IDs.NewID("trace")
 	return r.deps.Store.Create(ctx, store.CreateCommand{
-		ID:         id,
-		Definition: request.Definition,
-		Graph:      graphRef,
-		Principal:  principal,
-		Budget:     run.Budget{Envelope: envelopeFor(request.Budget, declared.Budget)},
+		ID:          id,
+		Definition:  request.Definition,
+		Graph:       graphRef,
+		Principal:   principal,
+		Budget:      run.Budget{Envelope: envelopeFor(request.Budget, declared.Budget)},
+		Projections: request.Projections,
 		Pins: run.Pins{
 			PolicyDigest: policies.Digest,
 			QuotaDigest:  quotas.Digest,

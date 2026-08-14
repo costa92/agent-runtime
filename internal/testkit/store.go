@@ -184,6 +184,13 @@ func (s *MemoryStore) createLocked(command store.CreateCommand) (run.Snapshot, e
 		Budget:                command.Budget,
 		RootCancellationEpoch: s.epochs[root],
 	}
+	// Enqueued with the Run, in the same critical section that creates it.
+	for _, projection := range command.Projections {
+		projection.RunID = command.ID
+		projection.Sequence = s.projectionSequence[command.ID] + 1
+		s.projectionSequence[command.ID] = projection.Sequence
+		s.projections = append(s.projections, projection)
+	}
 	s.runs[command.ID] = &runRecord{
 		snapshot:       snapshot,
 		createdAt:      s.clock.Now(),
@@ -714,6 +721,7 @@ func (s *MemoryStore) commitLocked(record *runRecord, commit store.CommitContext
 	// the producer cannot know the next one without reading the outbox.
 	assigned := make([]store.ProjectionFact, 0, len(commit.Projections))
 	for _, projection := range commit.Projections {
+		projection.RunID = record.snapshot.ID
 		projection.Sequence = s.projectionSequence[projection.RunID] + 1
 		s.projectionSequence[projection.RunID] = projection.Sequence
 		assigned = append(assigned, projection)

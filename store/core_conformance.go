@@ -484,7 +484,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		fact, err := NewProjectionFact("run-1", PendingApprovalPayload{
+		fact, err := NewProjectionFact(PendingApprovalPayload{
 			ApprovalID: "ap-1", Action: "publish",
 		})
 		if err != nil {
@@ -517,6 +517,42 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("TheTurnThatCausedARunIsCommittedWithIt", func(t *testing.T) {
+		// The host enqueues the user turn with Create because it cannot enqueue
+		// it afterwards: a Run created and then a transcript written loses the
+		// message on any crash in between, and the user is left looking at an
+		// answer to a question that is not there.
+		harness := newHarness(t)
+		ctx := context.Background()
+
+		turn, err := NewProjectionFact(UserTurnPayload{SessionID: 7, Text: "why"})
+		if err != nil {
+			t.Fatalf("fact: %v", err)
+		}
+		create := sampleCreate("run-1")
+		create.Projections = []ProjectionFact{turn}
+		if _, err := harness.Store.Create(ctx, create); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+
+		projections := harness.Projections()
+		if len(projections) != 1 || projections[0].Kind != ProjectionUserTurn {
+			t.Fatalf("projections = %+v; the turn was not committed with the Run", projections)
+		}
+		if projections[0].Sequence == 0 {
+			t.Fatal("the turn was stored with no sequence")
+		}
+
+		// A refused Create must leave nothing behind, or the host's tables
+		// would carry a question for a Run that does not exist.
+		if _, err := harness.Store.Create(ctx, create); err == nil {
+			t.Fatal("a duplicate Run was created")
+		}
+		if len(harness.Projections()) != 1 {
+			t.Fatal("a refused Create still enqueued its turn")
+		}
+	})
+
 	t.Run("TheStoreAssignsADistinctSequenceToEveryFact", func(t *testing.T) {
 		// The producer leaves Sequence zero: it cannot know the next value
 		// without reading the outbox, and the Store is already holding the
@@ -531,11 +567,11 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		first, err := NewProjectionFact("run-1", ProgressPayload{NodeID: "a", AgentKey: "writer"})
+		first, err := NewProjectionFact(ProgressPayload{NodeID: "a", AgentKey: "writer"})
 		if err != nil {
 			t.Fatalf("fact: %v", err)
 		}
-		second, err := NewProjectionFact("run-1", ProgressPayload{NodeID: "b", AgentKey: "writer"})
+		second, err := NewProjectionFact(ProgressPayload{NodeID: "b", AgentKey: "writer"})
 		if err != nil {
 			t.Fatalf("fact: %v", err)
 		}

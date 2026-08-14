@@ -45,7 +45,12 @@ type ProjectionFact struct {
 	// outbox writes each fact at most once, keyed by this pair, so a redelivery
 	// is free rather than duplicated.
 	//
-	// Sequence is assigned by the Store at commit, and is zero on the way in.
+	// Both are assigned by the Store at commit, and are zero on the way in.
+	// RunID because the Store already knows which Run it is committing — from
+	// the fence, or from the Create it is performing — and a producer that
+	// supplied it could file a fact under a Run that is not the one being
+	// written, which no later reader could detect.
+	//
 	// The producer cannot assign it: it is per-Run monotonic, so knowing the
 	// next value means reading the outbox, and the Store is already holding the
 	// Run's row lock when it writes. A producer guessing — reusing the event
@@ -59,15 +64,13 @@ type ProjectionFact struct {
 
 // Validate rejects a fact the projector could not apply idempotently.
 //
-// Sequence is not checked: it is not the producer's to set. A Store that failed
-// to assign one is caught by the conformance suite, which is where a Store bug
-// belongs — refusing here would refuse every legitimate enqueue instead.
+// Neither RunID nor Sequence is checked: neither is the producer's to set. A
+// Store that failed to stamp them is caught by the conformance suite, which is
+// where a Store bug belongs — refusing here would refuse every legitimate
+// enqueue instead.
 func (f ProjectionFact) Validate() error {
 	if !f.Kind.Valid() {
 		return run.NewError("unknown_projection_kind", run.ErrorInvalid, run.RetryNever)
-	}
-	if f.RunID == "" {
-		return run.NewError("missing_run_id", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
 }
@@ -99,7 +102,13 @@ func (f ProjectionFact) Validate() error {
 // commit context nor the user's text, so this is the one Kind the Runtime
 // cannot enqueue for itself.
 type UserTurnPayload struct {
-	Text string `json:"text"`
+	// SessionID is carried here and nowhere else. The other four Kinds are
+	// engine-produced and cannot know it; this one is enqueued by the host with
+	// the Run's own creation, which is the moment — and the only moment — the
+	// binding between a Run and a session exists in one place. Every later fact
+	// for that Run is resolved through this one.
+	SessionID int64  `json:"session_id"`
+	Text      string `json:"text"`
 }
 
 // AssistantMessagePayload is one agent output.
@@ -183,15 +192,13 @@ func (ProgressPayload) ProjectionKind() ProjectionKind        { return Projectio
 func (TerminalResultPayload) ProjectionKind() ProjectionKind  { return ProjectionTerminalResult }
 
 // NewProjectionFact is the only supported way to enqueue a fact.
-func NewProjectionFact(
-	runID run.ID, payload ProjectionPayload,
-) (ProjectionFact, error) {
+func NewProjectionFact(payload ProjectionPayload) (ProjectionFact, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return ProjectionFact{}, run.NewError("unencodable_projection", run.ErrorInvalid, run.RetryNever, err)
 	}
 	fact := ProjectionFact{
-		Kind: payload.ProjectionKind(), RunID: runID, Payload: encoded,
+		Kind: payload.ProjectionKind(), Payload: encoded,
 	}
 	if err := fact.Validate(); err != nil {
 		return ProjectionFact{}, err
