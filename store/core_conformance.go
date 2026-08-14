@@ -548,6 +548,46 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("ARunKeepsTheRestrictionsItWasStartedUnder", func(t *testing.T) {
+		// Enforced on every later attempt, by workers that never saw the
+		// request that asked for them. A restriction lost at the first takeover
+		// means the retry does for real what the first attempt was only allowed
+		// to prove it would do.
+		harness := newHarness(t)
+		ctx := context.Background()
+
+		create := sampleCreate("run-1")
+		create.Restrictions = run.Restrictions{
+			Tools: []string{"search"}, DenySideEffects: true,
+		}
+		created, err := harness.Store.Create(ctx, create)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if !created.Restrictions.DenySideEffects ||
+			len(created.Restrictions.Tools) != 1 {
+			t.Fatalf("restrictions = %+v", created.Restrictions)
+		}
+
+		reloaded, err := harness.Store.Get(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if !reloaded.Restrictions.DenySideEffects {
+			t.Fatal("a Run came back able to perform the side effects it gave up")
+		}
+
+		unrestricted, err := harness.Store.Create(ctx, sampleCreate("run-2"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if unrestricted.Restrictions.DenySideEffects ||
+			len(unrestricted.Restrictions.Tools) != 0 {
+			t.Fatalf("an unrestricted Run came back restricted: %+v",
+				unrestricted.Restrictions)
+		}
+	})
+
 	t.Run("AChildKeepsTheUpstreamRefsItWasCreatedWith", func(t *testing.T) {
 		// A child that cannot see what its dependency produced executes on a
 		// task saying "use the result above" with no result attached, and

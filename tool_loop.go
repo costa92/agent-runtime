@@ -124,8 +124,11 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 			AgentName:          p.node.Implementation,
 			BudgetRemainingPct: remainingPercent(s.snapshot.Budget),
 		},
-		Policies:  s.policies,
-		Allowlist: declaredToolKeys(s),
+		Policies: s.policies,
+		// Narrowed, never widened: the Run's own restriction can only remove
+		// keys the Definition declared.
+		Allowlist:       s.snapshot.Restrictions.Narrow(declaredToolKeys(s)),
+		DenySideEffects: s.snapshot.Restrictions.DenySideEffects,
 	})
 	if err != nil {
 		p.recordPolicy(name, err)

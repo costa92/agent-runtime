@@ -104,6 +104,14 @@ type InvocationRequest struct {
 	// refused before policy is even consulted: the definition is what the Run
 	// was published to do.
 	Allowlist []string
+	// DenySideEffects refuses any tool that changes state the Runtime cannot
+	// roll back, whatever the policy decides about it.
+	//
+	// Here rather than expressed as a policy, because it is the caller's own
+	// narrowing of one Run and must survive whatever policy version that Run
+	// pinned. An evaluation trial runs the production Definition with this set:
+	// the point of a trial is to prove the agent would act, not to let it act.
+	DenySideEffects bool
 }
 
 // PreparedInvocation is the exact invocation-begin fact the Runtime must commit

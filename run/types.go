@@ -136,6 +136,52 @@ type Snapshot struct {
 	// a task that says "use the result above" with no result attached — and it
 	// answers anyway, which is the failure mode this exists to prevent.
 	Upstreams map[string]string `json:"upstreams,omitempty"`
+
+	// Restrictions narrow what this one Run may do, below whatever its
+	// Definition and the tenant's policies already allow.
+	//
+	// Set once at Start and never widened: they are applied by intersection, so
+	// a caller cannot grant itself anything by asking. That direction is the
+	// whole point — a Run-scoped grant that could widen would be a privilege
+	// escalation performed by whoever happened to start the Run, and the
+	// published policy that was supposed to decide would never see it.
+	//
+	// This is what an evaluation trial runs under: the same Definition as
+	// production, with its side effects refused, so a trial cannot publish
+	// something for real while proving that it can.
+	Restrictions Restrictions `json:"restrictions,omitzero"`
+}
+
+// Restrictions are the per-Run narrowing.
+type Restrictions struct {
+	// Tools, when non-empty, is intersected with the Definition's declared
+	// tools. Empty means "no narrowing", not "no tools": an empty allowlist
+	// meaning nothing-allowed would silently disarm every Run that did not ask
+	// for a restriction.
+	Tools []string `json:"tools,omitempty"`
+	// DenySideEffects refuses any call that changes state the Runtime cannot
+	// roll back, whatever the policy says about it.
+	DenySideEffects bool `json:"deny_side_effects,omitempty"`
+}
+
+// Narrow returns the allowlist a Run may actually use.
+func (r Restrictions) Narrow(declared []string) []string {
+	if len(r.Tools) == 0 {
+		return declared
+	}
+	allowed := make(map[string]bool, len(r.Tools))
+	for _, key := range r.Tools {
+		allowed[key] = true
+	}
+	kept := make([]string, 0, len(declared))
+	for _, key := range declared {
+		if allowed[key] {
+			kept = append(kept, key)
+		}
+	}
+	// Intersection, so a key the Definition never declared cannot be added by
+	// listing it here.
+	return kept
 }
 
 // CommandKind is the closed set of things that can happen to a Run. Nothing

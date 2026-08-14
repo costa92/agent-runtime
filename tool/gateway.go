@@ -152,6 +152,17 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 	facts.PrincipalKind = string(request.Principal.Kind)
 	facts.PrincipalTenant = request.Principal.Tenant
 
+	if request.DenySideEffects && spec.SideEffect == policy.SideEffectWrite {
+		// Checked before policy, and refused whatever policy would have said: a
+		// narrowing the caller asked for is not something a published rule may
+		// override, or the narrowing would mean nothing on exactly the tenants
+		// whose policies are most permissive.
+		err = run.NewError("tool.side_effects_denied", run.ErrorDenied, run.RetryNever,
+			fmt.Errorf("tool %q writes and this Run refuses side effects", spec.Name))
+		g.observe(StagePolicy, spec, err)
+		return PreparedInvocation{}, err
+	}
+
 	explanation, err := policy.Evaluate(request.Policies, facts, g.strategies...)
 	if err == nil && explanation.Decision == policy.DecisionDeny {
 		err = run.NewError("tool.denied_by_policy", run.ErrorDenied, run.RetryNever,

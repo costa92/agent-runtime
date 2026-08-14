@@ -299,3 +299,40 @@ func TestRegistryRefusesUndeclaredRiskOrSideEffect(t *testing.T) {
 		t.Fatalf("error=%s want=invalid", run.KindOf(err))
 	}
 }
+
+// A Run that refuses side effects refuses a writing tool, however permissive
+// its tenant's policy is.
+//
+// This is what an evaluation trial runs under: the same Definition as
+// production, proving the agent would publish without publishing anything. A
+// narrowing the caller asked for cannot be something a published rule overrides,
+// or it would mean nothing on exactly the tenants whose policies are loosest.
+func TestARunThatRefusesSideEffectsRefusesAWritingTool(t *testing.T) {
+	handler := testkit.ToolSucceeding(`"published"`)
+	gateway := gatewayWith(t, testkit.PublishSpec(), handler)
+
+	request := publishRequest()
+	request.DenySideEffects = true
+
+	_, err := gateway.Prepare(context.Background(), request)
+	if run.KindOf(err) != run.ErrorDenied {
+		t.Fatalf("err=%v; a writing tool ran under a Run that refuses side effects", err)
+	}
+	if handler.Calls() != 0 {
+		t.Fatal("the tool was executed")
+	}
+}
+
+// Refusing side effects does not refuse everything: a trial that could not read
+// would prove nothing about the agent.
+func TestRefusingSideEffectsStillAllowsAReadOnlyTool(t *testing.T) {
+	gateway := gatewayWith(t, testkit.SearchSpec(), testkit.ToolSucceeding(`"found"`))
+
+	request := publishRequest()
+	request.Tool = "search"
+	request.DenySideEffects = true
+
+	if _, err := gateway.Prepare(context.Background(), request); err != nil {
+		t.Fatalf("a read-only tool was refused: %v", err)
+	}
+}

@@ -96,6 +96,10 @@ type StartRequest struct {
 	// a session id and a user's message are host vocabulary, and a Runtime that
 	// understood them would be a Runtime with a session concept.
 	Projections []store.ProjectionFact
+
+	// Restrictions narrow this Run below what its Definition allows. Applied by
+	// intersection, so nothing here can grant anything.
+	Restrictions run.Restrictions
 }
 
 // AdvanceResult is what one Advance accomplished.
@@ -286,13 +290,14 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 	id := r.deps.IDs.NewID("run")
 	traceID := r.deps.IDs.NewID("trace")
 	return r.deps.Store.Create(ctx, store.CreateCommand{
-		ID:          id,
-		Definition:  request.Definition,
-		Graph:       graphRef,
-		Principal:   principal,
-		Budget:      run.Budget{Envelope: envelopeFor(request.Budget, declared.Budget)},
-		Input:       request.Input,
-		Projections: request.Projections,
+		ID:           id,
+		Definition:   request.Definition,
+		Graph:        graphRef,
+		Principal:    principal,
+		Budget:       run.Budget{Envelope: envelopeFor(request.Budget, declared.Budget)},
+		Input:        request.Input,
+		Restrictions: request.Restrictions,
+		Projections:  request.Projections,
 		Pins: run.Pins{
 			PolicyDigest: policies.Digest,
 			QuotaDigest:  quotas.Digest,

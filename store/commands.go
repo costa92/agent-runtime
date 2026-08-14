@@ -84,6 +84,11 @@ type CreateCommand struct {
 	// nothing else to learn it from.
 	Input json.RawMessage
 
+	// Restrictions narrow what this Run may do. Durable because they are
+	// enforced on every later attempt, by workers that never saw the request
+	// that asked for them.
+	Restrictions run.Restrictions
+
 	// Upstreams maps a dependency's plan key to where its output was stored.
 	//
 	// Beside the input rather than merged into it: the input is the host's own
