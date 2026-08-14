@@ -155,11 +155,13 @@ type ProgressPayload struct {
 // succeeded, partial, failed and cancelled are four different things to show a
 // user, and collapsing them to "done" loses the only distinction that matters
 // after the fact.
+//
+// It carries no error text: a Snapshot has none, and the reason a Run failed is
+// already in its events, which the host can read by RunID. A field the engine
+// could only ever fill with an empty string would read, to a projector, as "it
+// failed for no reason".
 type TerminalResultPayload struct {
 	State string `json:"state"`
-	// Error is set for the non-successful states. Its code, not its prose: the
-	// host renders the message, so a wording change is not a schema change.
-	Error string `json:"error,omitempty"`
 }
 
 // ProjectionPayload is what every payload above implements.

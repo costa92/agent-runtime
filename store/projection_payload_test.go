@@ -102,7 +102,7 @@ func TestAnUnidentifiableFactIsRefusedAtConstruction(t *testing.T) {
 // to believe.
 func TestThePayloadCarriesNoEnvelope(t *testing.T) {
 	fact, err := store.NewProjectionFact("run-1",
-		store.TerminalResultPayload{State: "failed", Error: "tool_denied"})
+		store.TerminalResultPayload{State: "failed"})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}

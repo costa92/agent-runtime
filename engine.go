@@ -256,12 +256,36 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 		return err
 	}
 
-	committed, err := s.commitNode(ctx, transition, node.ID, result.OutputRef, response.Used)
+	fact, err := s.nodeFact(node, result)
+	if err != nil {
+		return err
+	}
+
+	committed, err := s.commitNode(ctx, transition, node.ID, result.OutputRef, response.Used, fact)
 	if err != nil {
 		return err
 	}
 	s.snapshot = committed
 	return nil
+}
+
+// nodeFact is what one finished node contributes to the host's transcript.
+//
+// A succeeded node contributes its output; a failed one contributes a progress
+// marker instead. Not both: the outbox key is one sequence per fact and the
+// distinction is what the host is reading for — an output fact for a node that
+// produced nothing would render as an empty assistant message rather than as a
+// step that failed.
+func (s *session) nodeFact(node workflow.Node, result workflow.NodeResult) (store.ProjectionFact, error) {
+	if result.Failed {
+		return store.NewProjectionFact(s.snapshot.ID, store.ProgressPayload{
+			NodeID: node.ID, AgentKey: node.Implementation, Failed: true,
+		})
+	}
+	return store.NewProjectionFact(s.snapshot.ID, store.AssistantMessagePayload{
+		Output: result.Output, OutputRef: result.OutputRef,
+		AgentKey: node.Implementation, NodeID: node.ID,
+	})
 }
 
 // transitionFor folds the graph's node progress into the Run transition.
@@ -319,7 +343,13 @@ func (s *session) finish(ctx context.Context) (AdvanceResult, error) {
 // own the Run. Seal uses Store-authoritative time and refuses an expired lease
 // even when the token and revision still match — a worker judging expiry by its
 // own clock hands ownership away whenever the two disagree.
-func (s *session) commitNode(ctx context.Context, transition run.Transition, node, outputRef string, used run.Limits) (run.Snapshot, error) {
+// Terminal facts are derived here rather than passed in, so no terminal path
+// can forget one: every commit that settles a Run goes through this function,
+// and a caller that had to remember would eventually be a caller that did not.
+func (s *session) commitNode(
+	ctx context.Context, transition run.Transition, node, outputRef string,
+	used run.Limits, facts ...store.ProjectionFact,
+) (run.Snapshot, error) {
 	if _, err := s.runtime.deps.Store.SealForCommit(ctx, store.SealCommand{
 		RunID: s.snapshot.ID, LeaseToken: s.lease.Token,
 	}); err != nil {
@@ -330,12 +360,23 @@ func (s *session) commitNode(ctx context.Context, transition run.Transition, nod
 	if name == "" {
 		name = "run"
 	}
+	if transition.Next.State.Terminal() {
+		terminal, err := store.NewProjectionFact(s.snapshot.ID,
+			store.TerminalResultPayload{State: string(transition.Next.State)})
+		if err != nil {
+			return run.Snapshot{}, err
+		}
+		facts = append(facts, terminal)
+	}
+
 	committed, err := s.runtime.deps.Store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
 		Fence:     s.fence(),
 		NodeName:  name,
 		OutputRef: outputRef,
 		Usage:     used,
-		Commit:    store.CommitContext{Transition: transition, Events: transition.Events},
+		Commit: store.CommitContext{
+			Transition: transition, Events: transition.Events, Projections: facts,
+		},
 	})
 	if err != nil {
 		return run.Snapshot{}, err
