@@ -7,6 +7,5 @@
 // the build if this module's production dependency graph reaches beyond the
 // standard library and a short reviewed allowlist.
 //
-// See docs/roadmap/roadmap-embeddable-agent-runtime.md. Until that roadmap is
-// deleted, this module is under construction and is not a usable SDK.
+// Current capability is documented in docs/architecture/system-architecture.md.
 package agentruntime
