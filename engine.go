@@ -226,6 +226,12 @@ func (s *session) parkForApproval(ctx context.Context) error {
 		return err
 	}
 	approvalID := s.runtime.deps.IDs.NewID("approval")
+	for i := range transition.Events {
+		if transition.Events[i].To == run.StateWaitingApproval {
+			transition.Events[i].ApprovalID = approvalID
+		}
+	}
+	transition.Next.PendingApprovalID = approvalID
 	s.runtime.record(observe.Decision{
 		Name:  observe.EventApprovalRequested,
 		RunID: s.snapshot.ID,

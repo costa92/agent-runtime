@@ -210,7 +210,7 @@ func (s *MemoryStore) Get(_ context.Context, id run.ID) (run.Snapshot, error) {
 	if !ok {
 		return run.Snapshot{}, run.NewError("unknown_run", run.ErrorInvalid, run.RetryNever)
 	}
-	return record.snapshot, nil
+	return withPendingApproval(record.snapshot, record.approvals), nil
 }
 
 func (s *MemoryStore) Events(_ context.Context, query store.EventQuery) (store.EventPage, error) {
@@ -736,6 +736,18 @@ func (s *MemoryStore) commitLocked(record *runRecord, commit store.CommitContext
 	s.events[record.snapshot.ID] = append(s.events[record.snapshot.ID], commit.Events...)
 	s.projections = append(s.projections, assigned...)
 	return record.snapshot, nil
+}
+
+func withPendingApproval(snapshot run.Snapshot, approvals map[run.ID]bool) run.Snapshot {
+	snapshot.PendingApprovalID = ""
+	if snapshot.State != run.StateWaitingApproval {
+		return snapshot
+	}
+	for id := range approvals {
+		snapshot.PendingApprovalID = id
+		break
+	}
+	return snapshot
 }
 
 func lastSequence(events []run.Event) uint64 {

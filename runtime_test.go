@@ -855,3 +855,46 @@ func TestASettledEffectDoesNotParkTheRun(t *testing.T) {
 		t.Fatalf("state = %s", result.Run.State)
 	}
 }
+
+// A parked approval the client cannot name cannot be answered. The id has to
+// live on the Snapshot and on the waiting_approval event, because Inspect
+// and the event stream are the only two reads the confirm UI has.
+func TestARequiredApprovalIsNamedOnTheParkedRun(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(context.Context, agent.Request) (agent.Response, error) {
+		return agent.Response{}, tool.ApprovalRequired
+	}})
+	started := start(t, h)
+
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if result.Run.State != run.StateWaitingApproval {
+		t.Fatalf("state = %s, want waiting_approval", result.Run.State)
+	}
+	inspected, err := h.runtime.Inspect(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if inspected.PendingApprovalID == "" {
+		t.Fatal("Inspect has no pending_approval_id; confirm has nothing to POST")
+	}
+
+	page, err := h.store.Events(t.Context(), store.EventQuery{RunID: started.ID, Limit: 20})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var parked run.Event
+	for _, event := range page.Events {
+		if event.To == run.StateWaitingApproval {
+			parked = event
+			break
+		}
+	}
+	if parked.ApprovalID == "" {
+		t.Fatal("the waiting_approval event has no approval_id")
+	}
+	if parked.ApprovalID != inspected.PendingApprovalID {
+		t.Fatalf("event approval %q != snapshot %q", parked.ApprovalID, inspected.PendingApprovalID)
+	}
+}

@@ -113,6 +113,11 @@ type Snapshot struct {
 	// detect a gap rather than silently missing an event.
 	LastEventSequence uint64 `json:"last_event_sequence"`
 
+	// PendingApprovalID is the undecided approval this Run is parked on.
+	// Empty unless State is waiting_approval. Hydrated from the approvals
+	// table on read: it is not a second copy of that row.
+	PendingApprovalID ID `json:"pending_approval_id,omitempty"`
+
 	// Checkpoint is opaque to the Runtime: it is the executing graph's own
 	// resume state, and the Runtime only carries it.
 	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
@@ -289,7 +294,11 @@ type Event struct {
 	To   State
 	// InvocationID is populated for invocation events.
 	InvocationID ID
-	Reserve      Limits
+	// ApprovalID is populated when the Run enters waiting_approval. The
+	// confirm route is run-scoped and needs this id; a state change
+	// without it cannot be answered.
+	ApprovalID ID
+	Reserve    Limits
 }
 
 // Transition is what Reduce returns: the next snapshot, the events to append
