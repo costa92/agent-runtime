@@ -175,6 +175,14 @@ type ProgressPayload struct {
 // failed for no reason".
 type TerminalResultPayload struct {
 	State string `json:"state"`
+	// UserID is the run's principal, carried so the projector can scope
+	// session-state writes through the host's per-user data scope — the
+	// projection context has no user claims.
+	UserID int64 `json:"user_id,omitempty"`
+	// UsedLLMCalls and UsedTokens are the settled budget at the terminal
+	// commit, carried so the host can fold spend into its session counters.
+	UsedLLMCalls int64 `json:"used_llm_calls,omitempty"`
+	UsedTokens   int64 `json:"used_tokens,omitempty"`
 }
 
 // ProjectionPayload is what every payload above implements.

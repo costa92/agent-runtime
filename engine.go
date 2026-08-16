@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -465,7 +466,13 @@ func (s *session) commitNode(
 		name = "run"
 	}
 	if transition.Next.State.Terminal() {
-		terminal, err := store.NewProjectionFact(store.TerminalResultPayload{State: string(transition.Next.State)})
+		userID, _ := strconv.ParseInt(s.snapshot.Principal.Subject, 10, 64)
+		terminal, err := store.NewProjectionFact(store.TerminalResultPayload{
+			State:         string(transition.Next.State),
+			UserID:        userID,
+			UsedLLMCalls:  int64(transition.Next.Budget.Used.LLMCalls),
+			UsedTokens:    int64(transition.Next.Budget.Used.Tokens),
+		})
 		if err != nil {
 			return run.Snapshot{}, err
 		}
