@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
@@ -360,6 +361,10 @@ func (s *session) begin(ctx context.Context, id run.ID, idempotencyKey string, r
 
 // complete settles the reservation against what was actually used.
 func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, used run.Limits) error {
+	if outcome != run.OutcomeApplied {
+		slog.Warn("session: invocation settled non-applied",
+			"run_id", string(s.snapshot.ID), "invocation", string(id), "outcome", string(outcome))
+	}
 	reserved := s.snapshot.Invocations[id].Reserved
 
 	transition := run.Transition{Next: s.snapshot}

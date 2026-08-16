@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
@@ -282,6 +283,8 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 			// Never retried, whatever the handler suggests: the effect may have
 			// happened and nothing here can tell.
 			mutation.Outcome = run.OutcomeUnknown
+			slog.Error("gateway: handler failed with unknown outcome",
+				"tool", prepared.Spec.Name, "kind", string(run.KindOf(err)), "err", err)
 		case !prepared.Spec.Idempotent && prepared.Spec.SideEffect == policy.SideEffectWrite && !prepared.Spec.FailSafe:
 			// An undeclared-idempotency write that failed is indistinguishable
 			// from one that succeeded and lost its answer, so it reconciles
@@ -289,8 +292,12 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 			// nothing behind, so the handler's own Kind decides the outcome.
 			mutation.Outcome = run.OutcomeUnknown
 			err = run.NewError("tool.unknown_outcome", run.ErrorUnknown, run.RetryReconcile, err)
+			slog.Error("gateway: non-idempotent write failed, parking for resolution",
+				"tool", prepared.Spec.Name, "err", err)
 		default:
 			mutation.Outcome = run.OutcomeNotApplied
+			slog.Warn("gateway: tool call failed (not applied)",
+				"tool", prepared.Spec.Name, "kind", string(run.KindOf(err)), "err", err)
 		}
 		return mutation, err
 	}

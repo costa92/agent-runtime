@@ -107,8 +107,12 @@ type UserTurnPayload struct {
 	// the Run's own creation, which is the moment — and the only moment — the
 	// binding between a Run and a session exists in one place. Every later fact
 	// for that Run is resolved through this one.
-	SessionID int64  `json:"session_id"`
-	Text      string `json:"text"`
+	SessionID int64 `json:"session_id"`
+	// UserID is the session owner, carried so the projector can scope
+	// session-state writes (like the first-turn fallback title) through the
+	// host's per-user data scope — the projection context has no user claims.
+	UserID int64  `json:"user_id,omitempty"`
+	Text   string `json:"text"`
 }
 
 // AssistantMessagePayload is one agent output.
