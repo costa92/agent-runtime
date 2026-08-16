@@ -297,7 +297,7 @@ func (s *session) park(ctx context.Context, kind run.CommandKind) error {
 	if err != nil {
 		return err
 	}
-	committed, err := s.commitNode(ctx, transition, "", "", run.Limits{})
+	committed, err := s.commitNode(ctx, transition, "", "", run.Limits{}, nil)
 	if err != nil {
 		return err
 	}

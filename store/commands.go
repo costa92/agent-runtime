@@ -429,8 +429,12 @@ type CommitNodeResultCommand struct {
 	NodeName  string
 	OutputRef string
 	Usage     run.Limits
-	Budget    BudgetSettlement
-	Commit    CommitContext
+	// ModelUsage is the per-profile consumption detail behind Usage.Tokens.
+	// The Store records it verbatim for the host's cost ledger; it plays no
+	// part in budget settlement.
+	ModelUsage []run.ModelUsage
+	Budget     BudgetSettlement
+	Commit     CommitContext
 }
 
 func (c CommitNodeResultCommand) Validate() error {

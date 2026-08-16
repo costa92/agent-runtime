@@ -138,6 +138,10 @@ type Chunk struct {
 
 // Response is a finished call.
 type Response struct {
+	// Model echoes the profile this call was billed to, so a host can price
+	// the usage without threading the request alongside the response. Filled
+	// by the governed Model port; an agent never sets it.
+	Model        ModelRef
 	Message      Message
 	ToolCalls    []ToolCall
 	Usage        Usage

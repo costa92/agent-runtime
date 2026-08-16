@@ -84,6 +84,10 @@ type Response struct {
 	// Used is what the agent actually consumed, for settlement against the
 	// reservation the Runtime made before calling.
 	Used run.Limits
+	// ModelUsage breaks Used.Tokens down per model profile, so the host can
+	// price the spend. Advisory: budget settlement reads Used and never this,
+	// so a missing or partial breakdown degrades the cost ledger, not the run.
+	ModelUsage []run.ModelUsage
 }
 
 // Agent is one unit of work. It is deliberately a single method: everything

@@ -212,7 +212,7 @@ func (s *session) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	committed, err := s.commitNode(ctx, transition, "", "", run.Limits{})
+	committed, err := s.commitNode(ctx, transition, "", "", run.Limits{}, nil)
 	if err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 		return err
 	}
 
-	committed, err := s.commitNode(ctx, transition, node.ID, result.OutputRef, response.Used, fact)
+	committed, err := s.commitNode(ctx, transition, node.ID, result.OutputRef, response.Used, response.ModelUsage, fact)
 	if err != nil {
 		return err
 	}
@@ -402,7 +402,7 @@ func (s *session) finish(ctx context.Context) (AdvanceResult, error) {
 	if err != nil {
 		return AdvanceResult{Run: s.snapshot}, err
 	}
-	committed, err := s.commitNode(ctx, transition, "", "", run.Limits{})
+	committed, err := s.commitNode(ctx, transition, "", "", run.Limits{}, nil)
 	if err != nil {
 		return AdvanceResult{Run: s.snapshot}, err
 	}
@@ -432,7 +432,7 @@ func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		committed, err := s.commitNode(ctx, transition, "", "", run.Limits{})
+		committed, err := s.commitNode(ctx, transition, "", "", run.Limits{}, nil)
 		if err != nil {
 			return err
 		}
@@ -453,7 +453,7 @@ func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
 // and a caller that had to remember would eventually be a caller that did not.
 func (s *session) commitNode(
 	ctx context.Context, transition run.Transition, node, outputRef string,
-	used run.Limits, facts ...store.ProjectionFact,
+	used run.Limits, modelUsage []run.ModelUsage, facts ...store.ProjectionFact,
 ) (run.Snapshot, error) {
 	if _, err := s.runtime.deps.Store.SealForCommit(ctx, store.SealCommand{
 		RunID: s.snapshot.ID, LeaseToken: s.lease.Token,
@@ -480,10 +480,11 @@ func (s *session) commitNode(
 	}
 
 	committed, err := s.runtime.deps.Store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
-		Fence:     s.fence(),
-		NodeName:  name,
-		OutputRef: outputRef,
-		Usage:     used,
+		Fence:      s.fence(),
+		NodeName:   name,
+		OutputRef:  outputRef,
+		Usage:      used,
+		ModelUsage: modelUsage,
 		Commit: store.CommitContext{
 			Transition: transition, Events: transition.Events, Projections: facts,
 		},

@@ -108,11 +108,15 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	// and a ledger counting only successes understates exactly the spend it
 	// exists to bound.
 	var used run.Limits
+	var usage llm.Usage
 	for _, attempt := range response.Attempts {
+		usage.InputTokens += attempt.Usage.InputTokens
+		usage.OutputTokens += attempt.Usage.OutputTokens
 		used = used.Add(attempt.Usage.Limits())
 	}
 	if len(response.Attempts) == 0 {
 		used = response.Usage.Limits()
+		usage = response.Usage
 	}
 
 	outcome := run.OutcomeApplied
@@ -125,6 +129,11 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	if err := s.complete(ctx, invocationID, outcome, used); err != nil {
 		return llm.Response{}, err
 	}
+	// The response handed to the agent carries the settled totals, so an
+	// agent's per-profile report and the Runtime's settlement count the same
+	// tokens even when the client left Usage empty and reported only attempts.
+	response.Usage = usage
+	response.Model = request.Model
 	return response, callErr
 }
 

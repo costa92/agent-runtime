@@ -80,6 +80,9 @@ type MemoryStore struct {
 	// syntheses enforces at-most-once: a second synthesis for one root is a
 	// conflict, not an overwrite.
 	syntheses map[run.ID]bool
+	// nodeModelUsage records every CommitNodeResult's per-profile detail so
+	// tests can assert the engine passed what the agent reported.
+	nodeModelUsage map[run.ID][]run.ModelUsage
 	// epochs is the root cancellation epoch, held on the root so a child does
 	// not have to be re-read to learn the tree was cancelled.
 	epochs map[run.ID]uint64
@@ -514,7 +517,24 @@ func (s *MemoryStore) CommitNodeResult(_ context.Context, command store.CommitNo
 	if err := s.settleLocked(command.Budget, run.OutcomeApplied); err != nil {
 		return run.Snapshot{}, err
 	}
+	if len(command.ModelUsage) > 0 {
+		if s.nodeModelUsage == nil {
+			s.nodeModelUsage = make(map[run.ID][]run.ModelUsage)
+		}
+		for _, usage := range command.ModelUsage {
+			s.nodeModelUsage[record.snapshot.ID] = run.MergeModelUsage(
+				s.nodeModelUsage[record.snapshot.ID], usage.Profile, usage.InputTokens, usage.OutputTokens)
+		}
+	}
 	return s.commitLocked(record, command.Commit)
+}
+
+// NodeModelUsage returns the per-profile detail committed for a Run, so tests
+// can assert the engine forwarded what the agent reported.
+func (s *MemoryStore) NodeModelUsage(id run.ID) []run.ModelUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nodeModelUsage[id]
 }
 
 func (s *MemoryStore) CommitSynthesis(_ context.Context, command store.CommitSynthesisCommand) (run.Snapshot, error) {

@@ -1297,3 +1297,55 @@ func TestConfirmingAWriteDoesNotParkTheRunOverItsFinishedModelCall(t *testing.T)
 		}
 	}
 }
+
+// The per-profile consumption detail the agent reports must reach the Store
+// verbatim: it is the host's only input for pricing v2 spend, and the engine
+// is the only path that carries it out of the agent.
+func TestNodeModelUsageReachesTheStore(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		var modelUsage []run.ModelUsage
+		for range 2 {
+			response, err := request.Ports.Model(ctx, llm.Request{MaxTokens: 100})
+			if err != nil {
+				return agent.Response{}, err
+			}
+			modelUsage = run.MergeModelUsage(modelUsage,
+				response.Model.Profile, response.Usage.InputTokens, response.Usage.OutputTokens)
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`), ModelUsage: modelUsage}, nil
+	}}, withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Models = scriptedModels{}
+	}))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	usage := h.store.NodeModelUsage(started.ID)
+	if len(usage) != 1 {
+		t.Fatalf("model usage lines = %+v, want one line for the pinned profile", usage)
+	}
+	if usage[0].Profile != "fast" {
+		t.Fatalf("profile = %q, want the pinned profile %q", usage[0].Profile, "fast")
+	}
+	if usage[0].InputTokens != 20 || usage[0].OutputTokens != 10 {
+		t.Fatalf("usage = %+v, want input 20 output 10 (two scripted calls)", usage[0])
+	}
+}
+
+// A node that reports no model detail must commit nothing: an empty profile
+// line would reach the host as a zero-priced slice and read like free spend.
+func TestEmptyModelUsageCommitsNoRows(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}})
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if usage := h.store.NodeModelUsage(started.ID); len(usage) != 0 {
+		t.Fatalf("usage = %+v, want none", usage)
+	}
+}
