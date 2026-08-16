@@ -53,6 +53,10 @@ type Message struct {
 	Content string `json:"content"`
 	// ToolCallID is set on a RoleTool message, tying the result to the call.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// ToolCalls is set on the assistant message that asked for tools. It is the
+	// pair of RoleTool's ToolCallID: a result without its call in the request
+	// is rejected by providers, so the call must survive into the next round.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // ToolDef is a tool as the model sees it: a name, a description and a JSON

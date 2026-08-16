@@ -41,6 +41,16 @@ type Request struct {
 	// budgeted and recorded against *this* Run — a port captured at
 	// construction would outlive the Run it was governed for.
 	Ports Ports
+	// Granted is a write the human already approved. The implementation
+	// applies it rather than asking the model whether to call it again —
+	// asking again re-parks the Run and the user sees no follow-up.
+	Granted *GrantedTool
+}
+
+// GrantedTool is one approved side effect waiting to be performed.
+type GrantedTool struct {
+	Name      string
+	Arguments json.RawMessage
 }
 
 // Ports is the governed effect surface.

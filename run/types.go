@@ -244,6 +244,11 @@ type Command struct {
 	Outcome Outcome
 	// IdempotencyKey is recorded with a new Invocation.
 	IdempotencyKey string
+	// Checkpoint replaces the Run's checkpoint on resume. Used by the
+	// approval resolver to mark a refused hold as denied before the Run
+	// continues; Reduce is the only writer of state, so the marker travels
+	// through the command rather than around it.
+	Checkpoint json.RawMessage
 }
 
 // EffectKind is what the Runtime asks the caller to actually do. Reduce is

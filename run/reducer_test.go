@@ -56,6 +56,23 @@ func TestReduceStateTransitions(t *testing.T) {
 	}
 }
 
+// Resuming clears the pending approval. The Run was parked on one decision and
+// resumed because that decision was made; the ID must not linger into the
+// resumed Run, where the granted-write path keys on it being empty.
+func TestResumeClearsPendingApproval(t *testing.T) {
+	snapshot := Snapshot{ID: "run-1", State: StateWaitingApproval, PendingApprovalID: "ap-1"}
+	got, err := Reduce(snapshot, Command{Kind: CommandResume})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if got.Next.State != StateRunning {
+		t.Fatalf("state=%s want=running", got.Next.State)
+	}
+	if got.Next.PendingApprovalID != "" {
+		t.Fatalf("pending_approval_id=%q; an approval the human already decided is still marked pending", got.Next.PendingApprovalID)
+	}
+}
+
 // A terminal Run is a fact, not a state that happens to have no outgoing edges.
 // Nothing reopens it — not a resume, not a retry, not another terminal command,
 // and not a cancellation that arrived after the Run had already finished.

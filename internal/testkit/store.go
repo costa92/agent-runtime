@@ -12,6 +12,7 @@ import (
 	"maps"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
@@ -61,6 +62,9 @@ type runRecord struct {
 type MemoryStore struct {
 	mu    sync.Mutex
 	clock *Clock
+	// Renews counts keep-alive extensions so a long Advance can be shown to
+	// hold the lease rather than losing it to expiry.
+	Renews atomic.Int64
 
 	runs        map[run.ID]*runRecord
 	events      map[run.ID][]run.Event
@@ -311,15 +315,14 @@ func (s *MemoryStore) Renew(_ context.Context, command store.RenewCommand) (stor
 	if err := s.ownsLocked(record, command.LeaseToken); err != nil {
 		return store.Lease{}, err
 	}
-	if record.sealed {
-		// A sealed lease is on its way to committing. Renewing it would
-		// reopen the window a takeover could slip into.
-		return store.Lease{}, run.NewError("lease_sealed", run.ErrorConflict, run.RetryNever)
-	}
+	// Sealed only blocks takeover (Claim). The owner must still be able to
+	// extend the deadline: start() seals before the node runs, and a
+	// picture-book render outlives the original 30s lease.
 	if s.cancelledLocked(record) {
 		return store.Lease{}, run.NewError("root_cancelled", run.ErrorInterrupted, run.RetryNever)
 	}
 	record.lease.Deadline = s.clock.Now().Add(command.LeaseFor)
+	s.Renews.Add(1)
 	return *record.lease, nil
 }
 
@@ -379,7 +382,17 @@ func (s *MemoryStore) CompleteInvocation(_ context.Context, command store.Comple
 	if err := s.settleLocked(command.Budget, command.Result.Outcome); err != nil {
 		return run.Snapshot{}, err
 	}
-	return s.commitLocked(record, command.Commit)
+	commit := command.Commit
+	// The same contract as the postgres implementation: a completed invocation
+	// reads back as its result outcome, whatever the transition carried. The
+	// engine now carries it too, but a transition that forgets must not make a
+	// completed call read as in_flight — that is exactly what an approval-resumed
+	// Run mistakes for a crashed effect and parks itself over.
+	if existing, ok := commit.Transition.Next.Invocations[command.Result.ID]; ok {
+		existing.Outcome = command.Result.Outcome
+		commit.Transition.Next.Invocations[command.Result.ID] = existing
+	}
+	return s.commitLocked(record, commit)
 }
 
 func (s *MemoryStore) EnterApproval(_ context.Context, command store.EnterApprovalCommand) (run.Snapshot, error) {
@@ -545,7 +558,14 @@ func (s *MemoryStore) CommitMemoryMutation(_ context.Context, command store.Comm
 	if err := s.settleLocked(command.Budget, command.Invocation.Outcome); err != nil {
 		return run.Snapshot{}, err
 	}
-	return s.commitLocked(record, command.Commit)
+	commit := command.Commit
+	// Same contract as CompleteInvocation: the memory write's outcome is what
+	// reads back, not whatever the transition carried.
+	if existing, ok := commit.Transition.Next.Invocations[command.Invocation.ID]; ok {
+		existing.Outcome = command.Invocation.Outcome
+		commit.Transition.Next.Invocations[command.Invocation.ID] = existing
+	}
+	return s.commitLocked(record, commit)
 }
 
 func (s *MemoryStore) CancelTree(_ context.Context, command store.CancelTreeCommand) (run.Snapshot, error) {

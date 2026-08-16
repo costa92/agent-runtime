@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
+	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/llm"
 	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"github.com/kart-io/wechat-account/agent-runtime/observe"
@@ -29,6 +30,23 @@ type governedPorts struct {
 
 var _ agent.Ports = (*governedPorts)(nil)
 
+func definitionToolDefs(refs []definition.ToolRef, gateway *tool.Gateway) []llm.ToolDef {
+	if gateway == nil || len(refs) == 0 {
+		return nil
+	}
+	out := make([]llm.ToolDef, 0, len(refs))
+	for _, ref := range refs {
+		spec, ok := gateway.LookupSpec(ref.Key)
+		if !ok {
+			continue
+		}
+		out = append(out, llm.ToolDef{
+			Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters,
+		})
+	}
+	return out
+}
+
 // Model runs one model call inside the full governance path.
 //
 // Reserve, commit the begin fact, call, settle. The order is the point: a call
@@ -52,6 +70,9 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	capabilities, err := client.Capabilities(ctx, request.Model)
 	if err != nil {
 		return llm.Response{}, err
+	}
+	if len(request.Tools) == 0 {
+		request.Tools = definitionToolDefs(s.declared.Tools, s.runtime.deps.Tools)
 	}
 	if len(request.Tools) > 0 && !capabilities.Tools {
 		// Asked rather than assumed, and degraded rather than failed: an engine
@@ -114,6 +135,19 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("tool")
+
+	// A denied hold reports the refusal on every request for that tool, rather
+	// than asking for approval again. The Run resumed specifically because a
+	// human said no; re-asking turns the decision into a loop. The error is a
+	// plain denial — not approval_required — so an agent that can answer
+	// without the tool does, instead of parking a second time.
+	if s.approvalHold != nil && s.approvalHold.Denied && s.approvalHold.Tool == name &&
+		s.snapshot.PendingApprovalID == "" && s.snapshot.State == run.StateRunning {
+		return nil, run.NewError("approval_denied", run.ErrorDenied, run.RetryNever)
+	}
+
+	granted := s.approvalHold != nil && !s.approvalHold.Denied && s.approvalHold.Tool == name &&
+		s.snapshot.PendingApprovalID == "" && s.snapshot.State == run.StateRunning
 	prepared, err := s.runtime.deps.Tools.Prepare(ctx, tool.InvocationRequest{
 		InvocationID:   invocationID,
 		Tool:           name,
@@ -129,8 +163,12 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 		// keys the Definition declared.
 		Allowlist:       s.snapshot.Restrictions.Narrow(declaredToolKeys(s)),
 		DenySideEffects: s.snapshot.Restrictions.DenySideEffects,
+		Granted:         granted,
 	})
 	if err != nil {
+		if tool.IsApprovalRequired(err) {
+			s.approvalHold = &approvalHold{Tool: name, Arguments: arguments}
+		}
 		p.recordPolicy(name, err)
 		return nil, err
 	}
@@ -327,6 +365,16 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 	transition := run.Transition{Next: s.snapshot}
 	transition.Next.Revision = s.snapshot.Revision + 1
 	transition.Next.Budget = s.snapshot.Budget.Settle(reserved, used, outcome != run.OutcomeUnknown)
+	// The outcome is part of the transition, not a side effect of the store's
+	// UPDATE. The snapshot is what every later decision reads — most
+	// importantly parkUnclassifiedEffects, which parks a Run the moment it
+	// sees an in_flight invocation after an approval resumes it. A completed
+	// call left as in_flight here reads exactly like a worker that died
+	// mid-effect, and the Run pays for that confusion with a second,
+	// unresolvable parking.
+	existing := transition.Next.Invocations[id]
+	existing.Outcome = outcome
+	transition.Next.Invocations[id] = existing
 
 	settlement := store.BudgetSettlement{ReservationID: id, Charged: used, Release: true}
 	if outcome == run.OutcomeUnknown {

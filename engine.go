@@ -3,7 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -33,6 +33,9 @@ type session struct {
 	policies policy.Snapshot
 	quotas   *quota.Enforcer
 	scope    quota.Scope
+	// approvalHold is the write parked for a human. Loaded from Checkpoint
+	// on resume so confirm can perform that effect.
+	approvalHold *approvalHold
 }
 
 // AdvanceNext is the Worker entry point.
@@ -178,13 +181,14 @@ func (r *runtime) newSession(ctx context.Context, claimed store.ClaimedRun) (*se
 	}
 
 	return &session{
-		runtime:  r,
-		lease:    claimed.Lease,
-		snapshot: snapshot,
-		declared: declared,
-		graph:    graph,
-		policies: policies,
-		quotas:   enforcer,
+		runtime:      r,
+		lease:        claimed.Lease,
+		snapshot:     snapshot,
+		declared:     declared,
+		graph:        graph,
+		policies:     policies,
+		quotas:       enforcer,
+		approvalHold: loadApprovalHold(snapshot.Checkpoint),
 		scope: quota.Scope{
 			Tenant: snapshot.Principal.Tenant, Principal: snapshot.Principal.Subject,
 		},
@@ -216,8 +220,7 @@ func (s *session) start(ctx context.Context) error {
 }
 
 func approvalRequired(err error) bool {
-	var runtimeErr *run.Error
-	return errors.As(err, &runtimeErr) && runtimeErr.Code == tool.ApprovalRequired.Code
+	return tool.IsApprovalRequired(err)
 }
 
 func (s *session) parkForApproval(ctx context.Context) error {
@@ -232,12 +235,15 @@ func (s *session) parkForApproval(ctx context.Context) error {
 		}
 	}
 	transition.Next.PendingApprovalID = approvalID
+	if s.approvalHold != nil {
+		transition.Next.Checkpoint = encodeApprovalHold(*s.approvalHold)
+	}
 	s.runtime.record(observe.Decision{
 		Name:  observe.EventApprovalRequested,
 		RunID: s.snapshot.ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrApprovalID, string(approvalID)),
-			observe.Attr(observe.AttrTool, ""),
+			observe.Attr(observe.AttrTool, holdToolName(s.approvalHold)),
 			observe.Attr(observe.AttrPolicyName, "require_approval"),
 		},
 	})
@@ -298,6 +304,12 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	result := workflow.NodeResult{NodeID: node.ID, Output: response.Output}
 	if executeErr != nil {
 		result.Failed = true
+		slog.Error("agent node failed",
+			"run_id", string(s.snapshot.ID),
+			"node_id", node.ID,
+			"agent", node.Implementation,
+			"kind", string(run.KindOf(executeErr)),
+			"err", executeErr)
 	} else {
 		result.OutputRef = string(s.runtime.deps.IDs.NewID("output"))
 	}
@@ -496,7 +508,7 @@ func (s *session) request(node workflow.Node, ports *governedPorts) agent.Reques
 			ToolCalls: remaining.ToolCalls - committed.ToolCalls,
 		}
 	}
-	return agent.Request{
+	req := agent.Request{
 		RunID:     s.snapshot.ID,
 		Principal: s.snapshot.Principal,
 		Prompt:    s.declared.Prompt,
@@ -505,6 +517,15 @@ func (s *session) request(node workflow.Node, ports *governedPorts) agent.Reques
 		Remaining: remaining,
 		Ports:     ports,
 	}
+	if s.approvalHold != nil && !s.approvalHold.Denied && s.snapshot.PendingApprovalID == "" && s.snapshot.State == run.StateRunning {
+		// Granted only ever carries a confirmed write. A denied hold resumes
+		// the Run so the agent can answer, but the refused effect must not be
+		// performed — not even silently, as a granted write.
+		req.Granted = &agent.GrantedTool{
+			Name: s.approvalHold.Tool, Arguments: s.approvalHold.Arguments,
+		}
+	}
+	return req
 }
 
 // input is what one node executes on.

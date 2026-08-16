@@ -43,7 +43,21 @@ func Reduce(snapshot Snapshot, command Command) (Transition, error) {
 		if !snapshot.State.Waiting() {
 			return refuse(NewError("not_waiting", ErrorInvalid, RetryNever))
 		}
-		return transition(snapshot, StateRunning), nil
+		next := snapshot
+		next.State = StateRunning
+		// The Run was parked on one approval and resumed because that approval
+		// was decided. The ID must not linger into the resumed Run: a consumer
+		// keying on "no pending approval" (the granted-write path) would never
+		// see the decision it just made.
+		next.PendingApprovalID = ""
+		// A resume may carry a replacement checkpoint — the approval resolver
+		// uses it to mark a refused hold as denied. It is the only command that
+		// rewrites the checkpoint, because every other resume is exactly the
+		// state it parked in.
+		if command.Checkpoint != nil {
+			next.Checkpoint = command.Checkpoint
+		}
+		return emit(advance(snapshot, next), snapshot, stateEvent(snapshot, StateRunning)), nil
 
 	case CommandRetry:
 		if snapshot.State != StateWaitingRetry {

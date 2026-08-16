@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -65,6 +66,16 @@ type SchemaValidator interface {
 // gets forgotten.
 var ApprovalRequired = run.NewError("tool.approval_required", run.ErrorInterrupted, run.RetryAfterInput)
 
+// IsApprovalRequired reports whether err is the park-for-a-human signal.
+//
+// The assistant loop must return this unwrapped so runNode can park. Treating
+// it as a refused tool lets the model take a second turn, and that second
+// turn is what failed the picture-book session with no reply.
+func IsApprovalRequired(err error) bool {
+	var runtimeErr *run.Error
+	return errors.As(err, &runtimeErr) && runtimeErr.Code == ApprovalRequired.Code
+}
+
 // Gateway is the one path to a tool handler.
 type Gateway struct {
 	registry   *Registry
@@ -95,6 +106,19 @@ func WithStrategies(strategies ...policy.Strategy) Option {
 
 func WithMaxResultBytes(limit int) Option {
 	return func(g *Gateway) { g.defaultMaxResultBytes = limit }
+}
+
+// LookupSpec returns a registered declaration. Used to show the model the
+// tools this Run was published with.
+func (g *Gateway) LookupSpec(name string) (Spec, bool) {
+	if g == nil || g.registry == nil {
+		return Spec{}, false
+	}
+	spec, _, err := g.resolve(context.Background(), name)
+	if err != nil {
+		return Spec{}, false
+	}
+	return spec, true
 }
 
 func NewGateway(registry *Registry, authorizer Authorizer, options ...Option) *Gateway {
@@ -185,7 +209,7 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 	reserve := run.Limits{ToolCalls: 1}
 	g.observe(StageBudget, spec, nil)
 
-	if explanation.Decision == policy.DecisionRequireApproval {
+	if explanation.Decision == policy.DecisionRequireApproval && !request.Granted {
 		err = ApprovalRequired
 	}
 	g.observe(StageApproval, spec, err)
@@ -258,10 +282,11 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 			// Never retried, whatever the handler suggests: the effect may have
 			// happened and nothing here can tell.
 			mutation.Outcome = run.OutcomeUnknown
-		case !prepared.Spec.Idempotent && prepared.Spec.SideEffect == policy.SideEffectWrite:
+		case !prepared.Spec.Idempotent && prepared.Spec.SideEffect == policy.SideEffectWrite && !prepared.Spec.FailSafe:
 			// An undeclared-idempotency write that failed is indistinguishable
 			// from one that succeeded and lost its answer, so it reconciles
-			// rather than retries.
+			// rather than retries. FailSafe tools opt out: a failed call left
+			// nothing behind, so the handler's own Kind decides the outcome.
 			mutation.Outcome = run.OutcomeUnknown
 			err = run.NewError("tool.unknown_outcome", run.ErrorUnknown, run.RetryReconcile, err)
 		default:

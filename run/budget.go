@@ -61,15 +61,25 @@ func (b Budget) Committed() Limits {
 
 // Affords reports whether want fits in what the envelope has left.
 //
-// A zero envelope means unlimited rather than "nothing allowed". A Runtime
-// embedded with no budget configured has to run; a Runtime that refuses every
-// call until someone sets three numbers is broken out of the box, and the
-// mistake is loud either way — an unbounded Run shows up in the ledger.
+// A zero component means unlimited rather than "nothing allowed". Hosts
+// publish LLM and tool ceilings without a token ceiling; treating Tokens:0
+// as a hard cap of zero refuses every effect after the first settled usage.
+// A Runtime embedded with no budget configured has to run; a Runtime that
+// refuses every call until someone sets three numbers is broken out of the
+// box, and the mistake is loud either way — an unbounded Run shows up in
+// the ledger.
 func (b Budget) Affords(want Limits) bool {
 	if b.Envelope.Zero() {
 		return true
 	}
-	return !b.Envelope.ExceededBy(b.Committed().Add(want))
+	committed := b.Committed().Add(want)
+	return !exceedsCapped(b.Envelope.LLMCalls, committed.LLMCalls) &&
+		!exceedsCapped(b.Envelope.Tokens, committed.Tokens) &&
+		!exceedsCapped(b.Envelope.ToolCalls, committed.ToolCalls)
+}
+
+func exceedsCapped(ceiling, used int) bool {
+	return ceiling > 0 && used > ceiling
 }
 
 // Settle closes a reservation: the charge moves into Used, and the unspent

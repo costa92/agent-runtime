@@ -37,6 +37,12 @@ type Spec struct {
 	// is safe. Its absence is what forces an unknown result into
 	// reconciliation rather than a retry.
 	Idempotent bool `json:"idempotent,omitempty"`
+	// FailSafe declares that a failed call leaves no persistent effect behind:
+	// the tool only starts work and a failure means nothing was started, so the
+	// handler's own error Kind decides the outcome instead of parking the Run
+	// in waiting_resolution. Meant for launch-style write tools whose handler
+	// already distinguishes "not applied" from "unknown".
+	FailSafe bool `json:"fail_safe,omitempty"`
 	// MaxResultBytes caps what the tool may return into a prompt. Zero means
 	// the gateway's default; an uncapped result is an uncapped prompt.
 	MaxResultBytes int `json:"max_result_bytes,omitempty"`
@@ -104,6 +110,9 @@ type InvocationRequest struct {
 	// refused before policy is even consulted: the definition is what the Run
 	// was published to do.
 	Allowlist []string
+	// Granted skips the approval stage: a human already said yes to this
+	// exact effect. Schema, allowlist, authorization and quota still run.
+	Granted bool
 	// DenySideEffects refuses any tool that changes state the Runtime cannot
 	// roll back, whatever the policy decides about it.
 	//

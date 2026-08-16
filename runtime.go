@@ -360,9 +360,14 @@ func (r *runtime) ResolveApproval(ctx context.Context, decision ApprovalDecision
 
 	command := run.Command{Kind: run.CommandResume}
 	if !decision.Approved {
-		// A refused approval is a terminal answer, not a resume: the effect the
-		// Run was parked on is the one thing it may not now perform.
-		command = run.Command{Kind: run.CommandFail}
+		// A refusal is a refusal of one effect, not of the Run. Resuming with
+		// the hold marked denied keeps the refused write from ever being
+		// granted, while letting the agent answer without it — an assistant
+		// whose picture-book request was refused still owes the user a reply.
+		if hold := loadApprovalHold(snapshot.Checkpoint); hold != nil {
+			hold.Denied = true
+			command = run.Command{Kind: run.CommandResume, Checkpoint: encodeApprovalHold(*hold)}
+		}
 	}
 	transition, err := run.Reduce(snapshot, command)
 	if err != nil {

@@ -372,3 +372,45 @@ func TestGatewayResolvesABindingPublishedAfterFreeze(t *testing.T) {
 		t.Fatalf("calls=%d", handler.Calls())
 	}
 }
+
+// A FailSafe write tool declares that a failed call left nothing behind, so
+// the handler's own error Kind decides the outcome: an ErrorRetryable failure
+// is not_applied and may be retried instead of parking the Run.
+func TestFailSafeWriteToolFailureRespectsHandlerKind(t *testing.T) {
+	spec := testkit.PublishSpec()
+	spec.FailSafe = true
+	handler := testkit.ToolReturning(run.NewError("publish.timeout", run.ErrorRetryable, run.RetryBackoff))
+	gateway := gatewayWith(t, spec, handler)
+	ctx := context.Background()
+
+	prepared, err := gateway.Prepare(ctx, publishRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation, err := gateway.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
+	if run.KindOf(err) != run.ErrorRetryable {
+		t.Fatalf("kind=%s want=retryable; the handler's Kind was discarded", run.KindOf(err))
+	}
+	if mutation.Outcome != run.OutcomeNotApplied {
+		t.Fatalf("outcome=%s want=not_applied", mutation.Outcome)
+	}
+}
+
+// FailSafe does not weaken the unknown guard: an ErrorUnknown failure still
+// means the effect may have happened, and that still parks for resolution.
+func TestFailSafeWriteToolUnknownFailureStillUnknown(t *testing.T) {
+	spec := testkit.PublishSpec()
+	spec.FailSafe = true
+	handler := testkit.ToolReturning(run.NewError("publish.unknown", run.ErrorUnknown, run.RetryNever))
+	gateway := gatewayWith(t, spec, handler)
+	ctx := context.Background()
+
+	prepared, err := gateway.Prepare(ctx, publishRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation, _ := gateway.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
+	if mutation.Outcome != run.OutcomeUnknown {
+		t.Fatalf("outcome=%s want=unknown", mutation.Outcome)
+	}
+}

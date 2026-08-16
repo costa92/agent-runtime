@@ -188,7 +188,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
-	t.Run("SealClosesTheRenewWindow", func(t *testing.T) {
+	t.Run("SealedLeaseRenewsForItsOwner", func(t *testing.T) {
 		harness := newHarness(t)
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
@@ -198,10 +198,29 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}); err != nil {
 			t.Fatalf("seal: %v", err)
 		}
-		if _, err := harness.Store.Renew(ctx, RenewCommand{
+		// Sealing marks a commit window; it does not stop the owner holding
+		// the Run from extending the deadline. The engine seals on every node
+		// commit and re-claims before the next node, and that re-claim is not
+		// always granted, so a long-running node renews a lease that is
+		// already sealed. Refusing it would cancel a render that outlives the
+		// original lease.
+		harness.Advance(30 * time.Second)
+		renewed, err := harness.Store.Renew(ctx, RenewCommand{
 			RunID: "run-1", LeaseToken: claimed.Lease.Token, LeaseFor: time.Minute,
-		}); run.KindOf(err) != run.ErrorConflict {
-			t.Errorf("a sealed lease could still be renewed: %v", err)
+		})
+		if err != nil {
+			t.Fatalf("the sealed owner could not renew: %v", err)
+		}
+		if !renewed.Deadline.After(claimed.Lease.Deadline) {
+			t.Fatalf("renewed deadline %v did not extend %v", renewed.Deadline, claimed.Lease.Deadline)
+		}
+
+		// The seal still lets the lease die on the Store's clock. An expired
+		// sealed lease is claimable exactly like an expired unsealed one: a
+		// worker that stops renewing gives up ownership, sealed or not.
+		harness.Advance(time.Hour)
+		if _, _, err := harness.Store.Claim(ctx, ClaimCommand{RunID: "run-1", Owner: "worker-2", LeaseFor: time.Minute}); err != nil {
+			t.Fatalf("takeover of an expired sealed lease: %v", err)
 		}
 	})
 
@@ -462,6 +481,71 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("ParkingAnInvocationThroughTheCommitIsDurable", func(t *testing.T) {
+		// The engine parks via CommitNodeResult, not CompleteInvocation: a
+		// process that died mid-effect has no result to complete, only a
+		// decision to record. That decision must be as durable as the event
+		// that announces it — if the row still reads in_flight after the
+		// commit, every later resolution is refused as a conflict against the
+		// resurrected in-flight invocation, and waiting_resolution has no exit.
+		harness := newHarness(t)
+		ctx := context.Background()
+		claimed := mustStart(t, harness, "run-1")
+
+		began, err := run.Reduce(claimed.Snapshot, run.Command{
+			Kind: run.CommandInvokeTool, Reserve: run.Limits{ToolCalls: 1},
+			InvocationID: "inv-1",
+		})
+		if err != nil {
+			t.Fatalf("reduce: %v", err)
+		}
+		snapshot, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
+			Invocation: InvocationBegin{ID: "inv-1", Reservation: BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
+			Commit:     CommitContext{Transition: began, Events: began.Events},
+		})
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+
+		parked, err := run.Reduce(snapshot, run.Command{Kind: run.CommandRecordUnknown, InvocationID: "inv-1"})
+		if err != nil {
+			t.Fatalf("reduce: %v", err)
+		}
+		if _, err := harness.Store.CommitNodeResult(ctx, CommitNodeResultCommand{
+			Fence: fenceFor(claimed, snapshot.Revision), NodeName: "node-1",
+			Commit: CommitContext{Transition: parked, Events: parked.Events},
+		}); err != nil {
+			t.Fatalf("commit park: %v", err)
+		}
+
+		readBack, err := harness.Store.Get(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got := readBack.Invocations["inv-1"].Outcome; got != run.OutcomeUnknown {
+			t.Fatalf("outcome after the commit = %s, want unknown; the park was not durable", got)
+		}
+
+		// The parked invocation must now be resolvable, which is the whole
+		// point of parking. The first decision is what the ledger acts on, and
+		// a store that still shows in_flight refuses it as a conflict.
+		resolved, err := run.Reduce(readBack, run.Command{
+			Kind: run.CommandResolveInvocation, InvocationID: "inv-1", Outcome: run.OutcomeApplied,
+		})
+		if err != nil {
+			t.Fatalf("reduce resolve: %v", err)
+		}
+		if _, err := harness.Store.ResolveInvocation(ctx, ResolveInvocationCommand{
+			Fence:    ResolutionFence{RunID: "run-1", ExpectedRevision: readBack.Revision, TargetID: "inv-1", RequestedBy: samplePrincipal()},
+			Decision: InvocationResolution{ID: "inv-1", Outcome: run.OutcomeApplied, Reason: "verified"},
+			Budget:   BudgetSettlement{ReservationID: "res-1", Release: true},
+			Commit:   CommitContext{Transition: resolved, Events: resolved.Events},
+		}); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+	})
+
 	t.Run("ReleasingAnUnknownReservationIsRefused", func(t *testing.T) {
 		harness := newHarness(t)
 		ctx := context.Background()
@@ -473,6 +557,58 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			Budget: BudgetSettlement{ReservationID: "res-1", Release: true},
 		}); run.KindOf(err) != run.ErrorInvalid {
 			t.Fatalf("error=%s want=invalid", run.KindOf(err))
+		}
+	})
+
+	t.Run("CompletingAnInvocationPersistsItsOutcome", func(t *testing.T) {
+		// A completed invocation must read back as its result, never as the
+		// begin-time in_flight. The engine's complete() now carries the outcome
+		// in its transition; this test exercises the store's half of the
+		// contract by committing a transition that does not (a future engine
+		// regression) and demanding the store still not resurrect in_flight
+		// over applied. An in_flight read-back is exactly what the recovery
+		// path mistakes for a crashed effect: an approval-resumed Run parks
+		// itself in waiting_resolution over calls that already finished.
+		harness := newHarness(t)
+		ctx := context.Background()
+		claimed := mustStart(t, harness, "run-1")
+
+		began, err := run.Reduce(claimed.Snapshot, run.Command{
+			Kind: run.CommandInvokeTool, Reserve: run.Limits{ToolCalls: 1},
+			InvocationID: "inv-1",
+		})
+		if err != nil {
+			t.Fatalf("reduce: %v", err)
+		}
+		snapshot, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
+			Invocation: InvocationBegin{ID: "inv-1", Reservation: BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
+			Commit:     CommitContext{Transition: began, Events: began.Events},
+		})
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+
+		// The transition as the engine used to produce it: budget settled,
+		// invocation outcome untouched.
+		stale := snapshot
+		stale.Revision = snapshot.Revision + 1
+		stale.Budget = snapshot.Budget.Settle(run.Limits{ToolCalls: 1}, run.Limits{ToolCalls: 1}, true)
+		if _, err := harness.Store.CompleteInvocation(ctx, CompleteInvocationCommand{
+			Fence:  fenceFor(claimed, snapshot.Revision),
+			Result: InvocationResult{ID: "inv-1", Outcome: run.OutcomeApplied},
+			Budget: BudgetSettlement{ReservationID: "res-1"},
+			Commit: CommitContext{Transition: run.Transition{Next: stale}},
+		}); err != nil {
+			t.Fatalf("complete: %v", err)
+		}
+
+		readBack, err := harness.Store.Get(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got := readBack.Invocations["inv-1"].Outcome; got != run.OutcomeApplied {
+			t.Fatalf("outcome after complete = %s, want applied", got)
 		}
 	})
 

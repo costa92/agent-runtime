@@ -65,6 +65,13 @@ func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace st
 	transition := run.Transition{Next: s.snapshot}
 	transition.Next.Revision = s.snapshot.Revision + 1
 	transition.Next.Budget = s.snapshot.Budget.Settle(reserved, charged, fact.Outcome != run.OutcomeUnknown)
+	// Same rule as complete(): the settled outcome must reach the snapshot.
+	// Left in_flight it reads to parkUnclassifiedEffects as a worker that died
+	// mid-effect, and an approval-resumed Run parks itself in waiting_resolution
+	// for the memory write it already finished.
+	existing := transition.Next.Invocations[id]
+	existing.Outcome = fact.Outcome
+	transition.Next.Invocations[id] = existing
 
 	settlement := store.BudgetSettlement{
 		ReservationID: id, Charged: run.Limits{ToolCalls: 1}, Release: true,
