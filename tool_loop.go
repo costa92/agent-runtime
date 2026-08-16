@@ -133,7 +133,12 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	// agent's per-profile report and the Runtime's settlement count the same
 	// tokens even when the client left Usage empty and reported only attempts.
 	response.Usage = usage
-	response.Model = request.Model
+	// The client's settled engine wins: it knows which provider/model actually
+	// served the call, which is what pricing needs. The request's profile is
+	// only the fallback for a client that does not report one.
+	if response.Model.Profile == "" {
+		response.Model = request.Model
+	}
 	return response, callErr
 }
 
