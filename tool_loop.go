@@ -97,7 +97,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("model")
-	if err := s.begin(ctx, invocationID, "", reserve); err != nil {
+	if err := s.begin(ctx, invocationID, "", reserve, false); err != nil {
 		return llm.Response{}, err
 	}
 
@@ -192,7 +192,7 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	if err := s.admitEffect(ctx, prepared.Reserve, name); err != nil {
 		return nil, err
 	}
-	if err := s.begin(ctx, invocationID, prepared.Invocation.IdempotencyKey, prepared.Reserve); err != nil {
+	if err := s.begin(ctx, invocationID, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted); err != nil {
 		return nil, err
 	}
 
@@ -268,7 +268,7 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	if err := s.admitEffect(ctx, prepared.Reserve, ""); err != nil {
 		return err
 	}
-	if err := s.begin(ctx, invocationID, idempotencyKey, prepared.Reserve); err != nil {
+	if err := s.begin(ctx, invocationID, idempotencyKey, prepared.Reserve, false); err != nil {
 		return err
 	}
 
@@ -347,7 +347,18 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 }
 
 // begin reserves and commits the invocation-begin fact before the effect.
-func (s *session) begin(ctx context.Context, id run.ID, idempotencyKey string, reserve run.Limits) error {
+//
+// consumesGrant clears the approval hold in this same commit. A grant
+// authorises one write; the hold used to survive the call it was granted for,
+// with two consequences. The visible one is on the recovery path: an effect
+// that happened but whose result was never committed is parked as unknown,
+// resolved as applied, and the next advance injects Granted again and repeats a
+// non-idempotent write. The boundary is here rather than after the effect
+// because this is the last durable write before it — anything later leaves a
+// window where the effect has happened and the grant is still standing.
+func (s *session) begin(
+	ctx context.Context, id run.ID, idempotencyKey string, reserve run.Limits, consumesGrant bool,
+) error {
 	command := run.Command{
 		Kind: run.CommandInvokeTool, Reserve: reserve,
 		InvocationID: id, IdempotencyKey: idempotencyKey,
@@ -355,6 +366,9 @@ func (s *session) begin(ctx context.Context, id run.ID, idempotencyKey string, r
 	transition, err := run.Reduce(s.snapshot, command)
 	if err != nil {
 		return err
+	}
+	if consumesGrant {
+		transition.Next.Checkpoint = nil
 	}
 
 	committed, err := s.runtime.deps.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
@@ -370,6 +384,9 @@ func (s *session) begin(ctx context.Context, id run.ID, idempotencyKey string, r
 		return err
 	}
 	s.snapshot = committed
+	if consumesGrant {
+		s.approvalHold = nil
+	}
 	return nil
 }
 

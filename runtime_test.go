@@ -1349,3 +1349,95 @@ func TestEmptyModelUsageCommitsNoRows(t *testing.T) {
 		t.Fatalf("usage = %+v, want none", usage)
 	}
 }
+
+// A grant authorises one write, not a standing permission for that tool.
+//
+// The hold lives in the checkpoint and nothing removed it once the granted
+// call had run, so it stayed in place for the rest of the Run. The damage
+// shows on the recovery path — effect performed, result not committed, the
+// call parked as unknown, resolved as applied, and the next advance injects
+// Granted again and repeats a non-idempotent write (a second picture book was
+// generated this way in production) — but the mechanism is simply that the
+// hold outlives the call it was granted for, which a second request for the
+// same tool exposes directly.
+func TestAGrantCoversExactlyOneExecution(t *testing.T) {
+	registry := tool.NewRegistry()
+	handler := testkit.ToolSucceeding(`{"book_id":"b1","title":"兔"}`)
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "draw a book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+
+	var secondCallErr error
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if request.Granted != nil {
+			out, err := request.Ports.Tool(ctx, request.Granted.Name, request.Granted.Arguments)
+			if err != nil {
+				return agent.Response{}, err
+			}
+			// The approved write is done. Asking for another one is a new
+			// request for a human to decide, not a continuation of the old
+			// grant — the same question the resume path asks after an
+			// interrupted effect is resolved.
+			_, secondCallErr = request.Ports.Tool(ctx, "render_picture_book", json.RawMessage(`{"theme":"猫"}`))
+			return agent.Response{Output: out}, nil
+		}
+		_, err := request.Ports.Tool(ctx, "render_picture_book", json.RawMessage(`{"theme":"兔"}`))
+		return agent.Response{}, err
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools:          []definition.ToolRef{{Key: "render_picture_book"}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Governance = fakeGovernance{policies: policy.Snapshot{
+			Policies: []policy.Policy{{
+				Name:  "writes-need-a-human",
+				Scope: policy.ScopeTenant,
+				Conditions: []policy.Condition{{
+					Fact: policy.FactToolSideEffect, Operator: policy.OpEquals,
+					Values: []string{string(policy.SideEffectWrite)},
+				}},
+				Decision: policy.DecisionRequireApproval,
+			}},
+		}}
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+	}))
+	started := start(t, h)
+
+	parked, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if parked.Run.State != run.StateWaitingApproval {
+		t.Fatalf("state=%s want=waiting_approval", parked.Run.State)
+	}
+
+	if _, err := h.runtime.ResolveApproval(t.Context(), agentruntime.ApprovalDecision{
+		RunID: started.ID, ApprovalID: parked.Run.PendingApprovalID,
+		Approved: true, DecidedBy: principal(),
+	}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	h.clock.Advance(time.Minute)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance after confirm: %v", err)
+	}
+
+	if handler.Calls() != 1 {
+		t.Fatalf("write calls=%d, want 1; the grant carried into a second effect", handler.Calls())
+	}
+	if secondCallErr == nil {
+		t.Fatal("the second write was allowed to run under the first grant")
+	}
+	if !tool.IsApprovalRequired(secondCallErr) {
+		t.Fatalf("second write refused with %v; a new write must ask a human again", secondCallErr)
+	}
+}
