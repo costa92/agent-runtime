@@ -164,6 +164,7 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	granted := s.approvalHold != nil && !s.approvalHold.Denied && s.approvalHold.Tool == name &&
 		s.snapshot.PendingApprovalID == "" && s.snapshot.State == run.StateRunning
 	prepared, err := s.runtime.deps.Tools.Prepare(ctx, tool.InvocationRequest{
+		RunID:          s.snapshot.ID,
 		InvocationID:   invocationID,
 		Tool:           name,
 		Arguments:      arguments,

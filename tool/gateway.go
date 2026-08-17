@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
@@ -85,6 +86,7 @@ type Gateway struct {
 	schema     SchemaValidator
 	strategies []policy.Strategy
 	observers  []Observer
+	recorder   Recorder
 	bindings   BindingLookup
 
 	// defaultMaxResultBytes caps a result that declares no cap of its own.
@@ -140,8 +142,24 @@ func NewGateway(registry *Registry, authorizer Authorizer, options ...Option) *G
 // may Execute run — which is what makes "we are about to do this" durable
 // before "we did this" can be true.
 func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (PreparedInvocation, error) {
+	// One record per call, written on the way out whichever stage stopped it.
+	// The stage closure below is what makes that true without a return-by-return
+	// audit: a stage added later records itself, and a refusal cannot leave the
+	// audit believing the call never happened.
+	decision := DecisionRecord{
+		RunID:        request.RunID,
+		InvocationID: request.InvocationID,
+		Tool:         request.Tool,
+		Granted:      request.Granted,
+	}
+	defer func() { g.recordDecision(ctx, decision) }()
+	stage := func(at Stage, spec Spec, err error) {
+		g.observe(at, spec, err)
+		decision.Stage, decision.Spec, decision.Err = at, spec, err
+	}
+
 	spec, handler, err := g.resolve(ctx, request.Tool)
-	g.observe(StageResolve, spec, err)
+	stage(StageResolve, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
@@ -151,19 +169,19 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 	}
 
 	err = g.validateSchema(spec, request.Arguments)
-	g.observe(StageSchema, spec, err)
+	stage(StageSchema, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
 
 	err = allowlisted(spec, request.Allowlist)
-	g.observe(StageAllowlist, spec, err)
+	stage(StageAllowlist, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
 
 	err = g.authorizer.Authorize(ctx, request.Principal, spec)
-	g.observe(StageAuthorize, spec, err)
+	stage(StageAuthorize, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
@@ -185,16 +203,17 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 		// whose policies are most permissive.
 		err = run.NewError("tool.side_effects_denied", run.ErrorDenied, run.RetryNever,
 			fmt.Errorf("tool %q writes and this Run refuses side effects", spec.Name))
-		g.observe(StagePolicy, spec, err)
+		stage(StagePolicy, spec, err)
 		return PreparedInvocation{}, err
 	}
 
 	explanation, err := policy.Evaluate(request.Policies, facts, g.strategies...)
+	decision.Explanation = explanation
 	if err == nil && explanation.Decision == policy.DecisionDeny {
 		err = run.NewError("tool.denied_by_policy", run.ErrorDenied, run.RetryNever,
 			fmt.Errorf("tool %q denied", spec.Name))
 	}
-	g.observe(StagePolicy, spec, err)
+	stage(StagePolicy, spec, err)
 	if err != nil {
 		// A refusal returns before any Invocation exists, so nothing begins and
 		// no handler is reachable. That is what "non-executable" means here.
@@ -202,29 +221,30 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 	}
 
 	err = g.checkQuota(ctx, request.Principal.Tenant, spec)
-	g.observe(StageQuota, spec, err)
+	stage(StageQuota, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
 
 	reserve := run.Limits{ToolCalls: 1}
-	g.observe(StageBudget, spec, nil)
+	stage(StageBudget, spec, nil)
 
 	if explanation.Decision == policy.DecisionRequireApproval && !request.Granted {
 		err = ApprovalRequired
 	}
-	g.observe(StageApproval, spec, err)
+	stage(StageApproval, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
 
 	err = requiresIdempotencyKey(spec, request.IdempotencyKey)
-	g.observe(StageIdempotency, spec, err)
+	stage(StageIdempotency, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
 
 	return PreparedInvocation{
+		RunID: request.RunID,
 		Invocation: Invocation{
 			ID:             request.InvocationID,
 			Tool:           spec.Name,
@@ -275,7 +295,19 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 		handler = found.handler
 	}
 
+	startedAt := time.Now()
 	result, err := handler.Invoke(ctx, prepared.Invocation)
+	// Recorded on every path out of here, including the ones that classify a
+	// failure as unknown: "we do not know whether this happened" is the single
+	// most important thing an audit can carry, and it is exactly the outcome a
+	// caller cannot reconstruct afterwards.
+	finish := func(outcome run.Outcome, bytes int, failure error) {
+		g.recordResult(ctx, ResultRecord{
+			RunID: prepared.RunID, InvocationID: prepared.Invocation.ID,
+			Tool: prepared.Spec.Name, Outcome: outcome, ResultBytes: bytes,
+			Duration: time.Since(startedAt), Err: failure,
+		})
+	}
 	if err != nil {
 		mutation := ResultMutation{InvocationID: prepared.Invocation.ID, Used: result.Used}
 		switch {
@@ -299,14 +331,17 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 			slog.Warn("gateway: tool call failed (not applied)",
 				"tool", prepared.Spec.Name, "kind", string(run.KindOf(err)), "err", err)
 		}
+		finish(mutation.Outcome, 0, err)
 		return mutation, err
 	}
 
 	capped, err := g.capResult(prepared.Spec, result.Output)
 	if err != nil {
+		finish(run.OutcomeApplied, len(result.Output), err)
 		return ResultMutation{InvocationID: prepared.Invocation.ID, Outcome: run.OutcomeApplied, Used: result.Used}, err
 	}
 
+	finish(run.OutcomeApplied, len(capped), nil)
 	return ResultMutation{
 		InvocationID: prepared.Invocation.ID,
 		Outcome:      run.OutcomeApplied,

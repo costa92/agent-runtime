@@ -93,6 +93,10 @@ func (f AuthorizerFunc) Authorize(ctx context.Context, principal authorization.P
 
 // InvocationRequest is what the Runtime asks the gateway to prepare.
 type InvocationRequest struct {
+	// RunID is the Run this call belongs to. The gateway never reads it — it
+	// only passes it to the Recorder, which has to file the call under
+	// something, and the invocation id alone does not say which Run it served.
+	RunID        run.ID
 	InvocationID run.ID
 	Tool         string
 	Arguments    json.RawMessage
@@ -130,6 +134,9 @@ type InvocationRequest struct {
 // handler, so that "we are about to do this" is durable before "we did this"
 // can be true. A crash in the window then leaves evidence rather than silence.
 type PreparedInvocation struct {
+	// RunID carries the Run through to Execute, which otherwise has only the
+	// invocation and would leave the completion record unattributable.
+	RunID      run.ID
 	Invocation Invocation
 	Spec       Spec
 	// Explanation is the governance decision, recorded whether it allowed or
