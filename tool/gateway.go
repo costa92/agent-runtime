@@ -150,6 +150,7 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 		RunID:        request.RunID,
 		InvocationID: request.InvocationID,
 		Tool:         request.Tool,
+		ArgsDigest:   digest(request.Arguments),
 		Granted:      request.Granted,
 	}
 	defer func() { g.recordDecision(ctx, decision) }()
@@ -301,10 +302,11 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 	// failure as unknown: "we do not know whether this happened" is the single
 	// most important thing an audit can carry, and it is exactly the outcome a
 	// caller cannot reconstruct afterwards.
-	finish := func(outcome run.Outcome, bytes int, failure error) {
+	finish := func(outcome run.Outcome, output []byte, failure error) {
 		g.recordResult(ctx, ResultRecord{
 			RunID: prepared.RunID, InvocationID: prepared.Invocation.ID,
-			Tool: prepared.Spec.Name, Outcome: outcome, ResultBytes: bytes,
+			Tool: prepared.Spec.Name, Outcome: outcome,
+			ResultDigest: digest(output), ResultBytes: len(output),
 			Duration: time.Since(startedAt), Err: failure,
 		})
 	}
@@ -331,17 +333,17 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 			slog.Warn("gateway: tool call failed (not applied)",
 				"tool", prepared.Spec.Name, "kind", string(run.KindOf(err)), "err", err)
 		}
-		finish(mutation.Outcome, 0, err)
+		finish(mutation.Outcome, nil, err)
 		return mutation, err
 	}
 
 	capped, err := g.capResult(prepared.Spec, result.Output)
 	if err != nil {
-		finish(run.OutcomeApplied, len(result.Output), err)
+		finish(run.OutcomeApplied, result.Output, err)
 		return ResultMutation{InvocationID: prepared.Invocation.ID, Outcome: run.OutcomeApplied, Used: result.Used}, err
 	}
 
-	finish(run.OutcomeApplied, len(capped), nil)
+	finish(run.OutcomeApplied, capped, nil)
 	return ResultMutation{
 		InvocationID: prepared.Invocation.ID,
 		Outcome:      run.OutcomeApplied,

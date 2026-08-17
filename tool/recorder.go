@@ -2,6 +2,8 @@ package tool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
@@ -43,6 +45,11 @@ type DecisionRecord struct {
 	// tool that does not exist is still a call that was attempted.
 	Spec        Spec
 	Explanation policy.Explanation
+	// ArgsDigest is a hash of the arguments, never the arguments themselves.
+	// Digesting here rather than handing the payload over is what makes "the
+	// audit stores no tool payloads" a property of the port instead of a rule
+	// every recorder has to remember.
+	ArgsDigest string
 	// Stage names where the chain stopped, empty when it ran to the end.
 	Stage Stage
 	// Err is why the call was refused, nil when it was allowed.
@@ -63,6 +70,10 @@ type ResultRecord struct {
 	InvocationID run.ID
 	Tool         string
 	Outcome      run.Outcome
+	// ResultDigest hashes what the tool returned; see DecisionRecord.ArgsDigest.
+	// Two invocations can only be compared through it, because the results
+	// themselves are not kept.
+	ResultDigest string
 	// ResultBytes is the size of what the tool returned after capping, which is
 	// what actually reached the prompt.
 	ResultBytes int
@@ -96,4 +107,14 @@ func (g *Gateway) recordResult(ctx context.Context, record ResultRecord) {
 		record.At = time.Now().UTC()
 	}
 	g.recorder.Finished(ctx, record)
+}
+
+// digest hashes a payload for the audit. Empty in, empty out: a digest of
+// nothing would read as a real value that simply never matches anything.
+func digest(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
