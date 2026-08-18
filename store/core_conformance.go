@@ -546,6 +546,53 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("NodeProgressSurvivesAReload", func(t *testing.T) {
+		// Node progress is the graph's only memory of what already ran: the
+		// scheduler skips a node that appears in Snapshot.Nodes and picks
+		// everything else. A Store that drops the map hands the next Advance a
+		// Run that looks untouched, so the first node is selected again, and
+		// again — a multi-node Definition never reaches its second node and
+		// burns its whole budget on its first. That is not a degraded result,
+		// it is an infinite loop, and it is invisible to any suite that keeps
+		// the Snapshot in memory.
+		harness := newHarness(t)
+		ctx := context.Background()
+		claimed := mustStart(t, harness, "run-1")
+
+		// What the engine commits when the graph advanced but the Run's own
+		// state did not (session.transitionFor's no-command branch).
+		next := claimed.Snapshot
+		next.Revision = claimed.Snapshot.Revision + 1
+		next.Nodes = map[string]run.NodeState{
+			"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"},
+		}
+		if _, err := harness.Store.CommitNodeResult(ctx, CommitNodeResultCommand{
+			Fence: fenceFor(claimed, claimed.Snapshot.Revision), NodeName: "planner",
+			OutputRef: "output-1",
+			Commit:    CommitContext{Transition: run.Transition{Next: next}},
+		}); err != nil {
+			t.Fatalf("commit node: %v", err)
+		}
+
+		readBack, err := harness.Store.Get(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		state, ok := readBack.Nodes["planner"]
+		if !ok {
+			t.Fatal("the committed node is absent after a reload; the scheduler will run it again")
+		}
+		if state.Status != run.StateSucceeded {
+			t.Fatalf("node status = %s, want succeeded", state.Status)
+		}
+		if state.OutputRef != "output-1" {
+			t.Fatalf("node output ref = %q, want output-1; a downstream node reads its input from this", state.OutputRef)
+		}
+		if state.Attempts != 1 {
+			t.Fatalf("node attempts = %d, want 1", state.Attempts)
+		}
+	})
+
 	t.Run("ReleasingAnUnknownReservationIsRefused", func(t *testing.T) {
 		harness := newHarness(t)
 		ctx := context.Background()
