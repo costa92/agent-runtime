@@ -78,6 +78,13 @@ type NodeSpec struct {
 	// "runs after" and "reads from" are different facts: a node can wait on
 	// three predecessors and consume one of them.
 	Input string `json:"input,omitempty"`
+	// Tools is what this node may call, as a subset of the Definition's
+	// declared tools. A node that names none gets none: authority is granted
+	// per step rather than inherited by every step because one of them needed
+	// it. Handing the whole declared set to each node made a planner spend its
+	// turns answering a search tool it had no use for, and left a writer able
+	// to publish because the researcher next to it was allowed to search.
+	Tools []string `json:"tools,omitempty"`
 	// Optional lets this node fail without failing the Run, which is what makes
 	// a partial result a declared outcome instead of a judgement call made
 	// after something broke.

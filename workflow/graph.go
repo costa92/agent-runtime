@@ -69,7 +69,12 @@ type Node struct {
 	// proven it is registered, so execution cannot fail on an unknown key.
 	Implementation string   `json:"implementation"`
 	DependsOn      []string `json:"depends_on,omitempty"`
-	Input          Binding  `json:"input"`
+	// Tools is the resolved tool allowlist for this node, and it is the whole
+	// allowlist: empty grants nothing. The compiler has proven every key is
+	// both registered and declared by the Definition, so a node cannot reach a
+	// tool the Definition never asked for, nor one a sibling node was granted.
+	Tools []string `json:"tools,omitempty"`
+	Input Binding  `json:"input"`
 	// OutputSchema is set only on a leaf: a node with no dependents produces
 	// the Run's output, and that is the one output the Definition describes.
 	OutputSchema json.RawMessage `json:"output_schema,omitempty"`

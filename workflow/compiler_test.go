@@ -394,3 +394,50 @@ func (refusingSchemas) ValidateSchema(json.RawMessage) error {
 }
 
 func (refusingSchemas) ValidateValue(_, _ json.RawMessage) error { return nil }
+
+// Tool authority is per node. Handing every node the Definition's whole tool
+// list is how a planner ended up spending its entire turn budget answering a
+// search tool it had no use for, and it is also how a node nobody granted a
+// side-effecting tool could still call one.
+func TestANodeIsGrantedOnlyTheToolsItDeclares(t *testing.T) {
+	declared := dag(
+		definition.NodeSpec{Name: "plan", Agent: "draft"},
+		definition.NodeSpec{Name: "look", Agent: "review", DependsOn: []string{"plan"}, Tools: []string{"search"}},
+	)
+	declared.Tools = []definition.ToolRef{{Key: "search"}}
+
+	graph := compile(t, declared)
+	for _, node := range graph.Nodes {
+		want := []string(nil)
+		if node.ID == "look" {
+			want = []string{"search"}
+		}
+		if len(node.Tools) != len(want) {
+			t.Fatalf("node %q granted %v, want %v", node.ID, node.Tools, want)
+		}
+		for i, key := range want {
+			if node.Tools[i] != key {
+				t.Fatalf("node %q granted %v, want %v", node.ID, node.Tools, want)
+			}
+		}
+	}
+}
+
+// A single-node Definition has no NodeSpec to narrow on and no sibling to
+// narrow away from, so the Definition's tools are that node's tools.
+func TestASingleNodeDefinitionKeepsItsDeclaredTools(t *testing.T) {
+	graph := compile(t, definition.Definition{Tools: []definition.ToolRef{{Key: "search"}}})
+	if len(graph.Nodes) != 1 || len(graph.Nodes[0].Tools) != 1 || graph.Nodes[0].Tools[0] != "search" {
+		t.Fatalf("single node granted %v, want [search]", graph.Nodes[0].Tools)
+	}
+}
+
+// A node grants a subset, never an addition: the audited list of what an agent
+// can reach stays in the Definition rather than growing one node at a time.
+func TestANodeCannotGrantAToolTheDefinitionDoesNotDeclare(t *testing.T) {
+	declared := dag(definition.NodeSpec{Name: "look", Agent: "review", Tools: []string{"search"}})
+
+	if code := compileError(t, declared).Code; code != "undeclared_node_tool" {
+		t.Fatalf("code = %q, want undeclared_node_tool", code)
+	}
+}

@@ -1505,3 +1505,73 @@ func TestADownstreamNodeReceivesItsUpstreamsOutputNotItsRef(t *testing.T) {
 		t.Fatalf("downstream input = %s; it does not carry the upstream's output", seen[1])
 	}
 }
+
+// Tool authority is granted per node, and what the model is offered follows the
+// grant. Offering the Definition's whole tool list to every node made a planner
+// spend all three of its turns answering a search tool it had no use for, and
+// then fail for want of any prose — while the writer beside it kept an authority
+// only the researcher was supposed to have.
+func TestOnlyTheNodeThatWasGrantedAToolIsOfferedIt(t *testing.T) {
+	offered := map[string][]string{}
+	var current string
+	models := capturingModels{onRequest: func(request llm.Request) {
+		for _, def := range request.Tools {
+			offered[current] = append(offered[current], def.Name)
+		}
+	}}
+	registry := tool.NewRegistry()
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "draw a book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, testkit.ToolSucceeding(`{"ok":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+	gateway := tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+
+	asking := scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		current = string(request.Input)
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "go"}},
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`{"content":"done"}`)}, nil
+	}}
+
+	h := newHarness(t, asking, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools:          []definition.ToolRef{{Key: "render_picture_book"}},
+		Graph: definition.GraphSpec{Nodes: []definition.NodeSpec{
+			{Name: "planner", Agent: "answer"},
+			{Name: "drawer", Agent: "answer", DependsOn: []string{"planner"}, Input: "planner", Tools: []string{"render_picture_book"}},
+		}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Tools = gateway
+		deps.Models = models
+	}))
+	started := start(t, h)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	// The planner runs on the Run's own input; the drawer runs on the planner's
+	// output, which is what tells the two model calls apart here.
+	for input, names := range offered {
+		if strings.Contains(input, "done") {
+			if len(names) != 1 || names[0] != "render_picture_book" {
+				t.Fatalf("the granted node was offered %v, want [render_picture_book]", names)
+			}
+			continue
+		}
+		t.Fatalf("a node that was granted no tools was offered %v (input %q)", names, input)
+	}
+	if len(offered) != 1 {
+		t.Fatalf("nodes offered tools = %d, want only the granted one: %v", len(offered), offered)
+	}
+}

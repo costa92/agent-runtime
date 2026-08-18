@@ -43,16 +43,6 @@ func declaredMemory(s *session, key string) (definition.MemoryRef, error) {
 		fmt.Errorf("definition %s does not declare memory %q", s.snapshot.Definition.ID, key))
 }
 
-// declaredToolKeys is the Definition's tool allowlist. A tool outside it is
-// refused before policy is even consulted.
-func declaredToolKeys(s *session) []string {
-	keys := make([]string, 0, len(s.declared.Tools))
-	for _, declared := range s.declared.Tools {
-		keys = append(keys, declared.Key)
-	}
-	return keys
-}
-
 // commitMemory records a committed write atomically with its settlement.
 //
 // The provider does not commit it. A provider that wrote its own record would

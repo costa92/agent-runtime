@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/llm"
 	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"github.com/kart-io/wechat-account/agent-runtime/observe"
@@ -31,13 +30,17 @@ type governedPorts struct {
 
 var _ agent.Ports = (*governedPorts)(nil)
 
-func definitionToolDefs(refs []definition.ToolRef, gateway *tool.Gateway) []llm.ToolDef {
-	if gateway == nil || len(refs) == 0 {
+// nodeToolDefs is what this node is allowed to call, described for the model.
+//
+// It is the node's grant, not the Definition's declaration: offering a tool the
+// gateway would refuse invites the model to spend a turn discovering that.
+func nodeToolDefs(keys []string, gateway *tool.Gateway) []llm.ToolDef {
+	if gateway == nil || len(keys) == 0 {
 		return nil
 	}
-	out := make([]llm.ToolDef, 0, len(refs))
-	for _, ref := range refs {
-		spec, ok := gateway.LookupSpec(ref.Key)
+	out := make([]llm.ToolDef, 0, len(keys))
+	for _, key := range keys {
+		spec, ok := gateway.LookupSpec(key)
 		if !ok {
 			continue
 		}
@@ -73,7 +76,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 		return llm.Response{}, err
 	}
 	if len(request.Tools) == 0 {
-		request.Tools = definitionToolDefs(s.declared.Tools, s.runtime.deps.Tools)
+		request.Tools = nodeToolDefs(p.node.Tools, s.runtime.deps.Tools)
 	}
 	if len(request.Tools) > 0 && !capabilities.Tools {
 		// Asked rather than assumed, and degraded rather than failed: an engine
@@ -176,8 +179,8 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 		},
 		Policies: s.policies,
 		// Narrowed, never widened: the Run's own restriction can only remove
-		// keys the Definition declared.
-		Allowlist:       s.snapshot.Restrictions.Narrow(declaredToolKeys(s)),
+		// keys this node was granted.
+		Allowlist:       s.snapshot.Restrictions.Narrow(p.node.Tools),
 		DenySideEffects: s.snapshot.Restrictions.DenySideEffects,
 		Granted:         granted,
 	})

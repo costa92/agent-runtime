@@ -138,13 +138,29 @@ func (c Compiler) checkReferences(declared definition.Definition) error {
 	for _, spec := range c.Registries.Tools.Specs() {
 		tools[spec.Name] = true
 	}
+	declaredTools := map[string]bool{}
 	for _, declaredTool := range declared.Tools {
+		declaredTools[declaredTool.Key] = true
 		if !tools[declaredTool.Key] {
 			// Optional tools are refused too. "Optional" says the Run can
 			// proceed without calling it, not that the Definition may name
 			// something nobody registered.
 			return run.NewError("unknown_tool_key", run.ErrorInvalid, run.RetryNever,
 				fmt.Errorf("tool %q is not registered", declaredTool.Key))
+		}
+	}
+
+	for _, node := range declared.Graph.Nodes {
+		for _, key := range node.Tools {
+			if !declaredTools[key] {
+				// A node grants a subset, never an addition. Letting a node
+				// name a tool the Definition did not declare would move the
+				// audited list of what an agent can reach out of the
+				// Definition and into its graph, one node at a time.
+				return run.NewError("undeclared_node_tool", run.ErrorInvalid, run.RetryNever,
+					fmt.Errorf("node %q grants tool %q, which the definition does not declare",
+						node.Name, key))
+			}
 		}
 	}
 
@@ -203,9 +219,13 @@ func (c Compiler) buildNodes(declared definition.Definition) ([]Node, error) {
 			ID:             declared.Implementation,
 			Kind:           NodeAgent,
 			Implementation: declared.Implementation,
-			Input:          Binding{Source: SourceRunInput},
-			OutputSchema:   declared.OutputSchema,
-			Failure:        FailHard,
+			// The one node is the whole Definition, so the Definition's tools
+			// are its tools. There is no NodeSpec to narrow them on, and no
+			// sibling to narrow them away from.
+			Tools:        toolKeys(declared.Tools),
+			Input:        Binding{Source: SourceRunInput},
+			OutputSchema: declared.OutputSchema,
+			Failure:      FailHard,
 		}}, nil
 	}
 
@@ -235,6 +255,7 @@ func (c Compiler) buildNodes(declared definition.Definition) ([]Node, error) {
 			Kind:           NodeAgent,
 			Implementation: spec.Agent,
 			DependsOn:      append([]string(nil), spec.DependsOn...),
+			Tools:          append([]string(nil), spec.Tools...),
 			Input:          binding,
 			Failure:        FailHard,
 		}
@@ -253,6 +274,17 @@ func (c Compiler) buildNodes(declared definition.Definition) ([]Node, error) {
 	// the same digest regardless of how the nodes were listed.
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	return nodes, nil
+}
+
+func toolKeys(refs []definition.ToolRef) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	keys := make([]string, len(refs))
+	for i, ref := range refs {
+		keys[i] = ref.Key
+	}
+	return keys
 }
 
 // bindingFor checks that a node reads from something that is guaranteed to have

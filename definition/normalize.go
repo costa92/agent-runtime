@@ -122,6 +122,20 @@ func validate(definition Definition) error {
 				fmt.Errorf("node %q declared twice", node.Name))
 		}
 		seenNodes[node.Name] = true
+
+		seenNodeTools := map[string]bool{}
+		for _, key := range node.Tools {
+			trimmed := strings.TrimSpace(key)
+			if trimmed == "" {
+				return run.NewError("empty_tool_key", run.ErrorInvalid, run.RetryNever,
+					fmt.Errorf("node %q", node.Name))
+			}
+			if seenNodeTools[trimmed] {
+				return run.NewError("duplicate_tool_key", run.ErrorInvalid, run.RetryNever,
+					fmt.Errorf("node %q grants tool %q twice", node.Name, trimmed))
+			}
+			seenNodeTools[trimmed] = true
+		}
 	}
 
 	if definition.Budget.LLMCalls < 0 || definition.Budget.Tokens < 0 || definition.Budget.ToolCalls < 0 {
@@ -196,6 +210,14 @@ func normalizeGraph(graph GraphSpec) GraphSpec {
 			depends := append([]string(nil), node.DependsOn...)
 			sort.Strings(depends)
 			nodes[i].DependsOn = depends
+		}
+		if len(node.Tools) > 0 {
+			granted := make([]string, len(node.Tools))
+			for j, key := range node.Tools {
+				granted[j] = strings.TrimSpace(key)
+			}
+			sort.Strings(granted)
+			nodes[i].Tools = granted
 		}
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
