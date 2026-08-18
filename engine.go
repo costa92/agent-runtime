@@ -468,10 +468,10 @@ func (s *session) commitNode(
 	if transition.Next.State.Terminal() {
 		userID, _ := strconv.ParseInt(s.snapshot.Principal.Subject, 10, 64)
 		terminal, err := store.NewProjectionFact(store.TerminalResultPayload{
-			State:         string(transition.Next.State),
-			UserID:        userID,
-			UsedLLMCalls:  int64(transition.Next.Budget.Used.LLMCalls),
-			UsedTokens:    int64(transition.Next.Budget.Used.Tokens),
+			State:        string(transition.Next.State),
+			UserID:       userID,
+			UsedLLMCalls: int64(transition.Next.Budget.Used.LLMCalls),
+			UsedTokens:   int64(transition.Next.Budget.Used.Tokens),
 		})
 		if err != nil {
 			return run.Snapshot{}, err
@@ -577,6 +577,24 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 	)
 	go func() {
 		defer close(done)
+		// Renew once up front rather than only on a tick. One Advance walks the
+		// whole graph under a single claim, and a node that finishes inside the
+		// first interval — which is what a normal model call does — left the
+		// deadline pinned at claim time. Node after node the loop started and
+		// stopped without ever firing, the lease aged while the work went on,
+		// and another poller took the Run over mid-effect the moment the
+		// graph's total run time passed LeaseFor. Sealing blocks takeover, not
+		// the owner's own renewal, so this is the extension available here.
+		if lease, err := s.runtime.deps.Store.Renew(ctx, store.RenewCommand{
+			RunID: s.snapshot.ID, LeaseToken: s.lease.Token, LeaseFor: s.runtime.deps.LeaseFor,
+		}); err != nil {
+			failure = err
+			cancel()
+			return
+		} else {
+			s.lease = lease
+		}
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

@@ -688,6 +688,30 @@ func TestAdvanceRenewsTheLeaseWhileAnEffectIsInFlight(t *testing.T) {
 	}
 }
 
+// The renew loop ticks at LeaseFor/3, so a node that finishes sooner than that
+// never renews at all — and the sibling test above hides this by sleeping well
+// past a tick. Real nodes are fast: a model call answers in seconds against a
+// thirty-second lease, and one Advance walks the whole graph under a single
+// claim. Node after node the loop started and stopped before its first tick,
+// the deadline stayed pinned at claim time, and once the graph's total run time
+// passed LeaseFor another poller took the Run over and parked whatever was in
+// flight. That is how every article generation ended in waiting_resolution.
+func TestTheLeaseIsRenewedEvenWhenTheNodeIsFasterThanATick(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(context.Context, agent.Request) (agent.Response, error) {
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDeps(func(deps *agentruntime.Dependencies) {
+		deps.LeaseFor = time.Minute
+	}))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if h.store.Renews.Load() == 0 {
+		t.Fatal("a node that outran the renew ticker left the lease pinned at claim time")
+	}
+}
+
 func TestAModelCallSeesTheDefinitionTools(t *testing.T) {
 	registry := tool.NewRegistry()
 	if err := registry.Register(tool.Spec{
