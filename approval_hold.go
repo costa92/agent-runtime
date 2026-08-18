@@ -18,16 +18,18 @@ type approvalHold struct {
 }
 
 func loadApprovalHold(raw json.RawMessage) *approvalHold {
-	if len(raw) == 0 {
+	// A checkpoint this build cannot read is not a missing hold. The caller
+	// checks the protocol before resuming; here an unreadable envelope simply
+	// yields no hold, which is what the absent case already meant.
+	envelope, err := decodeCheckpoint(raw)
+	if err != nil || len(envelope.Approval) == 0 {
 		return nil
 	}
-	var wrap struct {
-		Approval *approvalHold `json:"approval"`
-	}
-	if json.Unmarshal(raw, &wrap) != nil || wrap.Approval == nil || wrap.Approval.Tool == "" {
+	var hold approvalHold
+	if json.Unmarshal(envelope.Approval, &hold) != nil || hold.Tool == "" {
 		return nil
 	}
-	return wrap.Approval
+	return &hold
 }
 
 func holdToolName(hold *approvalHold) string {
@@ -38,9 +40,11 @@ func holdToolName(hold *approvalHold) string {
 }
 
 func encodeApprovalHold(hold approvalHold) json.RawMessage {
-	encoded, err := json.Marshal(struct {
-		Approval approvalHold `json:"approval"`
-	}{Approval: hold})
+	payload, err := json.Marshal(hold)
+	if err != nil {
+		return nil
+	}
+	encoded, err := encodeCheckpoint(checkpoint{Approval: payload})
 	if err != nil {
 		return nil
 	}

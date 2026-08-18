@@ -87,11 +87,19 @@ func (s *session) delegate(ctx context.Context) (bool, error) {
 
 func (s *session) delegationState() (*delegationState, error) {
 	state := &delegationState{Children: map[string]run.ID{}}
-	if len(s.snapshot.Checkpoint) == 0 {
-		return state, nil
+	envelope, err := decodeCheckpoint(s.snapshot.Checkpoint)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(s.snapshot.Checkpoint, state); err != nil {
-		return nil, run.NewError("unreadable_checkpoint", run.ErrorInternal, run.RetryNever, err)
+	if len(envelope.Plan) > 0 {
+		if err := json.Unmarshal(envelope.Plan, &state.Plan); err != nil {
+			return nil, run.NewError("unreadable_checkpoint", run.ErrorInternal, run.RetryNever, err)
+		}
+	}
+	if len(envelope.Children) > 0 {
+		if err := json.Unmarshal(envelope.Children, &state.Children); err != nil {
+			return nil, run.NewError("unreadable_checkpoint", run.ErrorInternal, run.RetryNever, err)
+		}
 	}
 	if state.Children == nil {
 		state.Children = map[string]run.ID{}
@@ -261,11 +269,11 @@ func (s *session) createChildren(
 	}
 	parked.Events = append(granted.Events, parked.Events...)
 
-	checkpoint, err := json.Marshal(state)
+	encoded, err := encodeDelegationState(state)
 	if err != nil {
-		return run.NewError("unencodable_checkpoint", run.ErrorInternal, run.RetryNever, err)
+		return err
 	}
-	parked.Next.Checkpoint = checkpoint
+	parked.Next.Checkpoint = encoded
 
 	// Sealed first, like every other commit: a commit and a takeover must not
 	// both believe they own the Run.
@@ -360,4 +368,18 @@ func (s *session) synthesize(ctx context.Context, state *delegationState, result
 // time" is not the same fact as "it is not allowed to have any".
 func (s *session) orchestrating() bool {
 	return s.declared.Mode == definition.ModeOrchestrator
+}
+
+// encodeDelegationState writes the plan and the children it produced into the
+// versioned checkpoint envelope.
+func encodeDelegationState(state *delegationState) (json.RawMessage, error) {
+	plan, err := json.Marshal(state.Plan)
+	if err != nil {
+		return nil, run.NewError("unencodable_checkpoint", run.ErrorInternal, run.RetryNever, err)
+	}
+	children, err := json.Marshal(state.Children)
+	if err != nil {
+		return nil, run.NewError("unencodable_checkpoint", run.ErrorInternal, run.RetryNever, err)
+	}
+	return encodeCheckpoint(checkpoint{Plan: plan, Children: children})
 }
