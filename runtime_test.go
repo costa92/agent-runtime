@@ -1465,3 +1465,43 @@ func TestAGrantCoversExactlyOneExecution(t *testing.T) {
 		t.Fatalf("second write refused with %v; a new write must ask a human again", secondCallErr)
 	}
 }
+
+// A graph edge names its upstream by ref, and the engine follows it. What the
+// downstream node receives must be the upstream's output, not the pointer to
+// it: nothing on the agent side can dereference one — Ports has no read for it
+// — so a node handed {"from":"output-..."} has only the pointer as its brief.
+// In production the writer answered that it could not see the research and the
+// assembler failed for want of a body, while every node still reported success.
+func TestADownstreamNodeReceivesItsUpstreamsOutputNotItsRef(t *testing.T) {
+	var seen []string
+	recorder := scriptedAgent{execute: func(_ context.Context, request agent.Request) (agent.Response, error) {
+		seen = append(seen, string(request.Input))
+		return agent.Response{Output: json.RawMessage(`{"content":"planned"}`)}, nil
+	}}
+
+	h := newHarness(t, recorder, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Graph: definition.GraphSpec{Nodes: []definition.NodeSpec{
+			{Name: "planner", Agent: "answer"},
+			{Name: "writer", Agent: "answer", DependsOn: []string{"planner"}, Input: "planner"},
+		}},
+	}))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("nodes executed = %d, want 2: %q", len(seen), seen)
+	}
+	if strings.Contains(seen[1], `"from"`) {
+		t.Fatalf("the downstream node was handed a ref it cannot follow: %s", seen[1])
+	}
+	if !strings.Contains(seen[1], "planned") {
+		t.Fatalf("downstream input = %s; it does not carry the upstream's output", seen[1])
+	}
+}

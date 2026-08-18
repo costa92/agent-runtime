@@ -13,6 +13,7 @@
 package store
 
 import (
+	"encoding/json"
 	"context"
 	"time"
 
@@ -88,6 +89,16 @@ type Execution interface {
 
 	Get(ctx context.Context, id run.ID) (run.Snapshot, error)
 	Events(ctx context.Context, query EventQuery) (EventPage, error)
+	// NodeOutput returns what the node behind an OutputRef produced.
+	//
+	// A graph edge names its upstream by ref rather than by value because the
+	// Runtime does not carry outputs in the Snapshot — they are unbounded, and
+	// the Snapshot is written on every transition. Following the ref is
+	// therefore a Store read, and it has to exist: a downstream node handed a
+	// bare pointer has nothing to work from, which is how a writer received
+	// {"from":"output-..."} and answered that it could not see the research.
+	// An unknown ref is an error, never an empty output.
+	NodeOutput(ctx context.Context, id run.ID, outputRef string) (json.RawMessage, error)
 }
 
 // PublishedResource is one immutable published version.

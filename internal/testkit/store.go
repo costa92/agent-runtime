@@ -8,6 +8,7 @@ package testkit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"sort"
@@ -218,6 +219,25 @@ func (s *MemoryStore) Get(_ context.Context, id run.ID) (run.Snapshot, error) {
 		return run.Snapshot{}, run.NewError("unknown_run", run.ErrorInvalid, run.RetryNever)
 	}
 	return withPendingApproval(record.snapshot, record.approvals), nil
+}
+
+// NodeOutput follows a graph edge's ref to what the upstream node produced.
+func (s *MemoryStore) NodeOutput(_ context.Context, id run.ID, outputRef string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, fact := range s.projections {
+		if fact.RunID != id || fact.Kind != store.ProjectionAssistantMessage {
+			continue
+		}
+		message, err := store.DecodeProjection[store.AssistantMessagePayload](fact)
+		if err != nil {
+			return nil, err
+		}
+		if message.OutputRef == outputRef {
+			return message.Output, nil
+		}
+	}
+	return nil, run.NewError("unknown_output_ref", run.ErrorInvalid, run.RetryNever)
 }
 
 func (s *MemoryStore) Events(_ context.Context, query store.EventQuery) (store.EventPage, error) {

@@ -287,7 +287,12 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	// lease lapsed mid-effect must not be the one that commits the result.
 	effectCtx, stop := s.renewing(ctx)
 	ports := &governedPorts{session: s, node: node}
-	response, executeErr := implementation.Execute(effectCtx, s.request(node, ports))
+	built, err := s.request(ctx, node, ports)
+	if err != nil {
+		stop()
+		return err
+	}
+	response, executeErr := implementation.Execute(effectCtx, built)
 	renewErr := stop()
 
 	if executeErr != nil && approvalRequired(executeErr) {
@@ -506,7 +511,7 @@ func (s *session) commitNode(
 }
 
 // request builds what the agent implementation sees.
-func (s *session) request(node workflow.Node, ports *governedPorts) agent.Request {
+func (s *session) request(ctx context.Context, node workflow.Node, ports *governedPorts) (agent.Request, error) {
 	remaining := s.snapshot.Budget.Envelope
 	if !remaining.Zero() {
 		committed := s.snapshot.Budget.Committed()
@@ -516,11 +521,15 @@ func (s *session) request(node workflow.Node, ports *governedPorts) agent.Reques
 			ToolCalls: remaining.ToolCalls - committed.ToolCalls,
 		}
 	}
+	nodeInput, err := s.input(ctx, node)
+	if err != nil {
+		return agent.Request{}, err
+	}
 	req := agent.Request{
 		RunID:     s.snapshot.ID,
 		Principal: s.snapshot.Principal,
 		Prompt:    s.declared.Prompt,
-		Input:     s.input(node),
+		Input:     nodeInput,
 		Upstreams: s.snapshot.Upstreams,
 		Remaining: remaining,
 		Ports:     ports,
@@ -533,7 +542,7 @@ func (s *session) request(node workflow.Node, ports *governedPorts) agent.Reques
 			Name: s.approvalHold.Tool, Arguments: s.approvalHold.Arguments,
 		}
 	}
-	return req
+	return req, nil
 }
 
 // input is what one node executes on.
@@ -543,17 +552,25 @@ func (s *session) request(node workflow.Node, ports *governedPorts) agent.Reques
 // input. Returning nothing for the latter is what made a Run's input
 // unreachable — the value was accepted at Start, stored nowhere, and the agent
 // was handed nil, so an assistant ran every turn without the question.
-func (s *session) input(node workflow.Node) json.RawMessage {
-	if node.Input.Source == workflow.SourceNode {
-		if state, ok := s.snapshot.Nodes[node.Input.From]; ok && state.OutputRef != "" {
-			return json.RawMessage(`{"from":"` + state.OutputRef + `"}`)
-		}
+func (s *session) input(ctx context.Context, node workflow.Node) (json.RawMessage, error) {
+	if node.Input.Source != workflow.SourceNode {
+		return s.snapshot.Input, nil
+	}
+	state, ok := s.snapshot.Nodes[node.Input.From]
+	if !ok || state.OutputRef == "" {
 		// The binding names an upstream that produced no ref. Falling back to
 		// the Run's input here would hand the node something it did not ask
 		// for, and it would look like it worked.
-		return nil
+		return nil, run.NewError("missing_upstream_output", run.ErrorInvalid, run.RetryNever)
 	}
-	return s.snapshot.Input
+	// Resolved here rather than passed along as a ref. The Snapshot cannot
+	// carry outputs — they are unbounded and it is rewritten on every
+	// transition — so the edge names the upstream by ref and the engine follows
+	// it. Handing the ref itself to the agent made the pointer the whole brief:
+	// the writer answered that it could not see the research, and the assembler
+	// failed for want of a body. Nothing on the agent side can follow a ref;
+	// Ports has no read for it, by design.
+	return s.runtime.deps.Store.NodeOutput(ctx, s.snapshot.ID, state.OutputRef)
 }
 
 // renewing starts a bounded renew loop and returns a context that is cancelled

@@ -593,6 +593,62 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("ANodesOutputIsReadableByItsRef", func(t *testing.T) {
+		// A graph edge hands the downstream node its upstream's ref, not the
+		// value: outputs are unbounded and the Snapshot is rewritten on every
+		// transition, so the Snapshot cannot carry them. Following the ref is
+		// this read. Without it the engine passes a bare pointer along, and the
+		// node on the other end has nothing to work from — a writer handed
+		// {"from":"output-..."} answers that it cannot see the research, and
+		// the assembler at the end of the graph fails for want of a body.
+		harness := newHarness(t)
+		ctx := context.Background()
+		claimed := mustStart(t, harness, "run-1")
+
+		produced := json.RawMessage(`{"content":"## 大纲\n1. 起因"}`)
+		fact, err := NewProjectionFact(AssistantMessagePayload{
+			Output: produced, OutputRef: "output-1", AgentKey: "planner", NodeID: "planner",
+		})
+		if err != nil {
+			t.Fatalf("fact: %v", err)
+		}
+		next := claimed.Snapshot
+		next.Revision = claimed.Snapshot.Revision + 1
+		next.Nodes = map[string]run.NodeState{
+			"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"},
+		}
+		if _, err := harness.Store.CommitNodeResult(ctx, CommitNodeResultCommand{
+			Fence: fenceFor(claimed, claimed.Snapshot.Revision), NodeName: "planner",
+			OutputRef: "output-1",
+			Commit:    CommitContext{Transition: run.Transition{Next: next}, Projections: []ProjectionFact{fact}},
+		}); err != nil {
+			t.Fatalf("commit node: %v", err)
+		}
+
+		output, err := harness.Store.NodeOutput(ctx, "run-1", "output-1")
+		if err != nil {
+			t.Fatalf("node output: %v; the downstream node has nothing to read", err)
+		}
+		// Compared by value, not bytes: a JSON column round-trips whitespace.
+		var got, want map[string]any
+		if err := json.Unmarshal(output, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal(produced, &want); err != nil {
+			t.Fatalf("decode produced: %v", err)
+		}
+		if got["content"] != want["content"] {
+			t.Fatalf("output content = %v, want %v", got["content"], want["content"])
+		}
+
+		// An unknown ref is an error. Returning nothing would look to the
+		// downstream node exactly like an upstream that produced nothing, and
+		// it would answer from an empty brief rather than fail.
+		if _, err := harness.Store.NodeOutput(ctx, "run-1", "output-missing"); err == nil {
+			t.Fatal("an unknown output ref read back as success")
+		}
+	})
+
 	t.Run("ReleasingAnUnknownReservationIsRefused", func(t *testing.T) {
 		harness := newHarness(t)
 		ctx := context.Background()
