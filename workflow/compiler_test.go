@@ -112,7 +112,7 @@ func TestSingleAgentCompilesToOneNodeGraph(t *testing.T) {
 
 func TestGraphCompilesEveryDeclaredNode(t *testing.T) {
 	graph := compile(t, dag(
-		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}, Input: "a"},
+		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}, Inputs: []string{"a"}},
 		definition.NodeSpec{Name: "a", Agent: "draft"},
 	))
 
@@ -122,7 +122,8 @@ func TestGraphCompilesEveryDeclaredNode(t *testing.T) {
 	if graph.Nodes[0].ID != "a" || graph.Nodes[1].ID != "b" {
 		t.Fatalf("nodes are not in canonical order: %+v", graph.Nodes)
 	}
-	if graph.Nodes[1].Input != (workflow.Binding{Source: workflow.SourceNode, From: "a"}) {
+	if binding := graph.Nodes[1].Input; binding.Source != workflow.SourceNode ||
+		len(binding.From) != 1 || binding.From[0] != "a" {
 		t.Fatalf("binding=%+v", graph.Nodes[1].Input)
 	}
 }
@@ -227,7 +228,7 @@ func TestUnknownDependencyIsRefused(t *testing.T) {
 func TestBindingWithoutADependencyIsRefused(t *testing.T) {
 	if code := compileError(t, dag(
 		definition.NodeSpec{Name: "a", Agent: "draft"},
-		definition.NodeSpec{Name: "b", Agent: "review", Input: "a"},
+		definition.NodeSpec{Name: "b", Agent: "review", Inputs: []string{"a"}},
 	)).Code; code != "incompatible_binding" {
 		t.Fatalf("code=%q", code)
 	}
@@ -318,7 +319,7 @@ func TestCompilationIsDeterministic(t *testing.T) {
 	declaration := dag(
 		definition.NodeSpec{Name: "c", Agent: "publish", DependsOn: []string{"a", "b"}},
 		definition.NodeSpec{Name: "a", Agent: "draft"},
-		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}, Input: "a"},
+		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}, Inputs: []string{"a"}},
 	)
 	first := compile(t, declaration)
 	for range 30 {
@@ -439,5 +440,60 @@ func TestANodeCannotGrantAToolTheDefinitionDoesNotDeclare(t *testing.T) {
 
 	if code := compileError(t, declared).Code; code != "undeclared_node_tool" {
 		t.Fatalf("code = %q, want undeclared_node_tool", code)
+	}
+}
+
+// A node that works from several upstreams gets a distinct binding source, not
+// SourceNode with a longer list. The payload shape is then read off the
+// declaration instead of counted at run time, so a node whose upstream list
+// grows from one to two cannot silently change what its consumer receives.
+func TestSeveralUpstreamsCompileToTheirOwnBindingSource(t *testing.T) {
+	graph := compile(t, dag(
+		definition.NodeSpec{Name: "plan", Agent: "draft"},
+		definition.NodeSpec{Name: "look", Agent: "review", DependsOn: []string{"plan"}, Inputs: []string{"plan"}},
+		definition.NodeSpec{
+			Name: "write", Agent: "publish",
+			DependsOn: []string{"plan", "look"}, Inputs: []string{"look", "plan"},
+		},
+	))
+
+	for _, node := range graph.Nodes {
+		binding := node.Input
+		switch node.ID {
+		case "plan":
+			if binding.Source != workflow.SourceRunInput {
+				t.Fatalf("plan reads %+v, want the Run's own input", binding)
+			}
+		case "look":
+			if binding.Source != workflow.SourceNode || len(binding.From) != 1 {
+				t.Fatalf("look reads %+v, want one upstream", binding)
+			}
+		case "write":
+			if binding.Source != workflow.SourceNodes || len(binding.From) != 2 {
+				t.Fatalf("write reads %+v, want both upstreams", binding)
+			}
+			// Normalized order, so listing the same upstreams differently is
+			// not a different definition — and not a different digest.
+			if binding.From[0] != "look" || binding.From[1] != "plan" {
+				t.Fatalf("upstreams = %v, want them sorted", binding.From)
+			}
+		}
+	}
+}
+
+// Every upstream must be a declared dependency, not just the first one:
+// without the edge nothing orders the two, so the value may not exist yet.
+func TestEveryUpstreamMustBeADependency(t *testing.T) {
+	declared := dag(
+		definition.NodeSpec{Name: "plan", Agent: "draft"},
+		definition.NodeSpec{Name: "look", Agent: "review"},
+		definition.NodeSpec{
+			Name: "write", Agent: "publish",
+			DependsOn: []string{"plan"}, Inputs: []string{"plan", "look"},
+		},
+	)
+
+	if code := compileError(t, declared).Code; code != "incompatible_binding" {
+		t.Fatalf("code = %q, want incompatible_binding", code)
 	}
 }

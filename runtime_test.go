@@ -1487,7 +1487,7 @@ func TestADownstreamNodeReceivesItsUpstreamsOutputNotItsRef(t *testing.T) {
 		Model:          definition.ModelPolicy{Profile: "fast"},
 		Graph: definition.GraphSpec{Nodes: []definition.NodeSpec{
 			{Name: "planner", Agent: "answer"},
-			{Name: "writer", Agent: "answer", DependsOn: []string{"planner"}, Input: "planner"},
+			{Name: "writer", Agent: "answer", DependsOn: []string{"planner"}, Inputs: []string{"planner"}},
 		}},
 	}))
 	started := start(t, h)
@@ -1549,7 +1549,7 @@ func TestOnlyTheNodeThatWasGrantedAToolIsOfferedIt(t *testing.T) {
 		Tools:          []definition.ToolRef{{Key: "render_picture_book"}},
 		Graph: definition.GraphSpec{Nodes: []definition.NodeSpec{
 			{Name: "planner", Agent: "answer"},
-			{Name: "drawer", Agent: "answer", DependsOn: []string{"planner"}, Input: "planner", Tools: []string{"render_picture_book"}},
+			{Name: "drawer", Agent: "answer", DependsOn: []string{"planner"}, Inputs: []string{"planner"}, Tools: []string{"render_picture_book"}},
 		}},
 	}), withDeps(func(deps *agentruntime.Dependencies) {
 		deps.Tools = gateway
@@ -1573,5 +1573,59 @@ func TestOnlyTheNodeThatWasGrantedAToolIsOfferedIt(t *testing.T) {
 	}
 	if len(offered) != 1 {
 		t.Fatalf("nodes offered tools = %d, want only the granted one: %v", len(offered), offered)
+	}
+}
+
+// A node that declares several upstreams receives all of them, keyed by the
+// node that produced each. Restricting a step to one upstream is what left the
+// writer holding only the research: it read a finished-looking draft with no
+// plan beside it, and answered with an editor's review of that draft instead of
+// the article it was asked to write.
+func TestANodeReadingSeveralUpstreamsReceivesThemKeyedByNode(t *testing.T) {
+	var seen []string
+	byNode := map[string]json.RawMessage{}
+	recorder := scriptedAgent{execute: func(_ context.Context, request agent.Request) (agent.Response, error) {
+		seen = append(seen, string(request.Input))
+		// Each node answers with something identifiable, so the merged payload
+		// can be checked against who produced which half.
+		output := `{"content":"plan"}`
+		if len(seen) == 2 {
+			output = `{"content":"evidence"}`
+		}
+		return agent.Response{Output: json.RawMessage(output)}, nil
+	}}
+
+	h := newHarness(t, recorder, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Graph: definition.GraphSpec{Nodes: []definition.NodeSpec{
+			{Name: "planner", Agent: "answer"},
+			{Name: "researcher", Agent: "answer", DependsOn: []string{"planner"}, Inputs: []string{"planner"}},
+			{
+				Name: "writer", Agent: "answer",
+				DependsOn: []string{"planner", "researcher"},
+				Inputs:    []string{"planner", "researcher"},
+			},
+		}},
+	}))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("nodes executed = %d, want 3: %q", len(seen), seen)
+	}
+	if err := json.Unmarshal([]byte(seen[2]), &byNode); err != nil {
+		t.Fatalf("the writer's input is not an object keyed by node: %s", seen[2])
+	}
+	if !strings.Contains(string(byNode["planner"]), "plan") {
+		t.Fatalf("the writer did not receive the plan: %s", seen[2])
+	}
+	if !strings.Contains(string(byNode["researcher"]), "evidence") {
+		t.Fatalf("the writer did not receive the research: %s", seen[2])
 	}
 }

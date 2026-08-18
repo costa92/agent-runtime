@@ -553,10 +553,47 @@ func (s *session) request(ctx context.Context, node workflow.Node, ports *govern
 // unreachable — the value was accepted at Start, stored nowhere, and the agent
 // was handed nil, so an assistant ran every turn without the question.
 func (s *session) input(ctx context.Context, node workflow.Node) (json.RawMessage, error) {
-	if node.Input.Source != workflow.SourceNode {
+	switch node.Input.Source {
+	case workflow.SourceNode:
+		if len(node.Input.From) != 1 {
+			return nil, run.NewError("malformed_binding", run.ErrorInternal, run.RetryNever)
+		}
+		return s.upstreamOutput(ctx, node.Input.From[0])
+	case workflow.SourceNodes:
+		// Keyed by producing node, so a step working from several upstreams can
+		// tell them apart. A concatenation would leave the consumer guessing
+		// which half was the plan and which the research.
+		merged := make(map[string]json.RawMessage, len(node.Input.From))
+		for _, from := range node.Input.From {
+			// An upstream that produced nothing is left out rather than fatal.
+			// Only a soft-failed node can reach here without an output — a hard
+			// one has already failed the Run — and dropping the whole step
+			// because an optional predecessor was skipped would make declaring
+			// a second upstream riskier than working without it.
+			if state, ok := s.snapshot.Nodes[from]; !ok || state.OutputRef == "" {
+				continue
+			}
+			output, err := s.upstreamOutput(ctx, from)
+			if err != nil {
+				return nil, err
+			}
+			merged[from] = output
+		}
+		if len(merged) == 0 {
+			return nil, run.NewError("missing_upstream_output", run.ErrorInvalid, run.RetryNever)
+		}
+		encoded, err := json.Marshal(merged)
+		if err != nil {
+			return nil, run.NewError("unencodable_input", run.ErrorInternal, run.RetryNever, err)
+		}
+		return encoded, nil
+	default:
 		return s.snapshot.Input, nil
 	}
-	state, ok := s.snapshot.Nodes[node.Input.From]
+}
+
+func (s *session) upstreamOutput(ctx context.Context, from string) (json.RawMessage, error) {
+	state, ok := s.snapshot.Nodes[from]
 	if !ok || state.OutputRef == "" {
 		// The binding names an upstream that produced no ref. Falling back to
 		// the Run's input here would hand the node something it did not ask

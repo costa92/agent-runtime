@@ -203,8 +203,18 @@ func normalizeGraph(graph GraphSpec) GraphSpec {
 		nodes[i] = NodeSpec{
 			Name:     node.Name,
 			Agent:    node.Agent,
-			Input:    strings.TrimSpace(node.Input),
 			Optional: node.Optional,
+		}
+		if len(node.Inputs) > 0 {
+			// Sorted, so that listing the same upstreams in another order is
+			// not a different definition. Order carries no meaning: a node
+			// reads its upstreams by name.
+			inputs := make([]string, len(node.Inputs))
+			for j, name := range node.Inputs {
+				inputs[j] = strings.TrimSpace(name)
+			}
+			sort.Strings(inputs)
+			nodes[i].Inputs = inputs
 		}
 		if len(node.DependsOn) > 0 {
 			depends := append([]string(nil), node.DependsOn...)

@@ -73,11 +73,17 @@ type NodeSpec struct {
 	Name      string   `json:"name"`
 	Agent     string   `json:"agent"`
 	DependsOn []string `json:"depends_on,omitempty"`
-	// Input names the node whose output feeds this one. Empty means the Run's
+	// Inputs names the nodes whose output feeds this one. Empty means the Run's
 	// own input. It is declared rather than inferred from DependsOn because
 	// "runs after" and "reads from" are different facts: a node can wait on
 	// three predecessors and consume one of them.
-	Input string `json:"input,omitempty"`
+	//
+	// Naming several is what a step needs when it works from more than one
+	// upstream, and it must be declared rather than worked around: a writer
+	// restricted to one upstream sees only the research and never the plan it
+	// was supposed to follow, so it reads the research as a finished draft and
+	// comments on it instead of writing from it.
+	Inputs []string `json:"inputs,omitempty"`
 	// Tools is what this node may call, as a subset of the Definition's
 	// declared tools. A node that names none gets none: authority is granted
 	// per step rather than inherited by every step because one of them needed

@@ -35,8 +35,8 @@ func fanOut(t *testing.T) *workflow.ExecutionGraph {
 	// a → {b, c} → d
 	return compile(t, dag(
 		definition.NodeSpec{Name: "a", Agent: "draft"},
-		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}, Input: "a"},
-		definition.NodeSpec{Name: "c", Agent: "review", DependsOn: []string{"a"}, Input: "a"},
+		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}, Inputs: []string{"a"}},
+		definition.NodeSpec{Name: "c", Agent: "review", DependsOn: []string{"a"}, Inputs: []string{"a"}},
 		definition.NodeSpec{Name: "d", Agent: "publish", DependsOn: []string{"b", "c"}},
 	))
 }

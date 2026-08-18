@@ -297,16 +297,31 @@ func toolKeys(refs []definition.ToolRef) []string {
 // no schema. That check happens against the declared OutputSchema when a result
 // is applied, using the host's validator.
 func bindingFor(spec definition.NodeSpec) (Binding, error) {
-	if spec.Input == "" {
+	if len(spec.Inputs) == 0 {
 		return Binding{Source: SourceRunInput}, nil
 	}
+	depends := map[string]bool{}
 	for _, dependency := range spec.DependsOn {
-		if dependency == spec.Input {
-			return Binding{Source: SourceNode, From: spec.Input}, nil
-		}
+		depends[dependency] = true
 	}
-	return Binding{}, run.NewError("incompatible_binding", run.ErrorInvalid, run.RetryNever,
-		fmt.Errorf("node %q reads from %q without depending on it", spec.Name, spec.Input))
+	seen := map[string]bool{}
+	for _, from := range spec.Inputs {
+		if !depends[from] {
+			return Binding{}, run.NewError("incompatible_binding", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("node %q reads from %q without depending on it", spec.Name, from))
+		}
+		if seen[from] {
+			return Binding{}, run.NewError("duplicate_binding", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("node %q reads from %q twice", spec.Name, from))
+		}
+		seen[from] = true
+	}
+
+	source := SourceNodes
+	if len(spec.Inputs) == 1 {
+		source = SourceNode
+	}
+	return Binding{Source: source, From: append([]string(nil), spec.Inputs...)}, nil
 }
 
 // checkAcyclic refuses a graph that can never finish, by Kahn's algorithm: if

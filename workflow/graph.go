@@ -46,15 +46,23 @@ type BindingSource string
 const (
 	// SourceRunInput is the Run's own input, validated once at the boundary.
 	SourceRunInput BindingSource = "run_input"
-	// SourceNode is another node's output.
+	// SourceNode is another node's output, delivered verbatim.
 	SourceNode BindingSource = "node"
+	// SourceNodes is several nodes' outputs, delivered as one object keyed by
+	// producing node name.
+	//
+	// It is a distinct source rather than "SourceNode with more than one From"
+	// so that the payload shape is read off the declaration instead of counted
+	// at run time: a node whose upstream list grows from one to two would
+	// otherwise silently change what its consumer receives.
+	SourceNodes BindingSource = "nodes"
 )
 
 // Binding is a node's input wiring.
 type Binding struct {
 	Source BindingSource `json:"source"`
-	// From is the producing node, set only for SourceNode.
-	From string `json:"from,omitempty"`
+	// From is the producing nodes, set for SourceNode and SourceNodes.
+	From []string `json:"from,omitempty"`
 }
 
 // Node is one compiled step.
