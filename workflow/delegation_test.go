@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
@@ -140,7 +139,8 @@ func TestRoutingLimitsAreEnforcedBeforeAnyChildExists(t *testing.T) {
 	}
 
 	depth := researchPlan().Validate(
-		definition.RoutingPolicy{MaxDepth: 1}, 1, candidatesFor(researchPlan()), rootBudget())
+		definition.RoutingPolicy{MaxDepth: 1}, 1, candidatesFor(researchPlan()), rootBudget(),
+	)
 	if got := validationCode(t, depth); got != "max_depth_exceeded" {
 		t.Errorf("code=%q want=max_depth_exceeded", got)
 	}

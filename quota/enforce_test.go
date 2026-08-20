@@ -126,7 +126,8 @@ func TestARefusalOutranksADegradation(t *testing.T) {
 	meter := &fakeMeter{usage: map[quota.Unit]int{
 		quota.UnitToolCalls: 100, quota.UnitTokens: 1_000_000,
 	}}
-	subject := enforcer(t, meter,
+	subject := enforcer(
+		t, meter,
 		quota.Limit{
 			Name: "a-tools", Scope: tenant(), Unit: quota.UnitToolCalls,
 			Max: 100, Window: time.Hour, Degrade: true,
@@ -279,7 +280,8 @@ func TestAMissingMeterIsRefused(t *testing.T) {
 // produces a different explanation on every worker.
 func TestRefusalsAreDeterministic(t *testing.T) {
 	meter := &fakeMeter{usage: map[quota.Unit]int{quota.UnitTokens: 1_000}}
-	subject := enforcer(t, meter,
+	subject := enforcer(
+		t, meter,
 		quota.Limit{Name: "z-cap", Scope: tenant(), Unit: quota.UnitTokens, Max: 1, Window: time.Hour},
 		quota.Limit{Name: "a-cap", Scope: tenant(), Unit: quota.UnitTokens, Max: 2, Window: time.Hour},
 	)

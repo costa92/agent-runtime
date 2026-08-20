@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kart-io/wechat-account/agent-runtime/tool"
-
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/observe"
@@ -17,6 +15,7 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/quota"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
+	"github.com/kart-io/wechat-account/agent-runtime/tool"
 	"github.com/kart-io/wechat-account/agent-runtime/workflow"
 )
 

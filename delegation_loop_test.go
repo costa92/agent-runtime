@@ -4,11 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"time"
-
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"github.com/kart-io/wechat-account/agent-runtime/workflow"
@@ -100,7 +99,8 @@ func orchestrator(t *testing.T, router *scriptedRouter, children []workflow.Chil
 			extra = append(extra, func(d *agentruntime.Dependencies) { d.Synthesis = strategy })
 		}
 	}
-	return newHarness(t, answering("unused"),
+	return newHarness(
+		t, answering("unused"),
 		withDefinition(definition.Definition{
 			Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
 			Mode:           definition.ModeOrchestrator,
@@ -235,7 +235,8 @@ func TestTheRuntimeValidatesWhateverTheRouterReturns(t *testing.T) {
 // that is precisely how a Run would reach capability it was never granted.
 func TestAnUnauthorizedCandidateIsRefused(t *testing.T) {
 	children := []workflow.ChildSpec{childSpec("research")}
-	h := newHarness(t, answering("unused"),
+	h := newHarness(
+		t, answering("unused"),
 		withDefinition(definition.Definition{
 			Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
 			Mode:           definition.ModeOrchestrator,

@@ -543,7 +543,8 @@ func (s *MemoryStore) CommitNodeResult(_ context.Context, command store.CommitNo
 		}
 		for _, usage := range command.ModelUsage {
 			s.nodeModelUsage[record.snapshot.ID] = run.MergeModelUsage(
-				s.nodeModelUsage[record.snapshot.ID], usage.Profile, usage.InputTokens, usage.OutputTokens)
+				s.nodeModelUsage[record.snapshot.ID], usage.Profile, usage.InputTokens, usage.OutputTokens,
+			)
 		}
 	}
 	return s.commitLocked(record, command.Commit)
