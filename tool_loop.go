@@ -192,6 +192,18 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 		return nil, err
 	}
 	p.recordExplanation(name, prepared.Explanation)
+	if host := prepared.Spec.TargetHost; host != "" {
+		// The destination policy and quota just judged, recorded as the fact
+		// they judged: "which hosts did this Run reach" is asked long after the
+		// allowlist that permitted them has been edited.
+		s.runtime.record(observe.Decision{
+			Name: observe.EventEgressHostResolved, RunID: s.snapshot.ID,
+			Attributes: []observe.Attribute{
+				observe.Attr(observe.AttrHost, host),
+				observe.Attr(observe.AttrTool, name),
+			},
+		})
+	}
 
 	if err := s.admitEffect(ctx, prepared.Reserve, name); err != nil {
 		return nil, err

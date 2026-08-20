@@ -282,7 +282,6 @@ type EventKind string
 const (
 	EventStateChanged       EventKind = "state_changed"
 	EventBudgetReserved     EventKind = "budget_reserved"
-	EventBudgetDenied       EventKind = "budget_denied"
 	EventChildrenGranted    EventKind = "children_granted"
 	EventInvocationParked   EventKind = "invocation_parked"
 	EventInvocationResolved EventKind = "invocation_resolved"
