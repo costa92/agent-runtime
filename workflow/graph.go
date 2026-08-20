@@ -63,7 +63,27 @@ type Binding struct {
 	Source BindingSource `json:"source"`
 	// From is the producing nodes, set for SourceNode and SourceNodes.
 	From []string `json:"from,omitempty"`
+	// WithRunInput adds the Run's own input to what an upstream-reading node
+	// receives, under RunInputKey in the keyed object.
+	//
+	// A node that reads an upstream could otherwise never see the Run input,
+	// and what the host puts there is not always something an upstream carries
+	// forward: a writer working from a plan still needs the reader profile the
+	// Run was started with, and it reached the writer only to the extent the
+	// planner happened to echo it into the plan.
+	//
+	// It is a flag rather than a reserved name inside From, because From holds
+	// node names and a reserved name there would compete with a real node for
+	// the same namespace. Setting it forces the keyed object even for a single
+	// upstream, so the payload shape stays readable off the declaration.
+	WithRunInput bool `json:"with_run_input,omitempty"`
 }
+
+// RunInputKey is where the Run's own input appears in a keyed input object.
+//
+// No node may be named this, so the key cannot be shadowed by an upstream; the
+// compiler refuses such a graph rather than letting the collision decide.
+const RunInputKey = "run_input"
 
 // Node is one compiled step.
 //

@@ -582,6 +582,12 @@ func (s *session) input(ctx context.Context, node workflow.Node) (json.RawMessag
 		if len(merged) == 0 {
 			return nil, run.NewError("missing_upstream_output", run.ErrorInvalid, run.RetryNever)
 		}
+		if node.Input.WithRunInput {
+			// Added after the emptiness check, so declaring the flag cannot turn a
+			// step whose every upstream was skipped into one that runs on the Run
+			// input alone and reports success.
+			merged[workflow.RunInputKey] = s.snapshot.Input
+		}
 		encoded, err := json.Marshal(merged)
 		if err != nil {
 			return nil, run.NewError("unencodable_input", run.ErrorInternal, run.RetryNever, err)

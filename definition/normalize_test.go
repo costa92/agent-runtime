@@ -2,6 +2,7 @@ package definition
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/run"
@@ -209,4 +210,46 @@ func mustFail(t *testing.T, definition Definition) error {
 		t.Error("expected a rejection, got none")
 	}
 	return err
+}
+
+// normalizeGraph rebuilds each NodeSpec field by field, so a field added to the
+// struct and not added there is dropped before the compiler sees it — while the
+// declaration still holds it, which is how a wired-up node behaves as if it
+// were never wired.
+//
+// Checked by reflection rather than by listing the fields, because a test that
+// lists them has the same gap as the code it guards.
+func TestNormalizeKeepsEveryNodeSpecField(t *testing.T) {
+	spec := NodeSpec{}
+	value := reflect.ValueOf(&spec).Elem()
+	for i := range value.NumField() {
+		field := value.Field(i)
+		switch field.Kind() {
+		case reflect.String:
+			field.SetString("x")
+		case reflect.Bool:
+			field.SetBool(true)
+		case reflect.Slice:
+			field.Set(reflect.ValueOf([]string{"x"}))
+		default:
+			t.Fatalf("NodeSpec.%s has an unhandled kind %s; teach this test to populate it",
+				value.Type().Field(i).Name, field.Kind())
+		}
+	}
+	// Name and the reference fields must agree with each other for the node to
+	// survive as declared: a node reads an upstream it depends on.
+	spec.Name = "b"
+	spec.Inputs = []string{"a"}
+	spec.DependsOn = []string{"a"}
+
+	normalized := normalizeGraph(GraphSpec{Nodes: []NodeSpec{{Name: "a", Agent: "draft"}, spec}}).Nodes[1]
+
+	for i := range value.NumField() {
+		name := value.Type().Field(i).Name
+		want := value.Field(i).Interface()
+		got := reflect.ValueOf(normalized).Field(i).Interface()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("NodeSpec.%s did not survive normalization: got %v, want %v", name, got, want)
+		}
+	}
 }

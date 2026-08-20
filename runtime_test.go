@@ -1628,4 +1628,59 @@ func TestANodeReadingSeveralUpstreamsReceivesThemKeyedByNode(t *testing.T) {
 	if !strings.Contains(string(byNode["researcher"]), "evidence") {
 		t.Fatalf("the writer did not receive the research: %s", seen[2])
 	}
+	if _, ok := byNode[workflow.RunInputKey]; ok {
+		t.Fatalf("a node that did not ask for the Run input was given it anyway: %s", seen[2])
+	}
+}
+
+// A node that declares with_run_input receives the Run's own input beside its
+// upstreams, under a key no node may take.
+//
+// Without it a step reading an upstream can never see what the Run was started
+// with: the reader profile the host puts on the input reached the writer only as
+// far as the planner happened to echo it into the plan, so the personalisation
+// was present in the outline and absent from the body.
+func TestANodeCanReadTheRunInputBesideItsUpstreams(t *testing.T) {
+	var seen []string
+	recorder := scriptedAgent{execute: func(_ context.Context, request agent.Request) (agent.Response, error) {
+		seen = append(seen, string(request.Input))
+		return agent.Response{Output: json.RawMessage(`{"content":"plan"}`)}, nil
+	}}
+
+	h := newHarness(t, recorder, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Graph: definition.GraphSpec{Nodes: []definition.NodeSpec{
+			{Name: "planner", Agent: "answer"},
+			{
+				Name: "writer", Agent: "answer",
+				DependsOn:    []string{"planner"},
+				Inputs:       []string{"planner"},
+				WithRunInput: true,
+			},
+		}},
+	}))
+	started := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("nodes executed = %d, want 2: %q", len(seen), seen)
+	}
+	byNode := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(seen[1]), &byNode); err != nil {
+		// A single upstream plus the flag still delivers the keyed object, so the
+		// shape is read off the declaration rather than counted at run time.
+		t.Fatalf("the writer's input is not an object keyed by node: %s", seen[1])
+	}
+	if !strings.Contains(string(byNode["planner"]), "plan") {
+		t.Fatalf("the writer did not receive the plan: %s", seen[1])
+	}
+	if string(byNode[workflow.RunInputKey]) != `{"q":"x"}` {
+		t.Fatalf("the writer did not receive the Run input: %s", seen[1])
+	}
 }

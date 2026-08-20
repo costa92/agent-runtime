@@ -232,6 +232,13 @@ func (c Compiler) buildNodes(declared definition.Definition) ([]Node, error) {
 	declaredNodes := map[string]bool{}
 	hasDependents := map[string]bool{}
 	for _, spec := range declared.Graph.Nodes {
+		if spec.Name == RunInputKey {
+			// A node by this name would shadow the Run input in every keyed input
+			// object, and which one won would depend on map iteration rather than
+			// on anything declared.
+			return nil, run.NewError("reserved_node_name", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("node may not be named %q", RunInputKey))
+		}
 		declaredNodes[spec.Name] = true
 	}
 	for _, spec := range declared.Graph.Nodes {
@@ -298,6 +305,14 @@ func toolKeys(refs []definition.ToolRef) []string {
 // is applied, using the host's validator.
 func bindingFor(spec definition.NodeSpec) (Binding, error) {
 	if len(spec.Inputs) == 0 {
+		if spec.WithRunInput {
+			// This node already receives the Run input and nothing else. Honouring
+			// the flag would wrap that same value in a keyed object, so a
+			// declaration that reads as "also give me the Run input" would change
+			// the shape of what the node gets. Refusing says so at compile time.
+			return Binding{}, run.NewError("redundant_binding", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("node %q sets with_run_input but reads no upstream", spec.Name))
+		}
 		return Binding{Source: SourceRunInput}, nil
 	}
 	depends := map[string]bool{}
@@ -318,10 +333,14 @@ func bindingFor(spec definition.NodeSpec) (Binding, error) {
 	}
 
 	source := SourceNodes
-	if len(spec.Inputs) == 1 {
+	if len(spec.Inputs) == 1 && !spec.WithRunInput {
 		source = SourceNode
 	}
-	return Binding{Source: source, From: append([]string(nil), spec.Inputs...)}, nil
+	return Binding{
+		Source:       source,
+		From:         append([]string(nil), spec.Inputs...),
+		WithRunInput: spec.WithRunInput,
+	}, nil
 }
 
 // checkAcyclic refuses a graph that can never finish, by Kahn's algorithm: if

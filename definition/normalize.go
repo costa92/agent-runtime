@@ -200,10 +200,14 @@ func normalizeGraph(graph GraphSpec) GraphSpec {
 	}
 	nodes := make([]NodeSpec, len(graph.Nodes))
 	for i, node := range graph.Nodes {
+		// Rebuilt field by field rather than copied, which means a field added to
+		// NodeSpec and not added here is dropped before the compiler ever sees
+		// it — silently, since the declaration still holds it.
 		nodes[i] = NodeSpec{
-			Name:     node.Name,
-			Agent:    node.Agent,
-			Optional: node.Optional,
+			Name:         node.Name,
+			Agent:        node.Agent,
+			Optional:     node.Optional,
+			WithRunInput: node.WithRunInput,
 		}
 		if len(node.Inputs) > 0 {
 			// Sorted, so that listing the same upstreams in another order is

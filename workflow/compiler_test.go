@@ -234,6 +234,29 @@ func TestBindingWithoutADependencyIsRefused(t *testing.T) {
 	}
 }
 
+// A node that reads no upstream already receives the Run input and nothing
+// else. Honouring the flag there would wrap that same value in a keyed object,
+// so a declaration reading "also give me the Run input" would change the shape
+// of what the node gets.
+func TestWithRunInputWithoutAnUpstreamIsRefused(t *testing.T) {
+	if code := compileError(t, dag(
+		definition.NodeSpec{Name: "a", Agent: "draft", WithRunInput: true},
+	)).Code; code != "redundant_binding" {
+		t.Fatalf("code=%q, want redundant_binding", code)
+	}
+}
+
+// The Run input's key in a keyed input object is not a namespace a node may
+// enter: a node named run_input would shadow it, and which one won would depend
+// on map iteration rather than on anything declared.
+func TestANodeNamedAfterTheRunInputKeyIsRefused(t *testing.T) {
+	if code := compileError(t, dag(
+		definition.NodeSpec{Name: workflow.RunInputKey, Agent: "draft"},
+	)).Code; code != "reserved_node_name" {
+		t.Fatalf("code=%q, want reserved_node_name", code)
+	}
+}
+
 func TestMemoryCeilingAboveTheBudgetIsRefused(t *testing.T) {
 	if code := compileError(t, definition.Definition{
 		Budget: run.Limits{Tokens: 100},

@@ -84,6 +84,15 @@ type NodeSpec struct {
 	// was supposed to follow, so it reads the research as a finished draft and
 	// comments on it instead of writing from it.
 	Inputs []string `json:"inputs,omitempty"`
+	// WithRunInput adds the Run's own input alongside those upstream outputs,
+	// for a step that needs both. What the host puts in the Run input is not
+	// always something an upstream carries forward: a writer working from a
+	// plan still needs the reader profile the Run was started with, and it
+	// reached the writer only as far as the planner happened to echo it.
+	//
+	// It is a separate field rather than a reserved name in Inputs, which holds
+	// node names — a reserved name there would compete with a real node.
+	WithRunInput bool `json:"with_run_input,omitempty"`
 	// Tools is what this node may call, as a subset of the Definition's
 	// declared tools. A node that names none gets none: authority is granted
 	// per step rather than inherited by every step because one of them needed
