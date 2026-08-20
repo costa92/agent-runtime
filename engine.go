@@ -25,7 +25,11 @@ import (
 // shared between Runs: a session that outlived its lease would be a worker
 // acting on a Run it no longer owns.
 type session struct {
-	runtime  *runtime
+	runtime *runtime
+	// leaseMu guards lease. The renewal loop runs beside the node it keeps the
+	// Run alive for, and both sides touch the lease: the loop replaces it on
+	// every tick, and the node reads its token on every command it fences.
+	leaseMu  sync.Mutex
 	lease    store.Lease
 	snapshot run.Snapshot
 	declared definition.Definition
@@ -200,7 +204,7 @@ func (s *session) fence() store.ExecutionFence {
 	return store.ExecutionFence{
 		RunID:                         s.snapshot.ID,
 		ExpectedRevision:              s.snapshot.Revision,
-		LeaseToken:                    s.lease.Token,
+		LeaseToken:                    s.leaseToken(),
 		ExpectedRootCancellationEpoch: s.snapshot.RootCancellationEpoch,
 	}
 }
@@ -460,7 +464,7 @@ func (s *session) commitNode(
 	used run.Limits, modelUsage []run.ModelUsage, facts ...store.ProjectionFact,
 ) (run.Snapshot, error) {
 	if _, err := s.runtime.deps.Store.SealForCommit(ctx, store.SealCommand{
-		RunID: s.snapshot.ID, LeaseToken: s.lease.Token,
+		RunID: s.snapshot.ID, LeaseToken: s.leaseToken(),
 	}); err != nil {
 		return run.Snapshot{}, err
 	}
@@ -504,7 +508,7 @@ func (s *session) commitNode(
 		RunID: s.snapshot.ID, Owner: s.runtime.deps.Owner, LeaseFor: s.runtime.deps.LeaseFor,
 	})
 	if err == nil {
-		s.lease = lease
+		s.setLease(lease)
 	}
 	return committed, nil
 }
@@ -615,6 +619,18 @@ func (s *session) upstreamOutput(ctx context.Context, from string) (json.RawMess
 	return s.runtime.deps.Store.NodeOutput(ctx, s.snapshot.ID, state.OutputRef)
 }
 
+func (s *session) leaseToken() string {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	return s.lease.Token
+}
+
+func (s *session) setLease(lease store.Lease) {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	s.lease = lease
+}
+
 // renewing starts a bounded renew loop and returns a context that is cancelled
 // the moment ownership is lost.
 //
@@ -634,6 +650,10 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 		stopping = make(chan struct{})
 		failure  error
 	)
+	// Captured before the goroutine starts. The ID never changes, but the
+	// Snapshot around it is replaced on every commit, so reading it from here
+	// would race the node that is committing.
+	runID := s.snapshot.ID
 	go func() {
 		defer close(done)
 		// Renew once up front rather than only on a tick. One Advance walks the
@@ -645,13 +665,13 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 		// graph's total run time passed LeaseFor. Sealing blocks takeover, not
 		// the owner's own renewal, so this is the extension available here.
 		if lease, err := s.runtime.deps.Store.Renew(ctx, store.RenewCommand{
-			RunID: s.snapshot.ID, LeaseToken: s.lease.Token, LeaseFor: s.runtime.deps.LeaseFor,
+			RunID: runID, LeaseToken: s.leaseToken(), LeaseFor: s.runtime.deps.LeaseFor,
 		}); err != nil {
 			failure = err
 			cancel()
 			return
 		} else {
-			s.lease = lease
+			s.setLease(lease)
 		}
 
 		ticker := time.NewTicker(interval)
@@ -664,7 +684,7 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 				return
 			case <-ticker.C:
 				lease, err := s.runtime.deps.Store.Renew(ctx, store.RenewCommand{
-					RunID: s.snapshot.ID, LeaseToken: s.lease.Token, LeaseFor: s.runtime.deps.LeaseFor,
+					RunID: runID, LeaseToken: s.leaseToken(), LeaseFor: s.runtime.deps.LeaseFor,
 				})
 				if err != nil {
 					failure = err
@@ -675,7 +695,7 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 					cancel()
 					return
 				}
-				s.lease = lease
+				s.setLease(lease)
 			}
 		}
 	}()
