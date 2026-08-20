@@ -117,7 +117,6 @@ func TestThePolicyEventIdentifiesTheRuleThatDecided(t *testing.T) {
 			observe.Attr(observe.AttrTool, "publish"),
 			observe.Attr(observe.AttrDecision, "deny"),
 			observe.Attr(observe.AttrPolicyName, "no-publish"),
-			observe.Attr(observe.AttrPolicyVersion, "3"),
 			observe.Attr(observe.AttrPolicyDigest, "snap-1"),
 			observe.Attr(observe.AttrShadow, "false"),
 		},

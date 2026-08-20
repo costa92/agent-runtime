@@ -33,7 +33,6 @@ const (
 	AttrProfile        = "profile"
 	AttrCapability     = "capability"
 	AttrPolicyName     = "policy_name"
-	AttrPolicyVersion  = "policy_version"
 	AttrPolicyDigest   = "policy_digest"
 	AttrDecision       = "decision"
 	AttrShadow         = "shadow"
@@ -69,9 +68,12 @@ func BuiltinEventSpecs() []EventSpec {
 		},
 		{
 			Name: EventPolicyEvaluated, APIVersion: "v1", Stability: StableEvent,
+			// The rule set is identified by its snapshot digest, not by a
+			// per-policy version: a Policy has no version of its own, and a
+			// field the emitter can never fill is a promise to consumers that
+			// nothing keeps.
 			Fields: []string{
-				AttrTool, AttrDecision, AttrPolicyName, AttrPolicyVersion,
-				AttrPolicyDigest, AttrShadow,
+				AttrTool, AttrDecision, AttrPolicyName, AttrPolicyDigest, AttrShadow,
 			},
 		},
 		{
