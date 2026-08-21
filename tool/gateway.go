@@ -249,6 +249,7 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 		Invocation: Invocation{
 			ID:             request.InvocationID,
 			Tool:           spec.Name,
+			RunID:          request.RunID,
 			Arguments:      request.Arguments,
 			Principal:      request.Principal,
 			IdempotencyKey: request.IdempotencyKey,

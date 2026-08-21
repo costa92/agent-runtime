@@ -414,3 +414,33 @@ func TestFailSafeWriteToolUnknownFailureStillUnknown(t *testing.T) {
 		t.Fatalf("outcome=%s want=unknown", mutation.Outcome)
 	}
 }
+
+// A handler whose effect outlives the call has to be able to record what that
+// effect belonged to. Withholding the Run identity did not stop a second
+// writer — handlers still reach no Run state — it only left async jobs with no
+// way back to the conversation that started them, which is how the assistant's
+// task cards stopped appearing at all.
+func TestGatewayTellsTheHandlerWhichRunTheCallBelongsTo(t *testing.T) {
+	var seen run.ID
+	handler := tool.HandlerFunc(func(_ context.Context, invocation tool.Invocation) (tool.Result, error) {
+		seen = invocation.RunID
+		return tool.Result{Output: json.RawMessage(`{}`)}, nil
+	})
+	gateway := gatewayWith(t, testkit.PublishSpec(), handler)
+
+	request := publishRequest()
+	request.RunID = "run-abc123"
+	prepared, err := gateway.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if prepared.Invocation.RunID != "run-abc123" {
+		t.Fatalf("prepared RunID = %q, want run-abc123", prepared.Invocation.RunID)
+	}
+	if _, err := gateway.Execute(context.Background(), tool.CommittedInvocation{Prepared: prepared}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if seen != "run-abc123" {
+		t.Fatalf("handler saw RunID %q, want run-abc123", seen)
+	}
+}

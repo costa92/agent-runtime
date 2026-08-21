@@ -53,8 +53,19 @@ type Spec struct {
 // Invocation is what a handler receives. It carries no store, no lease and no
 // Run state: a handler that could reach those would be a second writer.
 type Invocation struct {
-	ID             run.ID
-	Tool           string
+	ID   run.ID
+	Tool string
+	// RunID names the Run this call belongs to, for handlers whose effect
+	// outlives the call and has to be findable again from the Run — an async
+	// job the host starts here and the user expects to still see attached to
+	// this conversation tomorrow.
+	//
+	// It is an opaque identifier, not an opening in the rule above: a handler
+	// can correlate its own rows with it, and still cannot read or write any
+	// Run state through it. Withholding it did not prevent a second writer; it
+	// only meant the host had no way to record what its own effect belonged
+	// to, and the association was lost.
+	RunID          run.ID
 	Arguments      json.RawMessage
 	Principal      authorization.PrincipalRef
 	IdempotencyKey string
