@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -281,6 +282,9 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 	if _, err := r.graphs.Get(ctx, graphRef); err != nil {
 		return run.Snapshot{}, err
 	}
+	if err := declaredLabels(declared, request.Restrictions.Labels); err != nil {
+		return run.Snapshot{}, err
+	}
 
 	policies, err := r.deps.Governance.PolicySnapshot(ctx, principal.Tenant, "")
 	if err != nil {
@@ -304,6 +308,22 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 			Trace:        run.TraceContext{TraceID: string(traceID), SpanID: string(id), Sampled: true},
 		},
 	})
+}
+
+// declaredLabels refuses a Run label the Definition did not publish.
+//
+// Refused at Start rather than ignored at evaluation: a label that silently
+// did nothing would leave the caller believing the Run is governed by a rule
+// that never sees it, and the failure would show up as work that was supposed
+// to be refused going ahead.
+func declaredLabels(declared definition.Definition, requested []string) error {
+	for _, label := range requested {
+		if !slices.Contains(declared.RunLabels, label) {
+			return run.NewError("undeclared_run_label", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("definition %q publishes no run label %q", declared.Ref.ID, label))
+		}
+	}
+	return nil
 }
 
 // envelopeFor prefers the caller's budget and falls back to the Definition's.

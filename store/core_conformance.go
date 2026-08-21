@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -798,6 +799,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		create := sampleCreate("run-1")
 		create.Restrictions = run.Restrictions{
 			Tools: []string{"search"}, DenySideEffects: true,
+			Labels: []string{"evidence_optional"},
 		}
 		created, err := harness.Store.Create(ctx, create)
 		if err != nil {
@@ -815,13 +817,22 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if !reloaded.Restrictions.DenySideEffects {
 			t.Fatal("a Run came back able to perform the side effects it gave up")
 		}
+		// The labels are what a policy condition on "label" reads, and the
+		// worker that evaluates it is not the process that started the Run. A
+		// store that dropped them would let a call the label was meant to
+		// refuse go through, and the audit would record it as allowed.
+		if !slices.Equal(reloaded.Restrictions.Labels, []string{"evidence_optional"}) {
+			t.Fatalf("a Run came back without the labels it is judged by: %v",
+				reloaded.Restrictions.Labels)
+		}
 
 		unrestricted, err := harness.Store.Create(ctx, sampleCreate("run-2"))
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
 		if unrestricted.Restrictions.DenySideEffects ||
-			len(unrestricted.Restrictions.Tools) != 0 {
+			len(unrestricted.Restrictions.Tools) != 0 ||
+			len(unrestricted.Restrictions.Labels) != 0 {
 			t.Fatalf("an unrestricted Run came back restricted: %+v",
 				unrestricted.Restrictions)
 		}

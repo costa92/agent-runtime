@@ -174,7 +174,11 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 		Principal:      s.snapshot.Principal,
 		IdempotencyKey: string(invocationID),
 		Facts: policy.CallFacts{
-			AgentName:          p.node.Implementation,
+			AgentName: p.node.Implementation,
+			// The Run's own declared labels. The gateway adds the tool's on top,
+			// so a policy condition on "label" sees both what this Run is and
+			// what it is about to call.
+			Labels:             s.snapshot.Restrictions.Labels,
 			BudgetRemainingPct: remainingPercent(s.snapshot.Budget),
 		},
 		Policies: s.policies,

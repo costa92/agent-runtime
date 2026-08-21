@@ -229,6 +229,12 @@ func (frozenTools) Specs() []tool.Spec {
 		Name: "render_picture_book", Description: "draw a book",
 		Parameters: json.RawMessage(`{"type":"object"}`),
 		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, {
+		// A plain read, so a rule that refuses it is refusing it on the fact
+		// the test names rather than on its risk level.
+		Name: "search_evidence", Description: "retrieve",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskLow, SideEffect: policy.SideEffectRead,
 	}}
 }
 
@@ -1774,4 +1780,128 @@ func attributeOf(decision observe.Decision, key string) string {
 		}
 	}
 	return ""
+}
+
+// A Run label must reach the policy evaluation, refuse the call, and leave the
+// Run able to finish without it.
+//
+// The gap this closes is specific: a step that calls a tool because the model
+// asked for it cannot be governed by a prompt. Telling the model not to search
+// is a request, and the only place a request becomes a refusal is the gateway.
+func TestARunLabelRefusesATheModelInitiatedToolCallWithoutFailingTheRun(t *testing.T) {
+	registry := tool.NewRegistry()
+	handler := testkit.ToolSucceeding(`{"items":[{"url":"https://example.com"}]}`)
+	if err := registry.Register(tool.Spec{
+		Name: "search_evidence", Description: "retrieve",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskLow, SideEffect: policy.SideEffectRead,
+	}, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+
+	declared := definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools:          []definition.ToolRef{{Key: "search_evidence"}},
+		RunLabels:      []string{"evidence_optional"},
+	}
+	noRetrieval := policy.Snapshot{
+		Default: policy.DefaultRule{ReadOnly: policy.DecisionAllow, HighRisk: policy.DecisionDeny},
+		Policies: []policy.Policy{{
+			Name:      "no-retrieval-when-grounding-was-not-requested",
+			Scope:     policy.ScopeTool,
+			ScopeName: "search_evidence",
+			Conditions: []policy.Condition{
+				{Fact: policy.FactToolName, Operator: policy.OpEquals, Values: []string{"search_evidence"}},
+				{Fact: policy.FactLabel, Operator: policy.OpIn, Values: []string{"evidence_optional"}},
+			},
+			Decision: policy.DecisionDeny,
+		}},
+	}
+
+	// The agent asks for the tool unconditionally, the way a model that was
+	// told not to search still asks for it.
+	var toolErr error
+	agentAsking := scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		_, toolErr = request.Ports.Tool(ctx, "search_evidence", json.RawMessage(`{"query":"k8s"}`))
+		// A refusal is an answer the step can work with, which is the whole
+		// reason a hard gate is usable here at all.
+		return agent.Response{Output: json.RawMessage(`{"content":"written without citations"}`)}, nil
+	}}
+
+	t.Run("Labelled", func(t *testing.T) {
+		toolErr = nil
+		h := newHarness(t, agentAsking, withDefinition(declared), withDeps(func(deps *agentruntime.Dependencies) {
+			deps.Governance = fakeGovernance{policies: noRetrieval}
+			deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		}))
+		started, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+			Principal:    principal(),
+			Definition:   run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+			Input:        json.RawMessage(`{"q":"x"}`),
+			Budget:       run.Limits{LLMCalls: 10, Tokens: 10_000, ToolCalls: 10},
+			Restrictions: run.Restrictions{Labels: []string{"evidence_optional"}},
+		})
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+
+		result, err := h.runtime.Advance(t.Context(), started.ID)
+		if err != nil {
+			t.Fatalf("advance: %v", err)
+		}
+		if run.KindOf(toolErr) != run.ErrorDenied {
+			t.Fatalf("tool error = %v; the label did not refuse the retrieval", toolErr)
+		}
+		if handler.Calls() != 0 {
+			t.Fatalf("the refused tool ran anyway: %d calls", handler.Calls())
+		}
+		if result.Run.State != run.StateSucceeded {
+			t.Fatalf("state=%s; the refusal failed the Run instead of letting the step finish without evidence",
+				result.Run.State)
+		}
+	})
+
+	t.Run("Unlabelled", func(t *testing.T) {
+		toolErr = nil
+		h := newHarness(t, agentAsking, withDefinition(declared), withDeps(func(deps *agentruntime.Dependencies) {
+			deps.Governance = fakeGovernance{policies: noRetrieval}
+			deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		}))
+		started := start(t, h)
+
+		result, err := h.runtime.Advance(t.Context(), started.ID)
+		if err != nil {
+			t.Fatalf("advance: %v", err)
+		}
+		if toolErr != nil {
+			t.Fatalf("tool error = %v; the rule refused a Run that never carried the label", toolErr)
+		}
+		if result.Run.State != run.StateSucceeded {
+			t.Fatalf("state=%s", result.Run.State)
+		}
+	})
+}
+
+// A label the Definition never published is refused at Start rather than
+// ignored. Ignoring it would leave the caller believing the Run is judged by a
+// rule that never sees it, and the symptom is work going ahead that was
+// supposed to be refused.
+func TestStartRefusesALabelTheDefinitionDoesNotPublish(t *testing.T) {
+	h := newHarness(t, answering("done"))
+
+	_, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+		Principal:    principal(),
+		Definition:   run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Input:        json.RawMessage(`{"q":"x"}`),
+		Budget:       run.Limits{LLMCalls: 1, Tokens: 100, ToolCalls: 1},
+		Restrictions: run.Restrictions{Labels: []string{"invented_by_the_caller"}},
+	})
+	if run.KindOf(err) != run.ErrorInvalid {
+		t.Fatalf("start error = %v, want an invalid-argument refusal", err)
+	}
 }

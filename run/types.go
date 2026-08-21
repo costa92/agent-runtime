@@ -167,6 +167,21 @@ type Restrictions struct {
 	// DenySideEffects refuses any call that changes state the Runtime cannot
 	// roll back, whatever the policy says about it.
 	DenySideEffects bool `json:"deny_side_effects,omitempty"`
+	// Labels are the declared facts this Run is judged under, readable by a
+	// policy condition on "label" and by nothing else.
+	//
+	// They are facts rather than a narrowing, which is why they sit here and
+	// not in a field of their own: this struct is the one per-Run governance
+	// input, set once at Start and durable, and a second carrier for the same
+	// lifecycle would be a second thing to persist and a second thing to
+	// forget. The Tools and DenySideEffects halves narrow; this half only
+	// says something true about the Run.
+	//
+	// A label is not free text. Start refuses one the Definition did not
+	// publish in RunLabels, so the vocabulary is versioned and reviewable at
+	// publish time and a caller cannot invent a fact to be judged by. What a
+	// label means is decided by the published policy set, not here.
+	Labels []string `json:"labels,omitempty"`
 }
 
 // Narrow returns the allowlist a Run may actually use.

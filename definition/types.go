@@ -134,6 +134,18 @@ type Definition struct {
 
 	Graph   GraphSpec     `json:"graph,omitzero"`
 	Routing RoutingPolicy `json:"routing,omitzero"`
+
+	// RunLabels is the closed vocabulary of labels a caller may set on a Run of
+	// this Definition. Empty means a Run of it carries no labels at all.
+	//
+	// Declared here because the alternative is free-text labels chosen per
+	// request, and a governance fact anybody can invent is a governance fact
+	// nobody reviews: policies would come to depend on strings that appear in
+	// no published resource. Listing them on the Definition puts the vocabulary
+	// through the same publish, version and digest as everything else it
+	// declares, and makes "which facts can this agent be judged by" answerable
+	// by reading the definition rather than by grepping callers.
+	RunLabels []string `json:"run_labels,omitempty"`
 }
 
 // SchemaValidator is the host's JSON Schema implementation.

@@ -33,6 +33,7 @@ func Normalize(definition Definition) (Definition, string, error) {
 	normalized.Tools = normalizeTools(definition.Tools)
 	normalized.Memories = normalizeMemories(definition.Memories)
 	normalized.Graph = normalizeGraph(definition.Graph)
+	normalized.RunLabels = normalizeRunLabels(definition.RunLabels)
 	normalized.InputSchema = compactSchema(definition.InputSchema)
 	normalized.OutputSchema = compactSchema(definition.OutputSchema)
 
@@ -86,6 +87,23 @@ func validate(definition Definition) error {
 				fmt.Errorf("tool %q declared twice", key))
 		}
 		seenTools[key] = true
+	}
+
+	seenLabels := map[string]bool{}
+	for _, label := range definition.RunLabels {
+		trimmed := strings.TrimSpace(label)
+		if trimmed == "" {
+			return run.NewError("empty_run_label", run.ErrorInvalid, run.RetryNever)
+		}
+		if seenLabels[trimmed] {
+			// Worth refusing rather than deduplicating: a vocabulary that
+			// lists the same label twice is a declaration whose author lost
+			// track of it, and the duplicate would be invisible after
+			// normalization.
+			return run.NewError("duplicate_run_label", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("run label %q declared twice", trimmed))
+		}
+		seenLabels[trimmed] = true
 	}
 
 	seenMemories := map[string]bool{}
@@ -157,6 +175,21 @@ func validateSchemaShape(field string, schema json.RawMessage) error {
 			fmt.Errorf("%s: %w", field, err))
 	}
 	return nil
+}
+
+// normalizeRunLabels sorts the vocabulary so that reordering it is not a
+// change, and trims each entry so that a stray space does not produce a label
+// no caller can ever match.
+func normalizeRunLabels(labels []string) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make([]string, len(labels))
+	for i, label := range labels {
+		out[i] = strings.TrimSpace(label)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // normalizeTools sorts by key so that reordering a list is not a change.
