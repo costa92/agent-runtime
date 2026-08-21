@@ -69,6 +69,16 @@ type Explanation struct {
 	// considered them. Shadow entries are included and never affected the
 	// outcome.
 	Matched []Match
+	// Deciding names the one policy that produced Decision. It is nil when no
+	// policy did: nothing matched and the default applied. Reading it is the
+	// only correct way to name the rule in force — inferring it from Matched by
+	// comparing decisions picks a shadow entry whenever one happens to agree,
+	// and cannot tell two enforced rules that agree apart at all.
+	//
+	// A Strategy that tightened the outcome is named by TightenedBy, not here:
+	// Deciding stays the declarative rule the strategy narrowed, so an operator
+	// reading the audit can still find the published policy involved.
+	Deciding *Match
 	// FromDefault marks a decision nothing matched.
 	FromDefault bool
 	// SnapshotDigest names the rule set this came from.
@@ -131,6 +141,11 @@ func Evaluate(snapshot Snapshot, facts CallFacts, strategies ...Strategy) (Expla
 			continue
 		}
 		explanation.Decision = policy.Decision
+		// A copy rather than a pointer into Matched: a later append can move
+		// that backing array, and a Deciding that silently stopped tracking
+		// would be worse than no field at all.
+		deciding := explanation.Matched[len(explanation.Matched)-1]
+		explanation.Deciding = &deciding
 		decided = true
 	}
 
@@ -158,6 +173,28 @@ func Evaluate(snapshot Snapshot, facts CallFacts, strategies ...Strategy) (Expla
 	}
 
 	return explanation, nil
+}
+
+// ShadowWouldTighten returns the strictest shadow policy that fired with a
+// stricter decision than the enforced outcome, if there is one.
+//
+// That disagreement is the entire product of a dry run: it is the call enforce
+// would have stopped and shadow did not. A shadow policy that agrees with the
+// outcome changed nothing and predicts nothing, so it is not reported here —
+// counting it would inflate the estimated impact of turning the rule on with
+// calls that are already being stopped.
+func (e Explanation) ShadowWouldTighten() (Match, bool) {
+	var strictest Match
+	found := false
+	for _, match := range e.Matched {
+		if !match.Shadow || match.Decision.Precedence() >= e.Decision.Precedence() {
+			continue
+		}
+		if !found || match.Decision.Precedence() < strictest.Decision.Precedence() {
+			strictest, found = match, true
+		}
+	}
+	return strictest, found
 }
 
 // Executable reports whether the decision permits the call to proceed now.

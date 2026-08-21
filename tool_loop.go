@@ -304,11 +304,19 @@ func (p *governedPorts) recordExplanation(name string, explanation policy.Explan
 			observe.Attr(observe.AttrPolicyDigest, explanation.SnapshotDigest),
 		},
 	}
-	if len(explanation.Matched) > 0 {
+	if explanation.Deciding != nil {
+		// The rule in force, not the first one that fired: shadow entries sort
+		// in among the rest and naming one of them would attribute the decision
+		// to a policy that by definition did not make it.
 		decision.Attributes = append(decision.Attributes,
-			observe.Attr(observe.AttrPolicyName, explanation.Matched[0].Name),
-			observe.Attr(observe.AttrShadow, boolText(explanation.Matched[0].Shadow)))
+			observe.Attr(observe.AttrPolicyName, explanation.Deciding.Name))
 	}
+	// shadow reports a dry run that disagreed with the enforced outcome, not
+	// merely that a shadow rule fired: a shadow rule agreeing with the decision
+	// predicts nothing about turning it on.
+	_, diverged := explanation.ShadowWouldTighten()
+	decision.Attributes = append(decision.Attributes,
+		observe.Attr(observe.AttrShadow, boolText(diverged)))
 	p.session.runtime.record(decision)
 }
 

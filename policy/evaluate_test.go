@@ -249,3 +249,121 @@ type tightener struct{ to policy.Decision }
 func (tightener) Name() string { return "test-strategy" }
 
 func (s tightener) Tighten(policy.Decision, policy.CallFacts) policy.Decision { return s.to }
+
+func shadowPublish(name string, decision policy.Decision) policy.Policy {
+	shadow := matchPublish(name, policy.ScopeTool, decision)
+	shadow.Shadow = true
+	return shadow
+}
+
+// The rule in force has to be named by the explanation. Inferring it from
+// Matched by looking for the decision that came out picks whichever entry
+// happens to sort first, and a shadow rule that agrees sorts among the rest.
+func TestDecidingNamesTheEnforcedRuleNotAnAgreeingShadow(t *testing.T) {
+	snapshot := policy.Snapshot{Policies: []policy.Policy{
+		shadowPublish("a-shadow-deny", policy.DecisionDeny),
+		matchPublish("b-enforced-deny", policy.ScopeTool, policy.DecisionDeny),
+	}}
+
+	explanation, err := policy.Evaluate(snapshot, publishFacts())
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if explanation.Decision != policy.DecisionDeny {
+		t.Fatalf("decision=%s want=deny", explanation.Decision)
+	}
+	if !explanation.Matched[0].Shadow {
+		t.Fatalf("the shadow rule no longer sorts first; the case under test is gone")
+	}
+	if explanation.Deciding == nil {
+		t.Fatalf("no deciding rule reported for an enforced deny")
+	}
+	if explanation.Deciding.Name != "b-enforced-deny" {
+		t.Errorf("deciding = %q, want b-enforced-deny", explanation.Deciding.Name)
+	}
+	if explanation.Deciding.Shadow {
+		t.Errorf("deciding rule reported as shadow; a shadow rule never decides")
+	}
+	// The shadow rule agreed with the outcome, so it predicts nothing about
+	// enforcing it: this call is already being stopped.
+	if match, diverged := explanation.ShadowWouldTighten(); diverged {
+		t.Errorf("shadow divergence on an agreeing shadow rule: %s", match.Name)
+	}
+}
+
+// A shadow rule stricter than the enforced outcome is the one case a dry run
+// exists to surface.
+func TestShadowWouldTightenReportsOnlyDisagreement(t *testing.T) {
+	snapshot := policy.Snapshot{Policies: []policy.Policy{
+		shadowPublish("would-deny", policy.DecisionDeny),
+		matchPublish("allow-writer", policy.ScopeTool, policy.DecisionAllow),
+	}}
+
+	explanation, err := policy.Evaluate(snapshot, publishFacts())
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if explanation.Decision != policy.DecisionAllow {
+		t.Fatalf("decision=%s want=allow; a shadow rule must not enforce", explanation.Decision)
+	}
+	if explanation.Deciding == nil || explanation.Deciding.Name != "allow-writer" {
+		t.Fatalf("deciding = %+v, want allow-writer", explanation.Deciding)
+	}
+	match, diverged := explanation.ShadowWouldTighten()
+	if !diverged {
+		t.Fatalf("a shadow deny over an enforced allow was not reported")
+	}
+	if match.Name != "would-deny" {
+		t.Errorf("shadow match = %q, want would-deny", match.Name)
+	}
+}
+
+// Nothing matched, so there is no rule to name. A caller that assumed one
+// exists would attribute the default to whatever policy it found lying around.
+func TestDecidingIsAbsentWhenTheDefaultDecides(t *testing.T) {
+	explanation, err := policy.Evaluate(policy.Snapshot{}, publishFacts())
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !explanation.FromDefault {
+		t.Fatalf("expected the default to decide")
+	}
+	if explanation.Deciding != nil {
+		t.Errorf("deciding = %+v, want none: no policy matched", explanation.Deciding)
+	}
+}
+
+// A Strategy is compiled-in enforcement. It narrows the outcome without
+// becoming the published rule, so Deciding keeps naming the rule it narrowed
+// and TightenedBy names the strategy.
+func TestTighteningKeepsTheDeclarativeRuleAsDeciding(t *testing.T) {
+	snapshot := policy.Snapshot{Policies: []policy.Policy{
+		matchPublish("allow-writer", policy.ScopeTool, policy.DecisionAllow),
+		shadowPublish("shadow-approval", policy.DecisionRequireApproval),
+	}}
+
+	explanation, err := policy.Evaluate(snapshot, publishFacts(), tightenTo{decision: policy.DecisionDeny})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if explanation.Decision != policy.DecisionDeny {
+		t.Fatalf("decision=%s want=deny", explanation.Decision)
+	}
+	if explanation.Deciding == nil || explanation.Deciding.Name != "allow-writer" {
+		t.Fatalf("deciding = %+v, want the declarative rule allow-writer", explanation.Deciding)
+	}
+	if explanation.TightenedBy != "tighten-to" {
+		t.Errorf("tightened_by = %q, want tighten-to", explanation.TightenedBy)
+	}
+	// The shadow rule wanted require_approval, which is looser than the deny
+	// actually applied: it would have stopped nothing extra.
+	if match, diverged := explanation.ShadowWouldTighten(); diverged {
+		t.Errorf("shadow divergence against a stricter enforced outcome: %s", match.Name)
+	}
+}
+
+type tightenTo struct{ decision policy.Decision }
+
+func (t tightenTo) Name() string { return "tighten-to" }
+
+func (t tightenTo) Tighten(policy.Decision, policy.CallFacts) policy.Decision { return t.decision }

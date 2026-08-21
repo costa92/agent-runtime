@@ -72,11 +72,17 @@ func describe(explanation Explanation) string {
 	}
 	description := fmt.Sprintf("matched (snapshot %s):", explanation.SnapshotDigest)
 	for _, match := range explanation.Matched {
-		shadow := ""
-		if match.Shadow {
-			shadow = " [shadow]"
+		note := ""
+		switch {
+		case match.Shadow:
+			note = " [shadow]"
+		case explanation.Deciding != nil && explanation.Deciding.Name == match.Name:
+			// Which rule decided is the first thing a failing case needs, and
+			// the list order does not show it: the entries above it may have
+			// been shadows.
+			note = " [deciding]"
 		}
-		description += fmt.Sprintf("\n  %s (%s) → %s%s", match.Name, match.Scope, match.Decision, shadow)
+		description += fmt.Sprintf("\n  %s (%s) → %s%s", match.Name, match.Scope, match.Decision, note)
 	}
 	if explanation.TightenedBy != "" {
 		description += "\n  tightened by " + explanation.TightenedBy
