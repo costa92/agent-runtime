@@ -158,7 +158,7 @@ func TestChildrenCarryDurableLinksAndRootReservations(t *testing.T) {
 		t.Fatal("the child's slice was never reserved against the root")
 	}
 
-	parent, err := h.runtime.Inspect(t.Context(), started.ID)
+	parent, err := h.runtime.Inspect(t.Context(), principal(), started.ID)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestThePlanSurvivesAcrossAdvanceCalls(t *testing.T) {
 		t.Fatalf("children=%d want=1; the second generation is blocked", len(created))
 	}
 
-	parked, err := h.runtime.Inspect(t.Context(), started.ID)
+	parked, err := h.runtime.Inspect(t.Context(), principal(), started.ID)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}

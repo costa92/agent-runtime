@@ -13,6 +13,11 @@ import (
 type ErrorKind string
 
 const (
+	// CodeUnknownRun is returned for both a missing Run and a Run hidden by
+	// ownership. Keeping one code lets a host expose an opaque not-found
+	// contract without inspecting error text or learning why the lookup failed.
+	CodeUnknownRun = "unknown_run"
+
 	// ErrorInvalid: the definition, schema or command is not legal here. The
 	// same call will never succeed; something has to change first.
 	ErrorInvalid ErrorKind = "invalid"

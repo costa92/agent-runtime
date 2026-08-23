@@ -30,11 +30,10 @@ const checkpointProtocol = 1
 // for a human. They shared this field before by not colliding on key names,
 // which is an arrangement that holds until someone picks a name twice.
 type checkpoint struct {
-	// Protocol is absent on everything written before it existed. Zero
-	// therefore means protocol 1: the unversioned shape is byte-identical to
-	// this one, so an in-flight Run does not have to be abandoned to gain a
-	// version number.
-	Protocol uint32 `json:"protocol,omitempty"`
+	// Protocol is mandatory on every non-empty checkpoint. Legacy unversioned
+	// rows are upgraded once by the database migration; keeping that conversion
+	// here would turn a deployment boundary into permanent dual-protocol logic.
+	Protocol uint32 `json:"protocol"`
 
 	Plan     json.RawMessage `json:"plan,omitempty"`
 	Children json.RawMessage `json:"children,omitempty"`
@@ -55,7 +54,7 @@ func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return checkpoint{}, run.NewError("unreadable_checkpoint", run.ErrorInternal, run.RetryNever, err)
 	}
-	if decoded.Protocol > checkpointProtocol {
+	if decoded.Protocol != checkpointProtocol {
 		return checkpoint{}, run.NewError("unsupported_checkpoint_protocol",
 			run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("checkpoint protocol %d, this build reads %d",

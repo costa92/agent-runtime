@@ -49,12 +49,9 @@ type session struct {
 // Runs and then claim them separately would race every other worker in the
 // window between the two calls.
 func (r *runtime) AdvanceNext(ctx context.Context, request AdvanceNextRequest) (AdvanceResult, bool, error) {
-	if request.Limit <= 0 {
-		request.Limit = 1
-	}
 	claimed, err := r.deps.Store.ClaimBatch(ctx, store.ClaimBatchCommand{
 		Owner:       r.deps.Owner,
-		Limit:       request.Limit,
+		Limit:       1,
 		LeaseFor:    r.deps.LeaseFor,
 		RootQuantum: request.RootQuantum,
 	})

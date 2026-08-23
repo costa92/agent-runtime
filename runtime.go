@@ -115,7 +115,6 @@ type AdvanceResult struct {
 
 // AdvanceNextRequest is the Worker entry point.
 type AdvanceNextRequest struct {
-	Limit int
 	// RootQuantum caps how much of one batch a single root tree may take, so a
 	// fanned-out root cannot starve every other Run in the deployment.
 	RootQuantum int
@@ -162,8 +161,8 @@ type Runtime interface {
 	ResolveApproval(ctx context.Context, decision ApprovalDecision) (run.Snapshot, error)
 	ResolveInvocation(ctx context.Context, resolution InvocationResolution) (run.Snapshot, error)
 	Cancel(ctx context.Context, request CancelRequest) (run.Snapshot, error)
-	Inspect(ctx context.Context, id run.ID) (run.Snapshot, error)
-	ListEvents(ctx context.Context, query store.EventQuery) (store.EventPage, error)
+	Inspect(ctx context.Context, principal authorization.PrincipalContext, id run.ID) (run.Snapshot, error)
+	ListEvents(ctx context.Context, principal authorization.PrincipalContext, query store.EventQuery) (store.EventPage, error)
 }
 
 type runtime struct {
@@ -338,20 +337,49 @@ func envelopeFor(requested, declared run.Limits) run.Limits {
 	return declared
 }
 
-func (r *runtime) Inspect(ctx context.Context, id run.ID) (run.Snapshot, error) {
-	return r.deps.Store.Get(ctx, id)
+func (r *runtime) Inspect(
+	ctx context.Context, principal authorization.PrincipalContext, id run.ID,
+) (run.Snapshot, error) {
+	return r.authorizeRunAccess(ctx, principal, id)
 }
 
-func (r *runtime) ListEvents(ctx context.Context, query store.EventQuery) (store.EventPage, error) {
+func (r *runtime) ListEvents(
+	ctx context.Context, principal authorization.PrincipalContext, query store.EventQuery,
+) (store.EventPage, error) {
+	if _, err := r.authorizeRunAccess(ctx, principal, query.RunID); err != nil {
+		return store.EventPage{}, err
+	}
 	return r.deps.Store.Events(ctx, query)
+}
+
+// authorizeRunAccess applies both halves of Run access: the caller must still
+// hold the host permission and must be the exact durable principal recorded on
+// the Run. A broad RBAC grant is deliberately insufficient; Run snapshots and
+// events contain user content, and control-plane decisions can release effects.
+func (r *runtime) authorizeRunAccess(
+	ctx context.Context, principal authorization.PrincipalContext, id run.ID,
+) (run.Snapshot, error) {
+	snapshot, err := r.deps.Store.Get(ctx, id)
+	if err != nil {
+		return run.Snapshot{}, err
+	}
+	if principal.Ref.Zero() || principal.Ref != snapshot.Principal {
+		return run.Snapshot{}, run.NewError(
+			run.CodeUnknownRun, run.ErrorInvalid, run.RetryNever,
+		)
+	}
+	if err := r.deps.Authorization.AuthorizeUse(ctx, principal, authorization.ResourceRef{
+		Kind: "run", ID: string(id),
+	}); err != nil {
+		return run.Snapshot{}, err
+	}
+	return snapshot, nil
 }
 
 // Cancel stops a whole tree. It takes no lease: cancellation has to work while
 // a worker holds the Run, which is the case where it matters most.
 func (r *runtime) Cancel(ctx context.Context, request CancelRequest) (run.Snapshot, error) {
-	if err := r.deps.Authorization.AuthorizeUse(ctx, request.RequestedBy, authorization.ResourceRef{
-		Kind: "run", ID: string(request.RootID),
-	}); err != nil {
+	if _, err := r.authorizeRunAccess(ctx, request.RequestedBy, request.RootID); err != nil {
 		return run.Snapshot{}, err
 	}
 	return r.deps.Store.CancelTree(ctx, store.CancelTreeCommand{
@@ -368,13 +396,8 @@ func (r *runtime) Cancel(ctx context.Context, request CancelRequest) (run.Snapsh
 // undeliverable. What is required instead is a live authorization for whoever
 // is answering now.
 func (r *runtime) ResolveApproval(ctx context.Context, decision ApprovalDecision) (run.Snapshot, error) {
-	snapshot, err := r.deps.Store.Get(ctx, decision.RunID)
+	snapshot, err := r.authorizeRunAccess(ctx, decision.DecidedBy, decision.RunID)
 	if err != nil {
-		return run.Snapshot{}, err
-	}
-	if err := r.deps.Authorization.AuthorizeUse(ctx, decision.DecidedBy, authorization.ResourceRef{
-		Kind: "run", ID: string(decision.RunID),
-	}); err != nil {
 		return run.Snapshot{}, err
 	}
 
@@ -424,13 +447,8 @@ func (r *runtime) ResolveApproval(ctx context.Context, decision ApprovalDecision
 // happened, and "we looked and still cannot tell" is not the same answer as
 // "it did not happen".
 func (r *runtime) ResolveInvocation(ctx context.Context, resolution InvocationResolution) (run.Snapshot, error) {
-	snapshot, err := r.deps.Store.Get(ctx, resolution.RunID)
+	snapshot, err := r.authorizeRunAccess(ctx, resolution.ResolvedBy, resolution.RunID)
 	if err != nil {
-		return run.Snapshot{}, err
-	}
-	if err := r.deps.Authorization.AuthorizeUse(ctx, resolution.ResolvedBy, authorization.ResourceRef{
-		Kind: "run", ID: string(resolution.RunID),
-	}); err != nil {
 		return run.Snapshot{}, err
 	}
 

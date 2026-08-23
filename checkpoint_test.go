@@ -8,24 +8,22 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
-// A checkpoint written before the version existed must still resume. The
-// unversioned shape is byte-identical to protocol 1, so an in-flight Run does
-// not have to be abandoned to gain a version number — and a rolling deploy is
-// exactly when there are in-flight Runs written by the older build.
-func TestACheckpointWithNoProtocolReadsAsTheFirstOne(t *testing.T) {
+// Migration owns legacy checkpoint conversion. Once a deployment runs the
+// current Runtime, accepting an unversioned payload would recreate a permanent
+// compatibility path and make a future shape change silently lossy again.
+func TestACheckpointWithNoProtocolIsRefusedAfterMigration(t *testing.T) {
 	legacy := json.RawMessage(`{"plan":{"children":[{"key":"a"}]},"children":{"a":"run-a"}}`)
 
-	decoded, err := decodeCheckpoint(legacy)
-	if err != nil {
-		t.Fatalf("an unversioned checkpoint was refused: %v", err)
+	_, err := decodeCheckpoint(legacy)
+	if err == nil {
+		t.Fatal("an unversioned checkpoint was accepted after the migration boundary")
 	}
-	if len(decoded.Plan) == 0 || len(decoded.Children) == 0 {
-		t.Fatalf("the unversioned payload was dropped: %+v", decoded)
+	var runtimeError *run.Error
+	if !errors.As(err, &runtimeError) || runtimeError.Code != "unsupported_checkpoint_protocol" {
+		t.Fatalf("error = %v, want unsupported_checkpoint_protocol", err)
 	}
-
-	hold := loadApprovalHold(json.RawMessage(`{"approval":{"tool":"publish_article"}}`))
-	if hold == nil || hold.Tool != "publish_article" {
-		t.Fatalf("an unversioned approval hold did not survive: %+v", hold)
+	if hold := loadApprovalHold(json.RawMessage(`{"approval":{"tool":"publish_article"}}`)); hold != nil {
+		t.Fatalf("an unversioned approval hold was exposed: %+v", hold)
 	}
 }
 
@@ -46,6 +44,19 @@ func TestACheckpointFromANewerProtocolIsRefusedRatherThanPartlyRead(t *testing.T
 	}
 	if kind := run.KindOf(err); kind != run.ErrorInvalid {
 		t.Fatalf("kind = %s, want invalid", kind)
+	}
+}
+
+func TestACheckpointFromAnOlderProtocolIsRefusedRatherThanPartlyRead(t *testing.T) {
+	older := json.RawMessage(`{"protocol":0,"plan":{"children":[{"key":"a"}]}}`)
+
+	_, err := decodeCheckpoint(older)
+	if err == nil {
+		t.Fatal("an older checkpoint protocol was accepted")
+	}
+	var runtimeError *run.Error
+	if !errors.As(err, &runtimeError) || runtimeError.Code != "unsupported_checkpoint_protocol" {
+		t.Fatalf("error = %v, want unsupported_checkpoint_protocol", err)
 	}
 }
 

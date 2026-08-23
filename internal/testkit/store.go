@@ -216,7 +216,7 @@ func (s *MemoryStore) Get(_ context.Context, id run.ID) (run.Snapshot, error) {
 	defer s.mu.Unlock()
 	record, ok := s.runs[id]
 	if !ok {
-		return run.Snapshot{}, run.NewError("unknown_run", run.ErrorInvalid, run.RetryNever)
+		return run.Snapshot{}, run.NewError(run.CodeUnknownRun, run.ErrorInvalid, run.RetryNever)
 	}
 	return withPendingApproval(record.snapshot, record.approvals), nil
 }

@@ -815,7 +815,7 @@ func TestInspectAndListEventsReadWithoutAdvancing(t *testing.T) {
 		t.Fatalf("advance: %v", err)
 	}
 
-	snapshot, err := h.runtime.Inspect(t.Context(), started.ID)
+	snapshot, err := h.runtime.Inspect(t.Context(), principal(), started.ID)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
@@ -823,7 +823,7 @@ func TestInspectAndListEventsReadWithoutAdvancing(t *testing.T) {
 		t.Fatalf("state=%s", snapshot.State)
 	}
 
-	page, err := h.runtime.ListEvents(t.Context(), store.EventQuery{RunID: started.ID, Limit: 100})
+	page, err := h.runtime.ListEvents(t.Context(), principal(), store.EventQuery{RunID: started.ID, Limit: 100})
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
@@ -838,12 +838,98 @@ func TestInspectAndListEventsReadWithoutAdvancing(t *testing.T) {
 	}
 }
 
+// A Run is private to the exact durable principal that started it. General
+// permission to use agents does not grant access to another user's Run: the
+// snapshot, its event stream, cancellation and human decisions can all carry
+// user content or change an external effect.
+func TestAnotherUserCannotAccessARun(t *testing.T) {
+	intruder := principal()
+	intruder.Ref.Subject = "other-user"
+
+	for _, test := range []struct {
+		name string
+		act  func(context.Context, agentruntime.Runtime, run.ID, authorization.PrincipalContext) error
+	}{
+		{
+			name: "inspect",
+			act: func(ctx context.Context, runtime agentruntime.Runtime, id run.ID, principal authorization.PrincipalContext) error {
+				_, err := runtime.Inspect(ctx, principal, id)
+				return err
+			},
+		},
+		{
+			name: "events",
+			act: func(ctx context.Context, runtime agentruntime.Runtime, id run.ID, principal authorization.PrincipalContext) error {
+				_, err := runtime.ListEvents(ctx, principal, store.EventQuery{RunID: id, Limit: 100})
+				return err
+			},
+		},
+		{
+			name: "cancel",
+			act: func(ctx context.Context, runtime agentruntime.Runtime, id run.ID, principal authorization.PrincipalContext) error {
+				_, err := runtime.Cancel(ctx, agentruntime.CancelRequest{RootID: id, RequestedBy: principal})
+				return err
+			},
+		},
+		{
+			name: "approval",
+			act: func(ctx context.Context, runtime agentruntime.Runtime, id run.ID, principal authorization.PrincipalContext) error {
+				_, err := runtime.ResolveApproval(ctx, agentruntime.ApprovalDecision{
+					RunID: id, ApprovalID: "approval-1", Approved: true, DecidedBy: principal,
+				})
+				return err
+			},
+		},
+		{
+			name: "invocation",
+			act: func(ctx context.Context, runtime agentruntime.Runtime, id run.ID, principal authorization.PrincipalContext) error {
+				_, err := runtime.ResolveInvocation(ctx, agentruntime.InvocationResolution{
+					RunID: id, InvocationID: "invocation-1", Outcome: run.OutcomeNotApplied, ResolvedBy: principal,
+				})
+				return err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newHarness(t, answering("done"))
+			started := start(t, h)
+
+			err := test.act(t.Context(), h.runtime, started.ID, intruder)
+			var runtimeError *run.Error
+			if !errors.As(err, &runtimeError) || runtimeError.Code != run.CodeUnknownRun {
+				t.Fatalf("cross-user %s error = %v, want opaque unknown Run", test.name, err)
+			}
+		})
+	}
+}
+
+func TestRunOwnershipMatchesTheWholePrincipalReference(t *testing.T) {
+	for name, mutate := range map[string]func(*authorization.PrincipalRef){
+		"subject": func(ref *authorization.PrincipalRef) { ref.Subject = "other-user" },
+		"tenant":  func(ref *authorization.PrincipalRef) { ref.Tenant = "other-tenant" },
+		"kind":    func(ref *authorization.PrincipalRef) { ref.Kind = authorization.PrincipalService },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, answering("done"))
+			started := start(t, h)
+			intruder := principal()
+			mutate(&intruder.Ref)
+
+			_, err := h.runtime.Inspect(t.Context(), intruder, started.ID)
+			var runtimeError *run.Error
+			if !errors.As(err, &runtimeError) || runtimeError.Code != run.CodeUnknownRun {
+				t.Fatalf("mismatched %s error = %v, want opaque unknown Run", name, err)
+			}
+		})
+	}
+}
+
 // An idle queue is not a failure. A caller that could not tell them apart would
 // log an error on every poll.
 func TestAdvanceNextDistinguishesAnIdleQueueFromAFailure(t *testing.T) {
 	h := newHarness(t, answering("done"))
 
-	_, found, err := h.runtime.AdvanceNext(t.Context(), agentruntime.AdvanceNextRequest{Limit: 1})
+	_, found, err := h.runtime.AdvanceNext(t.Context(), agentruntime.AdvanceNextRequest{})
 	if err != nil {
 		t.Fatalf("advance next: %v", err)
 	}
@@ -852,7 +938,7 @@ func TestAdvanceNextDistinguishesAnIdleQueueFromAFailure(t *testing.T) {
 	}
 
 	start(t, h)
-	result, found, err := h.runtime.AdvanceNext(t.Context(), agentruntime.AdvanceNextRequest{Limit: 1})
+	result, found, err := h.runtime.AdvanceNext(t.Context(), agentruntime.AdvanceNextRequest{})
 	if err != nil {
 		t.Fatalf("advance next: %v", err)
 	}
@@ -861,6 +947,23 @@ func TestAdvanceNextDistinguishesAnIdleQueueFromAFailure(t *testing.T) {
 	}
 	if result.Run.State != run.StateSucceeded {
 		t.Fatalf("state=%s", result.Run.State)
+	}
+}
+
+// AdvanceNext returns one result, so it must lease exactly one Run. Leasing a
+// batch and returning only the first result hides the remaining leases until
+// they expire and makes queued work appear to vanish from every other worker.
+func TestAdvanceNextLeavesTheNextRunImmediatelyClaimable(t *testing.T) {
+	h := newHarness(t, answering("done"))
+	start(t, h)
+	start(t, h)
+	start(t, h)
+
+	if _, found, err := h.runtime.AdvanceNext(t.Context(), agentruntime.AdvanceNextRequest{}); err != nil || !found {
+		t.Fatalf("first advance found=%v err=%v", found, err)
+	}
+	if _, found, err := h.runtime.AdvanceNext(t.Context(), agentruntime.AdvanceNextRequest{}); err != nil || !found {
+		t.Fatalf("second Run was hidden behind the first lease: found=%v err=%v", found, err)
 	}
 }
 
@@ -1039,7 +1142,7 @@ func TestARequiredApprovalIsNamedOnTheParkedRun(t *testing.T) {
 	if result.Run.State != run.StateWaitingApproval {
 		t.Fatalf("state = %s, want waiting_approval", result.Run.State)
 	}
-	inspected, err := h.runtime.Inspect(t.Context(), started.ID)
+	inspected, err := h.runtime.Inspect(t.Context(), principal(), started.ID)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
