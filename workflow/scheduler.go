@@ -40,7 +40,7 @@ func ReadyNodes(graph *ExecutionGraph, snapshot run.Snapshot) []Node {
 		if _, started := snapshot.Nodes[node.ID]; started {
 			continue
 		}
-		if !dependenciesMet(node, snapshot) {
+		if !dependenciesMet(graph, node, snapshot) {
 			continue
 		}
 		ready = append(ready, node)
@@ -50,15 +50,27 @@ func ReadyNodes(graph *ExecutionGraph, snapshot run.Snapshot) []Node {
 	return ready
 }
 
-// dependenciesMet reports whether every node this one waits for has finished
-// successfully. A soft-failed dependency does not unblock its dependents: they
-// were declared to read from it, and it produced nothing.
-func dependenciesMet(node Node, snapshot run.Snapshot) bool {
+// dependenciesMet reports whether every node this one waits for has settled in
+// a state that permits this node to run. A soft-failed dependency is allowed:
+// its output is omitted by the input binder, which is the graph's fail-soft
+// contract. A hard failure still blocks the dependent and the Run has already
+// been failed by ApplyNodeResult.
+func dependenciesMet(graph *ExecutionGraph, node Node, snapshot run.Snapshot) bool {
 	for _, dependency := range node.DependsOn {
 		state, ok := snapshot.Nodes[dependency]
-		if !ok || state.Status != run.StateSucceeded {
+		if !ok {
 			return false
 		}
+		if state.Status == run.StateSucceeded {
+			continue
+		}
+		if state.Status == run.StateFailed {
+			upstream, err := graph.Lookup(dependency)
+			if err == nil && upstream.Failure == FailSoft {
+				continue
+			}
+		}
+		return false
 	}
 	return true
 }
@@ -199,6 +211,9 @@ func reachable(graph *ExecutionGraph, nodes map[string]run.NodeState, node Node)
 			continue
 		}
 		if state.Status == run.StateFailed {
+			if dependencyNode, err := graph.Lookup(id); err == nil && dependencyNode.Failure == FailSoft {
+				continue
+			}
 			return false
 		}
 	}

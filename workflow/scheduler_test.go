@@ -67,15 +67,19 @@ func TestADependentNodeStaysBlockedUntilAllDependenciesSucceed(t *testing.T) {
 	}
 }
 
-// A soft failure does not unblock the nodes that read from it. They were
-// declared to consume its output, and it produced none.
-func TestASoftFailedDependencyDoesNotUnblockItsDependents(t *testing.T) {
-	graph := fanOut(t)
-	nodes := succeeded("a", "c")
-	nodes["b"] = run.NodeState{Status: run.StateFailed, Attempts: 1}
+// A soft failure unblocks a dependent. The input binder omits the missing
+// output, allowing a final assembler to use the remaining successful draft.
+func TestASoftFailedDependencyUnblocksItsDependent(t *testing.T) {
+	graph := compile(t, dag(
+		definition.NodeSpec{Name: "writer", Agent: "draft"},
+		definition.NodeSpec{Name: "illustrator", Agent: "review", DependsOn: []string{"writer"}, Inputs: []string{"writer"}, Optional: true},
+		definition.NodeSpec{Name: "assembler", Agent: "publish", DependsOn: []string{"writer", "illustrator"}, Inputs: []string{"writer", "illustrator"}},
+	))
+	nodes := succeeded("writer")
+	nodes["illustrator"] = run.NodeState{Status: run.StateFailed, Attempts: 1}
 
-	if got := readyIDs(graph, running(nodes)); len(got) != 0 {
-		t.Fatalf("ready=%v want none", got)
+	if got := readyIDs(graph, running(nodes)); len(got) != 1 || got[0] != "assembler" {
+		t.Fatalf("ready=%v want [assembler]", got)
 	}
 }
 
@@ -200,9 +204,9 @@ func TestASoftFailureEndsThePartialRunAsPartial(t *testing.T) {
 	}
 }
 
-// Nodes stranded behind a soft failure will never run. Counting them as
-// outstanding would park the Run forever on work nothing can schedule.
-func TestNodesUnreachableBehindASoftFailureDoNotStallTheRun(t *testing.T) {
+// A node behind a soft failure remains runnable; counting it as unreachable
+// would prevent the assembler fallback from ever executing.
+func TestNodesBehindASoftFailureRemainRunnable(t *testing.T) {
 	graph := compile(t, dag(
 		definition.NodeSpec{Name: "a", Agent: "draft"},
 		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}, Optional: true},
@@ -215,8 +219,11 @@ func TestNodesUnreachableBehindASoftFailureDoNotStallTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if progress.Command == nil || progress.Command.Kind != run.CommandPartial {
-		t.Fatalf("command=%+v want=partial; c can never run", progress.Command)
+	if progress.Command != nil {
+		t.Fatalf("command=%+v; c must remain runnable", progress.Command)
+	}
+	if got := readyIDs(graph, running(progress.Nodes)); len(got) != 1 || got[0] != "c" {
+		t.Fatalf("ready=%v want [c]", got)
 	}
 }
 
