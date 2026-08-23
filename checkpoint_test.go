@@ -70,3 +70,48 @@ func TestWhatIsWrittenCarriesTheProtocolAndRoundTrips(t *testing.T) {
 		t.Fatalf("this build refused its own checkpoint: %v", err)
 	}
 }
+
+func TestInspectPendingApprovalReturnsOnlyAnUndecidedWaitingHold(t *testing.T) {
+	checkpoint := encodeApprovalHold(approvalHold{
+		Tool:      "publish_article",
+		Arguments: json.RawMessage(`{"article_id":7,"account_id":9}`),
+	})
+	snapshot := run.Snapshot{
+		State:             run.StateWaitingApproval,
+		PendingApprovalID: "approval-1",
+		Checkpoint:        checkpoint,
+	}
+
+	pending, ok := InspectPendingApproval(snapshot)
+	if !ok {
+		t.Fatal("pending approval was not exposed")
+	}
+	if pending.Tool != "publish_article" || string(pending.Arguments) != `{"article_id":7,"account_id":9}` {
+		t.Fatalf("pending = %+v", pending)
+	}
+
+	// The inspection result must not alias the persisted checkpoint.
+	pending.Arguments[0] = '['
+	again, ok := InspectPendingApproval(snapshot)
+	if !ok || string(again.Arguments) != `{"article_id":7,"account_id":9}` {
+		t.Fatalf("inspection mutated persisted arguments: %+v", again)
+	}
+
+	for name, mutate := range map[string]func(*run.Snapshot){
+		"not waiting":      func(s *run.Snapshot) { s.State = run.StateRunning },
+		"no approval id":   func(s *run.Snapshot) { s.PendingApprovalID = "" },
+		"malformed hold":   func(s *run.Snapshot) { s.Checkpoint = json.RawMessage(`{"approval":[]}`) },
+		"unsupported hold": func(s *run.Snapshot) { s.Checkpoint = json.RawMessage(`{"protocol":99,"approval":{}}`) },
+		"denied approval": func(s *run.Snapshot) {
+			s.Checkpoint = encodeApprovalHold(approvalHold{Tool: "publish_article", Denied: true})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := snapshot
+			mutate(&candidate)
+			if _, ok := InspectPendingApproval(candidate); ok {
+				t.Fatal("non-pending hold was exposed")
+			}
+		})
+	}
+}
