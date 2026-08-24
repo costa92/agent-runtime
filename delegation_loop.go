@@ -224,7 +224,7 @@ func (s *session) createChildren(
 	}
 
 	children, links, reservations := state.Plan.Commands(
-		rootID, s.snapshot.ID, s.snapshot.Principal, generation, outputs,
+		rootID, s.snapshot.ID, s.snapshot.Principal, s.snapshot.Pins, generation, outputs,
 		func(key string) run.ID { return s.runtime.deps.IDs.NewID("child") },
 	)
 	for i, child := range children {

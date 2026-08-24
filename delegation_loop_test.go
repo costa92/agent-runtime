@@ -192,6 +192,39 @@ func TestChildrenInheritTheRootPrincipalAndRootID(t *testing.T) {
 	}
 }
 
+// The unit test beside Commands proves it copies the pins it is handed. This
+// proves the caller hands it the parent's, which is a separate mistake: the
+// snapshot is right there and passing a zero Pins compiles just as well.
+//
+// Asserted on the trace rather than the digests because the harness's
+// Governance returns a zero snapshot, so a digest comparison here would be
+// empty against empty and would pass with the fix removed. The TraceID is
+// minted for real at Start, so it is the one inherited field this layer can
+// tell apart from nothing.
+func TestChildrenInheritTheirParentsTrace(t *testing.T) {
+	children := []workflow.ChildSpec{childSpec("research")}
+	h := orchestrator(t, &scriptedRouter{decision: delegatePlan(children...)}, children)
+	started := start(t, h)
+	if started.Pins.Trace.TraceID == "" {
+		t.Fatal("the root was started without a trace, so this test cannot tell inheritance from a zero value")
+	}
+
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	created := h.store.Children(started.ID)
+	if len(created) != 1 {
+		t.Fatalf("children=%d", len(created))
+	}
+	if created[0].Pins.Trace.TraceID != started.Pins.Trace.TraceID {
+		t.Errorf("child trace_id=%q want=%q; the delegation loop is not passing the parent's pins",
+			created[0].Pins.Trace.TraceID, started.Pins.Trace.TraceID)
+	}
+	if created[0].Pins.Trace.SpanID == started.Pins.Trace.SpanID {
+		t.Error("the child reuses its parent's span_id, which makes the two indistinguishable once read back")
+	}
+}
+
 // direct and clarify are answers this Run gives itself. Only delegation creates
 // children.
 func TestDirectAndClarifyCreateNoChildren(t *testing.T) {

@@ -302,7 +302,12 @@ func (p DelegationPlan) Generation(settled map[string]run.State) []ChildSpec {
 // child's own upstreams are selected from it rather than the whole map being
 // handed over: a child can read what it declared a dependency on, and nothing
 // else, which is the same rule the graph applies to node bindings.
-func (p DelegationPlan) Commands(rootID, parentID run.ID, principal authorization.PrincipalRef, generation []ChildSpec, outputs map[string]string, ids func(key string) run.ID) ([]store.CreateCommand, []store.LinkFact, []store.BudgetReservation) {
+// pins are the parent's. A child inherits them rather than being created
+// against whatever the rules happen to be at the moment it is spawned: an
+// empty PolicyDigest reaches Governance as "give me the current set", so a
+// publish landing mid-flight would judge the children under rules the parent
+// pinned itself against — the one thing pinning exists to prevent.
+func (p DelegationPlan) Commands(rootID, parentID run.ID, principal authorization.PrincipalRef, pins run.Pins, generation []ChildSpec, outputs map[string]string, ids func(key string) run.ID) ([]store.CreateCommand, []store.LinkFact, []store.BudgetReservation) {
 	children := make([]store.CreateCommand, 0, len(generation))
 	links := make([]store.LinkFact, 0, len(generation))
 	reservations := make([]store.BudgetReservation, 0, len(generation))
@@ -319,7 +324,22 @@ func (p DelegationPlan) Commands(rootID, parentID run.ID, principal authorizatio
 			// widens capability, never identity: a child running as somebody
 			// else would be a privilege escalation the tree performs on itself.
 			Principal: principal,
-			Budget:    run.Budget{Envelope: child.Budget},
+			// The rule-set versions come across unchanged. The trace does not:
+			// the child keeps the tree's TraceID and its sampling decision, but
+			// carries its own SpanID, which is the same convention the root is
+			// created with. Reusing the parent's SpanID would make the two
+			// indistinguishable once read back, and the parent link is already
+			// expressed by parent_id.
+			Pins: run.Pins{
+				PolicyDigest: pins.PolicyDigest,
+				QuotaDigest:  pins.QuotaDigest,
+				Trace: run.TraceContext{
+					TraceID: pins.Trace.TraceID,
+					SpanID:  string(id),
+					Sampled: pins.Trace.Sampled,
+				},
+			},
+			Budget: run.Budget{Envelope: child.Budget},
 			// The child's task. Dropped here, the child would execute with no
 			// idea what it was delegated to do.
 			Input:     child.Input,

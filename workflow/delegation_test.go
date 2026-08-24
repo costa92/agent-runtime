@@ -261,7 +261,7 @@ func TestCommandsProduceChildrenLinksAndReservationsTogether(t *testing.T) {
 	plan := researchPlan()
 	generation := plan.Generation(nil)
 
-	children, links, reservations := plan.Commands("root-1", "root-1", testPrincipal(), generation, nil,
+	children, links, reservations := plan.Commands("root-1", "root-1", testPrincipal(), run.Pins{}, generation, nil,
 		func(key string) run.ID { return run.ID("child-" + key) })
 
 	if len(children) != 1 || len(links) != 1 || len(reservations) != 1 {
@@ -278,6 +278,44 @@ func TestCommandsProduceChildrenLinksAndReservationsTogether(t *testing.T) {
 	}
 	if err := children[0].Validate(); err != nil {
 		t.Errorf("the generated command does not validate: %v", err)
+	}
+}
+
+// A child is judged by the rules its parent pinned, not by whatever is current
+// when it is spawned.
+//
+// The digests are not decoration: Governance reads an empty PolicyDigest as
+// "give me the current set" rather than refusing it, so a child created without
+// them runs unpinned and silently. A publish landing between the parent's start
+// and its delegation would then apply to half the tree.
+func TestChildrenInheritTheParentsPinsAndKeepTheirOwnSpan(t *testing.T) {
+	plan := researchPlan()
+	pins := run.Pins{
+		PolicyDigest: "policy-7",
+		QuotaDigest:  "quota-3",
+		Trace:        run.TraceContext{TraceID: "trace-1", SpanID: "root-1", Sampled: true},
+	}
+
+	children, _, _ := plan.Commands("root-1", "root-1", testPrincipal(), pins, plan.Generation(nil), nil,
+		func(key string) run.ID { return run.ID("child-" + key) })
+
+	if len(children) != 1 {
+		t.Fatalf("children=%d", len(children))
+	}
+	child := children[0]
+	if child.Pins.PolicyDigest != pins.PolicyDigest || child.Pins.QuotaDigest != pins.QuotaDigest {
+		t.Errorf("the child was created against a different rule set than its parent: %+v", child.Pins)
+	}
+	if child.Pins.Trace.TraceID != pins.Trace.TraceID {
+		t.Errorf("trace_id=%q want=%q; the child left its parent's trace", child.Pins.Trace.TraceID, pins.Trace.TraceID)
+	}
+	if !child.Pins.Trace.Sampled {
+		t.Error("the child dropped the tree's sampling decision, which re-decides it and puts a hole in the trace")
+	}
+	// Its own, not the parent's: the two are otherwise indistinguishable once
+	// read back out of the store, and the parent link is already parent_id.
+	if child.Pins.Trace.SpanID != string(child.ID) {
+		t.Errorf("span_id=%q want=%q", child.Pins.Trace.SpanID, string(child.ID))
 	}
 }
 
@@ -310,7 +348,7 @@ func TestDelegationCreatesWholeGraphAtomically(t *testing.T) {
 	}
 
 	plan := workflow.DelegationPlan{Children: []workflow.ChildSpec{child("research"), child("survey")}}
-	children, links, reservations := plan.Commands(root.ID, root.ID, testPrincipal(), plan.Generation(nil), nil,
+	children, links, reservations := plan.Commands(root.ID, root.ID, testPrincipal(), snapshot.Pins, plan.Generation(nil), nil,
 		func(key string) run.ID { return run.ID("child-" + key) })
 
 	_, err = memory.CreateChildren(context.Background(), store.CreateChildrenCommand{
