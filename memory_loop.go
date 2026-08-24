@@ -39,7 +39,7 @@ func declaredMemory(s *session, key string) (definition.MemoryRef, error) {
 			return declared, nil
 		}
 	}
-	return definition.MemoryRef{}, run.NewError("undeclared_memory_key", run.ErrorDenied, run.RetryNever,
+	return definition.MemoryRef{}, run.NewError(run.CodeUndeclaredMemoryKey, run.ErrorDenied, run.RetryNever,
 		fmt.Errorf("definition %s does not declare memory %q", s.snapshot.Definition.ID, key))
 }
 

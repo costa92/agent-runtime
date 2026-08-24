@@ -18,6 +18,24 @@ const (
 	// contract without inspecting error text or learning why the lookup failed.
 	CodeUnknownRun = "unknown_run"
 
+	// CodeUndeclaredMemoryKey is returned when a Run reads a memory its
+	// Definition never declared.
+	//
+	// Promoted for the same reason as CodeUnknownRun: something outside this
+	// module branches on it. An Agent asking for notes it was not published
+	// with means "this Run has no notes", not "this Run failed", so the Agent
+	// has to tell that refusal apart from every other denial and carry on —
+	// see article_review. That was a string literal on the far side of a module
+	// boundary, so renaming the code here would have compiled cleanly and
+	// silently turned a recoverable case into a failed Run.
+	//
+	// The other ~250 codes in this module stay literals on purpose. They are
+	// read by operators, not matched by callers; a caller that needs to act
+	// switches on ErrorKind, which is the closed set built for exactly that.
+	// A code becomes a constant when something starts branching on it, and the
+	// constant is then the evidence that it did.
+	CodeUndeclaredMemoryKey = "undeclared_memory_key"
+
 	// ErrorInvalid: the definition, schema or command is not legal here. The
 	// same call will never succeed; something has to change first.
 	ErrorInvalid ErrorKind = "invalid"
