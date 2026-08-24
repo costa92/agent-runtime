@@ -18,7 +18,15 @@ const (
 	KindPolicy       Kind = "Policy"
 	KindQuota        Kind = "Quota"
 	KindModelProfile Kind = "ModelProfile"
-	KindToolBinding  Kind = "ToolBinding"
+	// KindToolBinding is storable but inert: publishing one changes nothing.
+	//
+	// The Gateway seam that would have made a bound tool invocable was removed
+	// once it turned out nothing had ever wired it — see Gateway.resolve. The
+	// Kind stays because removing a member of a closed set is a data question,
+	// not a code one: a deployment with stored ToolBinding rows would find them
+	// unreadable. Retire it by migrating those rows away first, then dropping
+	// the constant, its storage version and this comment together.
+	KindToolBinding Kind = "ToolBinding"
 )
 
 // Kinds returns every declared Kind, in a stable order.

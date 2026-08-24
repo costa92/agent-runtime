@@ -87,7 +87,6 @@ type Gateway struct {
 	strategies []policy.Strategy
 	observers  []Observer
 	recorder   Recorder
-	bindings   BindingLookup
 
 	// defaultMaxResultBytes caps a result that declares no cap of its own.
 	defaultMaxResultBytes int
@@ -262,21 +261,26 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 	}, nil
 }
 
-func (g *Gateway) resolve(ctx context.Context, name string) (Spec, Handler, error) {
+// resolve answers from the frozen registry, and only from it.
+//
+// There used to be a second source here: a BindingLookup that could produce a
+// tool published after the registry froze, so an operator could add one without
+// a release. Nothing ever wired it — no host passed WithBindings, no resource
+// seeding published a ToolBinding — so every Run resolved through the registry
+// alone while the code read as though two tiers existed. It was removed rather
+// than connected, because connecting it is a real design decision (a handler
+// arriving at runtime is outside every capability guarantee the frozen registry
+// makes) and an unwired branch is not a decision, it is the appearance of one.
+func (g *Gateway) resolve(_ context.Context, name string) (Spec, Handler, error) {
 	spec, err := g.registry.Lookup(name)
-	if err == nil {
-		found, lookupErr := g.registry.handlerFor(name)
-		if lookupErr != nil {
-			return Spec{}, nil, lookupErr
-		}
-		return spec, found.handler, nil
+	if err != nil {
+		return Spec{}, nil, err
 	}
-	if g.bindings != nil {
-		if spec, handler, ok := g.bindings.Lookup(ctx, name); ok {
-			return spec, handler, nil
-		}
+	found, lookupErr := g.registry.handlerFor(name)
+	if lookupErr != nil {
+		return Spec{}, nil, lookupErr
 	}
-	return Spec{}, nil, err
+	return spec, found.handler, nil
 }
 
 // Execute calls the handler, exactly once, for a committed invocation.

@@ -337,39 +337,23 @@ func TestRefusingSideEffectsStillAllowsAReadOnlyTool(t *testing.T) {
 	}
 }
 
-func TestGatewayResolvesABindingPublishedAfterFreeze(t *testing.T) {
+// A tool the frozen registry does not carry is not callable, full stop.
+//
+// This replaces a test for the removed BindingLookup seam, which asserted that
+// a tool published after the freeze became resolvable. Nothing wired that seam,
+// so what it documented was a capability the product did not have; what the
+// gateway actually guarantees is the opposite, and that is worth an assertion.
+func TestGatewayRefusesAToolTheFrozenRegistryDoesNotCarry(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Freeze()
-	bindings := tool.NewBindingMap()
-	handler := testkit.ToolSucceeding(`{"hits":1}`)
-	gateway := tool.NewGateway(registry, testkit.AllowAllToolAuthorizer(), tool.WithBindings(bindings))
+	gateway := tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
 
 	request := publishRequest()
 	request.Tool = "external.search"
 	request.Allowlist = []string{"external.search"}
 
 	if _, err := gateway.Prepare(context.Background(), request); err == nil {
-		t.Fatal("an unpublished binding was resolved")
-	}
-
-	bindings.Publish(tool.Spec{
-		Name: "external.search", Description: "search",
-		RiskLevel: policy.RiskLow, SideEffect: policy.SideEffectRead, Idempotent: true,
-	}, handler)
-
-	prepared, err := gateway.Prepare(context.Background(), request)
-	if err != nil {
-		t.Fatalf("published binding was not resolved: %v", err)
-	}
-	mutation, err := gateway.Execute(context.Background(), tool.CommittedInvocation{Prepared: prepared})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if mutation.Outcome != run.OutcomeApplied {
-		t.Fatalf("outcome=%s", mutation.Outcome)
-	}
-	if handler.Calls() != 1 {
-		t.Fatalf("calls=%d", handler.Calls())
+		t.Fatal("a tool nothing registered was resolved")
 	}
 }
 
