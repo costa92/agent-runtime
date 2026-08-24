@@ -63,6 +63,23 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 		return llm.Response{}, run.NewError("no_model_registry", run.ErrorInternal, run.RetryNever)
 	}
 
+	// The published Definition's model policy, filled per field where the Agent
+	// left one unset. Caller-wins, the same rule the profile follows: an Agent
+	// that computed a ceiling for this particular call must not have it
+	// overridden by the Definition's default.
+	//
+	// Temperature and MaxTokens used to be dropped here — only Profile was
+	// filled — so every Agent going through the shared mechanical step, which
+	// builds a bare llm.Request, called with both at zero. MaxTokens is not
+	// only a provider argument: it is what the token reservation below is sized
+	// from, so a zero meant every model call reserved nothing and the token
+	// half of the budget never refused anything. Only LLMCalls was holding.
+	if request.Temperature == 0 {
+		request.Temperature = s.declared.Model.Temperature
+	}
+	if request.MaxTokens == 0 {
+		request.MaxTokens = s.declared.Model.MaxTokens
+	}
 	if request.Model.Profile == "" {
 		request.Model.Profile = s.declared.Model.Profile
 	}

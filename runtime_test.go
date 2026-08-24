@@ -470,6 +470,11 @@ type scriptedModels struct {
 	response llm.Response
 	err      error
 	onCall   func()
+	// onRequest sees the request as the provider receives it — after the
+	// governed port has filled whatever the Agent left unset. It is the only
+	// vantage point from which "the Definition's model policy reached the
+	// provider" is observable.
+	onRequest func(llm.Request)
 }
 
 func (m scriptedModels) Resolve(context.Context, llm.ModelRef) (llm.Client, error) {
@@ -482,7 +487,10 @@ func (c scriptedClient) Capabilities(context.Context, llm.ModelRef) (llm.Capabil
 	return llm.Capabilities{Tools: true, Streaming: true}, nil
 }
 
-func (c scriptedClient) Complete(context.Context, llm.Request) (llm.Response, error) {
+func (c scriptedClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
+	if c.models.onRequest != nil {
+		c.models.onRequest(request)
+	}
 	if c.models.onCall != nil {
 		c.models.onCall()
 	}
