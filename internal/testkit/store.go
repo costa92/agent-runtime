@@ -74,13 +74,9 @@ type MemoryStore struct {
 	// global, so a fact's sequence means the same thing to a projector reading
 	// one Run as it does to the Store writing it.
 	projectionSequence map[run.ID]uint64
-	links              []store.LinkFact
 	// reservations are held per root, because a child's spend is charged
 	// against the root envelope rather than its own.
 	reservations map[run.ID]store.BudgetReservation
-	// syntheses enforces at-most-once: a second synthesis for one root is a
-	// conflict, not an overwrite.
-	syntheses map[run.ID]bool
 	// nodeModelUsage records every CommitNodeResult's per-profile detail so
 	// tests can assert the engine passed what the agent reported.
 	nodeModelUsage map[run.ID][]run.ModelUsage
@@ -89,18 +85,10 @@ type MemoryStore struct {
 	epochs map[run.ID]uint64
 
 	tokenSeq int
-	// failChildCreateAt makes CreateChildren fail partway, to prove the
-	// generation is created all-or-nothing.
-	failChildCreateAt int
 }
 
 // MemoryStoreOption configures fault injection.
 type MemoryStoreOption func(*MemoryStore)
-
-// FailChildCreateAt makes the index-th child creation fail.
-func FailChildCreateAt(index int) MemoryStoreOption {
-	return func(s *MemoryStore) { s.failChildCreateAt = index }
-}
 
 func NewMemoryStore(clock *Clock, options ...MemoryStoreOption) *MemoryStore {
 	s := &MemoryStore{
@@ -108,10 +96,8 @@ func NewMemoryStore(clock *Clock, options ...MemoryStoreOption) *MemoryStore {
 		runs:               make(map[run.ID]*runRecord),
 		events:             make(map[run.ID][]run.Event),
 		reservations:       make(map[run.ID]store.BudgetReservation),
-		syntheses:          make(map[run.ID]bool),
 		epochs:             make(map[run.ID]uint64),
 		projectionSequence: make(map[run.ID]uint64),
-		failChildCreateAt:  -1,
 	}
 	for _, option := range options {
 		option(s)
@@ -121,8 +107,6 @@ func NewMemoryStore(clock *Clock, options ...MemoryStoreOption) *MemoryStore {
 
 var _ store.Execution = (*MemoryStore)(nil)
 
-// Children returns a root's children, for tests that assert all-or-nothing
-// creation.
 func (s *MemoryStore) Children(root run.ID) []run.Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -142,13 +126,6 @@ func (s *MemoryStore) Projections() []store.ProjectionFact {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]store.ProjectionFact(nil), s.projections...)
-}
-
-// Links returns the recorded parent/child edges.
-func (s *MemoryStore) Links() []store.LinkFact {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]store.LinkFact(nil), s.links...)
 }
 
 // Reservation returns an outstanding budget reservation.
@@ -478,50 +455,6 @@ func (s *MemoryStore) ResolveInvocation(_ context.Context, command store.Resolve
 	return s.commitLocked(record, command.Commit)
 }
 
-func (s *MemoryStore) CreateChildren(_ context.Context, command store.CreateChildrenCommand) (run.Snapshot, error) {
-	if err := command.Validate(); err != nil {
-		return run.Snapshot{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, err := s.checkExecutionFenceLocked(command.Fence)
-	if err != nil {
-		return run.Snapshot{}, err
-	}
-
-	// Staged, then applied. A partially created generation would leave the
-	// parent waiting on children that do not exist, and nothing in the tree
-	// could tell that apart from children that have not started.
-	created := make([]run.ID, 0, len(command.Children))
-	rollback := func() {
-		for _, id := range created {
-			delete(s.runs, id)
-		}
-	}
-	for index, child := range command.Children {
-		if index == s.failChildCreateAt {
-			rollback()
-			return run.Snapshot{}, run.NewError("injected_child_failure", run.ErrorInternal, run.RetryBackoff)
-		}
-		if _, createErr := s.createLocked(child); createErr != nil {
-			rollback()
-			return run.Snapshot{}, createErr
-		}
-		created = append(created, child.ID)
-	}
-	for _, reservation := range command.Reservations {
-		if _, exists := s.reservations[reservation.ID]; exists {
-			rollback()
-			return run.Snapshot{}, run.NewError("duplicate_reservation", run.ErrorConflict, run.RetryNever)
-		}
-		s.reservations[reservation.ID] = reservation
-	}
-	s.links = append(s.links, command.Links...)
-	return s.commitLocked(record, command.Commit)
-}
-
 func (s *MemoryStore) CommitNodeResult(_ context.Context, command store.CommitNodeResultCommand) (run.Snapshot, error) {
 	if err := command.Validate(); err != nil {
 		return run.Snapshot{}, err
@@ -556,32 +489,6 @@ func (s *MemoryStore) NodeModelUsage(id run.ID) []run.ModelUsage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nodeModelUsage[id]
-}
-
-func (s *MemoryStore) CommitSynthesis(_ context.Context, command store.CommitSynthesisCommand) (run.Snapshot, error) {
-	if err := command.Validate(); err != nil {
-		return run.Snapshot{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, err := s.checkExecutionFenceLocked(command.Fence)
-	if err != nil {
-		return run.Snapshot{}, err
-	}
-	root := rootOf(record.snapshot)
-	if s.syntheses[root] {
-		// At-most-once. The first synthesis is what every downstream consumer
-		// has already been told; a second would rewrite an answer that has
-		// left the building.
-		return run.Snapshot{}, run.NewError("synthesis_exists", run.ErrorConflict, run.RetryNever)
-	}
-	if err := s.settleLocked(command.Budget, run.OutcomeApplied); err != nil {
-		return run.Snapshot{}, err
-	}
-	s.syntheses[root] = true
-	return s.commitLocked(record, command.Commit)
 }
 
 func (s *MemoryStore) CommitMemoryMutation(_ context.Context, command store.CommitMemoryMutationCommand) (run.Snapshot, error) {

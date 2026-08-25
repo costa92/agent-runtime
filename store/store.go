@@ -80,9 +80,7 @@ type Execution interface {
 	ResolveApproval(ctx context.Context, command ResolveApprovalCommand) (run.Snapshot, error)
 	ResolveInvocation(ctx context.Context, command ResolveInvocationCommand) (run.Snapshot, error)
 
-	CreateChildren(ctx context.Context, command CreateChildrenCommand) (run.Snapshot, error)
 	CommitNodeResult(ctx context.Context, command CommitNodeResultCommand) (run.Snapshot, error)
-	CommitSynthesis(ctx context.Context, command CommitSynthesisCommand) (run.Snapshot, error)
 	CommitMemoryMutation(ctx context.Context, command CommitMemoryMutationCommand) (run.Snapshot, error)
 
 	CancelTree(ctx context.Context, command CancelTreeCommand) (run.Snapshot, error)

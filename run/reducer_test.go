@@ -27,8 +27,6 @@ func TestReduceStateTransitions(t *testing.T) {
 		{StateQueued, CommandStart, StateRunning, ""},
 		{StateRunning, CommandWaitApproval, StateWaitingApproval, ""},
 		{StateWaitingApproval, CommandResume, StateRunning, ""},
-		{StateRunning, CommandWaitChildren, StateWaitingChildren, ""},
-		{StateWaitingChildren, CommandResume, StateRunning, ""},
 		{StateRunning, CommandWaitRetry, StateWaitingRetry, ""},
 		{StateWaitingRetry, CommandRetry, StateRunning, ""},
 		{StateRunning, CommandSucceed, StateSucceeded, ""},
@@ -80,7 +78,7 @@ func TestTerminalStatesAreIrreversible(t *testing.T) {
 	terminal := []State{StateSucceeded, StatePartial, StateFailed, StateCancelled}
 	commands := []CommandKind{
 		CommandStart, CommandResume, CommandRetry, CommandCancel,
-		CommandSucceed, CommandFail, CommandWaitApproval, CommandWaitChildren,
+		CommandSucceed, CommandFail, CommandWaitApproval,
 		CommandInvokeModel, CommandInvokeTool, CommandWriteMemory,
 		CommandRecordUnknown, CommandResolveInvocation,
 	}
@@ -137,41 +135,6 @@ func TestEffectCommandOverTheEnvelopeIsDenied(t *testing.T) {
 // A child cannot be given what the root does not have. Checked against the root
 // envelope rather than against the parent's remaining slice, because slices are
 // handed out in parallel and each one looks affordable on its own.
-func TestChildSlicesCannotExceedTheRootEnvelope(t *testing.T) {
-	snapshot := runningSnapshot()
-	snapshot.Budget.Slices = map[ID]Limits{"child-a": {Tokens: 6000}}
-
-	got, err := Reduce(snapshot, Command{
-		Kind:   CommandCreateChildren,
-		Slices: map[ID]Limits{"child-b": {Tokens: 5000}},
-	})
-
-	if KindOf(err) != ErrorDenied {
-		t.Fatalf("error=%s want=denied", KindOf(err))
-	}
-	if _, ok := got.Next.Budget.Slices["child-b"]; ok {
-		t.Error("the rejected slice was recorded anyway")
-	}
-}
-
-func TestChildSlicesWithinTheRootEnvelopeAreRecorded(t *testing.T) {
-	snapshot := runningSnapshot()
-
-	got, err := Reduce(snapshot, Command{
-		Kind:   CommandCreateChildren,
-		Slices: map[ID]Limits{"child-a": {Tokens: 4000}, "child-b": {Tokens: 4000}},
-	})
-	if err != nil {
-		t.Fatalf("reduce: %v", err)
-	}
-	if got.Next.Budget.Slices["child-a"].Tokens != 4000 || got.Next.Budget.Slices["child-b"].Tokens != 4000 {
-		t.Fatalf("slices not recorded: %+v", got.Next.Budget.Slices)
-	}
-}
-
-// An unresolved Invocation is a property of the Invocation, not of the Run. The
-// Run is in a perfectly well-defined state — waiting for someone to say what
-// happened — and calling the Run itself `unknown` would lose that.
 func TestRecordUnknownParksTheRunInWaitingResolution(t *testing.T) {
 	snapshot := runningSnapshot()
 
@@ -283,16 +246,18 @@ func TestResolvingAnUnknownInvocationIDIsInvalid(t *testing.T) {
 // in-place mutation would make the expected revision describe the new value.
 func TestReduceDoesNotMutateItsInput(t *testing.T) {
 	snapshot := runningSnapshot()
-	snapshot.Budget.Slices = map[ID]Limits{"child-a": {Tokens: 1000}}
 	snapshot.Invocations = map[ID]Invocation{"inv-1": {ID: "inv-1", Outcome: OutcomeUnknown}}
 	before, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
+	// A command that writes into the one map the Snapshot still carries. If
+	// Reduce wrote through instead of copying, inv-2 would appear below.
 	if _, err := Reduce(snapshot, Command{
-		Kind:   CommandCreateChildren,
-		Slices: map[ID]Limits{"child-b": {Tokens: 1000}},
+		Kind:         CommandInvokeModel,
+		Reserve:      Limits{LLMCalls: 1},
+		InvocationID: "inv-2",
 	}); err != nil {
 		t.Fatalf("reduce: %v", err)
 	}

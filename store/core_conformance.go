@@ -22,9 +22,6 @@ type CoreHarness struct {
 	Store Execution
 	// Advance moves the Store's authoritative clock forward.
 	Advance func(time.Duration)
-	// NewWithChildFailure returns an equivalent Store that fails the index-th
-	// child creation, plus a reader for the children it did create.
-	NewWithChildFailure func(index int) (Execution, func(root run.ID) []run.Snapshot)
 	// Projections returns the durable outbox.
 	Projections func() []ProjectionFact
 	// Reservation reports whether a budget reservation is still outstanding.
@@ -277,38 +274,6 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 		if !sawOther {
 			t.Fatal("the lonely Run was starved by the fanned-out root")
-		}
-	})
-
-	t.Run("ChildGenerationIsAllOrNothing", func(t *testing.T) {
-		newHarness(t) // establish the harness contract even if unused below
-		failing, children := mustChildFailureHarness(t, newHarness)
-		ctx := context.Background()
-
-		claimed := mustStartOn(t, failing, "root-1")
-		transition, err := run.Reduce(claimed.Snapshot, run.Command{
-			Kind:   run.CommandCreateChildren,
-			Slices: map[run.ID]run.Limits{"child-1": {Tokens: 10}, "child-2": {Tokens: 10}},
-		})
-		if err != nil {
-			t.Fatalf("reduce: %v", err)
-		}
-
-		childCommands := []CreateCommand{childCreate("child-1", "root-1"), childCreate("child-2", "root-1")}
-		_, err = failing.CreateChildren(ctx, CreateChildrenCommand{
-			Fence:    fenceFor(claimed, claimed.Snapshot.Revision),
-			Children: childCommands,
-			Links: []LinkFact{
-				{ParentID: "root-1", ChildID: "child-1"},
-				{ParentID: "root-1", ChildID: "child-2"},
-			},
-			Commit: CommitContext{Transition: transition, Events: transition.Events},
-		})
-		if err == nil {
-			t.Fatal("the injected failure did not surface")
-		}
-		if created := children("root-1"); len(created) != 0 {
-			t.Fatalf("a partial generation survived: %d children", len(created))
 		}
 	})
 
@@ -994,94 +959,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			t.Fatalf("%d workers claimed the same Run", winners)
 		}
 	})
-
-	t.Run("ConcurrentChildReservationsRespectTheRootEnvelope", func(t *testing.T) {
-		harness := newHarness(t)
-		ctx := context.Background()
-		claimed := mustStart(t, harness, "root-1")
-
-		// Fifty children, each affordable alone. Only the root sees the sum,
-		// which is why the check is there and not on the parent's remainder.
-		const children = 50
-		var wg sync.WaitGroup
-		accepted := make(chan run.ID, children)
-		for i := range children {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				id := run.ID("child-" + itoa(i))
-				snapshot, err := harness.Store.Get(ctx, "root-1")
-				if err != nil {
-					return
-				}
-				transition, err := run.Reduce(snapshot, run.Command{
-					Kind:   run.CommandCreateChildren,
-					Slices: map[run.ID]run.Limits{id: {Tokens: 5000}},
-				})
-				if err != nil {
-					return
-				}
-				if _, err := harness.Store.CreateChildren(ctx, CreateChildrenCommand{
-					Fence:    fenceFor(claimed, snapshot.Revision),
-					Children: []CreateCommand{childCreate(id, "root-1")},
-					Links:    []LinkFact{{ParentID: "root-1", ChildID: id}},
-					Reservations: []BudgetReservation{
-						{ID: run.ID("res-" + itoa(i)), Amount: run.Limits{Tokens: 5000}},
-					},
-					Commit: CommitContext{Transition: transition, Events: transition.Events},
-				}); err == nil {
-					accepted <- id
-				}
-			}()
-		}
-		wg.Wait()
-		close(accepted)
-
-		final, err := harness.Store.Get(ctx, "root-1")
-		if err != nil {
-			t.Fatalf("get: %v", err)
-		}
-		var granted run.Limits
-		for _, slice := range final.Budget.Slices {
-			granted = granted.Add(slice)
-		}
-		if granted.Tokens > final.Budget.Envelope.Tokens {
-			t.Fatalf("granted %d tokens against an envelope of %d; concurrent children overran the root",
-				granted.Tokens, final.Budget.Envelope.Tokens)
-		}
-	})
-
-	t.Run("SynthesisIsAtMostOnce", func(t *testing.T) {
-		harness := newHarness(t)
-		ctx := context.Background()
-		claimed := mustStart(t, harness, "run-1")
-
-		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandInvokeModel})
-		if err != nil {
-			t.Fatalf("reduce: %v", err)
-		}
-		snapshot, err := harness.Store.CommitSynthesis(ctx, CommitSynthesisCommand{
-			Fence: fenceFor(claimed, claimed.Snapshot.Revision), OutputRef: "out-1",
-			Commit: CommitContext{Transition: transition, Events: transition.Events},
-		})
-		if err != nil {
-			t.Fatalf("first synthesis: %v", err)
-		}
-
-		second, err := run.Reduce(snapshot, run.Command{Kind: run.CommandInvokeModel})
-		if err != nil {
-			t.Fatalf("reduce: %v", err)
-		}
-		if _, err := harness.Store.CommitSynthesis(ctx, CommitSynthesisCommand{
-			Fence: fenceFor(claimed, snapshot.Revision), OutputRef: "out-2",
-			Commit: CommitContext{Transition: second, Events: second.Events},
-		}); run.KindOf(err) != run.ErrorConflict {
-			t.Fatalf("a second synthesis error=%s want=conflict", run.KindOf(err))
-		}
-	})
 }
-
-// --- fixtures ---
 
 func sampleCreate(id run.ID) CreateCommand {
 	return CreateCommand{
@@ -1146,15 +1024,6 @@ func mustStartOn(t *testing.T, execution Execution, id run.ID) ClaimedRun {
 		t.Fatalf("start: %v", err)
 	}
 	return ClaimedRun{Lease: lease, Snapshot: started}
-}
-
-func mustChildFailureHarness(t *testing.T, newHarness func(t *testing.T) CoreHarness) (Execution, func(run.ID) []run.Snapshot) {
-	t.Helper()
-	harness := newHarness(t)
-	if harness.NewWithChildFailure == nil {
-		t.Skip("adapter cannot inject a child-creation failure")
-	}
-	return harness.NewWithChildFailure(1)
 }
 
 func itoa(n int) string {

@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
 )
 
@@ -27,10 +26,6 @@ func TestMemoryStoreConformance(t *testing.T) {
 			Advance:     clock.Advance,
 			Projections: memory.Projections,
 			Reservation: memory.Reservation,
-			NewWithChildFailure: func(index int) (store.Execution, func(run.ID) []run.Snapshot) {
-				failing := testkit.NewMemoryStore(testkit.NewClock(), testkit.FailChildCreateAt(index))
-				return failing, failing.Children
-			},
 		}
 	})
 }

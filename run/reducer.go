@@ -67,8 +67,6 @@ func Reduce(snapshot Snapshot, command Command) (Transition, error) {
 
 	case CommandWaitApproval:
 		return parkFromRunning(snapshot, StateWaitingApproval)
-	case CommandWaitChildren:
-		return parkFromRunning(snapshot, StateWaitingChildren)
 	case CommandWaitRetry:
 		return parkFromRunning(snapshot, StateWaitingRetry)
 
@@ -78,9 +76,6 @@ func Reduce(snapshot Snapshot, command Command) (Transition, error) {
 		return reserveEffect(snapshot, command, EffectToolCall)
 	case CommandWriteMemory:
 		return reserveEffect(snapshot, command, EffectMemoryWrite)
-
-	case CommandCreateChildren:
-		return grantChildren(snapshot, command)
 
 	case CommandRecordUnknown:
 		return recordUnknown(snapshot, command)
@@ -150,37 +145,6 @@ func reserveEffect(snapshot Snapshot, command Command, kind EffectKind) (Transit
 		Reserve: command.Reserve,
 	})
 	result.Effects = []Effect{{Kind: kind, InvocationID: command.InvocationID, Reserve: command.Reserve}}
-	return result, nil
-}
-
-// grantChildren checks the requested slices against the root envelope, not
-// against the parent's remaining share. Slices are handed out in parallel and
-// each one looks affordable on its own; only the root sees the sum.
-func grantChildren(snapshot Snapshot, command Command) (Transition, error) {
-	if snapshot.State != StateRunning {
-		return Transition{Next: snapshot}, NewError("not_running", ErrorInvalid, RetryNever)
-	}
-	if len(command.Slices) == 0 {
-		return Transition{Next: snapshot}, NewError("no_slices", ErrorInvalid, RetryNever)
-	}
-
-	var total Limits
-	for _, slice := range command.Slices {
-		total = total.Add(slice)
-	}
-	if !snapshot.Budget.Affords(total) {
-		return Transition{Next: snapshot}, NewError("budget_exhausted", ErrorDenied, RetryNever)
-	}
-
-	next := snapshot
-	next.Budget = snapshot.Budget.grantSlices(command.Slices)
-
-	result := emit(advance(snapshot, next), snapshot, Event{
-		Kind:    EventChildrenGranted,
-		RunID:   snapshot.ID,
-		Reserve: total,
-	})
-	result.Effects = []Effect{{Kind: EffectChildCreate, Slices: copySlices(command.Slices)}}
 	return result, nil
 }
 
@@ -272,9 +236,6 @@ func advance(previous, next Snapshot) Transition {
 	next.Revision = previous.Revision + 1
 	if next.Invocations == nil {
 		next.Invocations = copyInvocations(previous.Invocations)
-	}
-	if next.Budget.Slices == nil {
-		next.Budget.Slices = copySlices(previous.Budget.Slices)
 	}
 	return Transition{Next: next}
 }

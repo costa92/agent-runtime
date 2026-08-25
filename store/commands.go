@@ -381,49 +381,6 @@ func (c ResolveInvocationCommand) Validate() error {
 	return nil
 }
 
-// LinkFact records a parent/child edge durably, so that a tree can be walked
-// after a crash without inferring structure from timing.
-type LinkFact struct {
-	ParentID run.ID
-	ChildID  run.ID
-	NodeName string
-}
-
-// CreateChildrenCommand creates a whole child generation or none of it.
-//
-// All-or-nothing because a half-created generation leaves the parent waiting on
-// children that do not exist, and nothing in the tree can tell that apart from
-// children that have not started.
-type CreateChildrenCommand struct {
-	Fence        ExecutionFence
-	Children     []CreateCommand
-	Links        []LinkFact
-	Reservations []BudgetReservation
-	Commit       CommitContext
-}
-
-func (c CreateChildrenCommand) Validate() error {
-	if err := c.Fence.validate(); err != nil {
-		return err
-	}
-	if len(c.Children) == 0 {
-		return run.NewError("no_children", run.ErrorInvalid, run.RetryNever)
-	}
-	for _, child := range c.Children {
-		if err := child.Validate(); err != nil {
-			return err
-		}
-		if child.RootID == "" {
-			return run.NewError("unrooted_child", run.ErrorInvalid, run.RetryNever,
-				fmt.Errorf("child %s", child.ID))
-		}
-	}
-	if len(c.Links) != len(c.Children) {
-		return run.NewError("missing_links", run.ErrorInvalid, run.RetryNever)
-	}
-	return nil
-}
-
 type CommitNodeResultCommand struct {
 	Fence     ExecutionFence
 	NodeName  string
@@ -443,29 +400,6 @@ func (c CommitNodeResultCommand) Validate() error {
 	}
 	if c.NodeName == "" {
 		return run.NewError("missing_node_name", run.ErrorInvalid, run.RetryNever)
-	}
-	return nil
-}
-
-// CommitSynthesisCommand records the root's combined answer.
-//
-// It is at-most-once: a second synthesis for the same root is a conflict rather
-// than an overwrite, because the first is what every downstream consumer has
-// already been told.
-type CommitSynthesisCommand struct {
-	Fence     ExecutionFence
-	OutputRef string
-	Usage     run.Limits
-	Budget    BudgetSettlement
-	Commit    CommitContext
-}
-
-func (c CommitSynthesisCommand) Validate() error {
-	if err := c.Fence.validate(); err != nil {
-		return err
-	}
-	if c.OutputRef == "" {
-		return run.NewError("missing_output_ref", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
 }

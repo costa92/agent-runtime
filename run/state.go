@@ -1,11 +1,11 @@
 package run
 
 // State is the Run lifecycle. One aggregate and one state machine serve every
-// execution shape — single agent, DAG, delegation tree — because a second
-// execution path is a second set of invariants, and the two drift.
+// execution shape — single agent, DAG — because a second execution path is a
+// second set of invariants, and the two drift.
 //
 //	queued  → running
-//	running → waiting_approval | waiting_children | waiting_retry | waiting_resolution
+//	running → waiting_approval | waiting_retry | waiting_resolution
 //	waiting_* → running
 //	queued | running | waiting_* → succeeded | partial | failed | cancelled
 //
@@ -18,8 +18,6 @@ const (
 
 	// StateWaitingApproval: a governed effect needs a human decision.
 	StateWaitingApproval State = "waiting_approval"
-	// StateWaitingChildren: delegated children are still running.
-	StateWaitingChildren State = "waiting_children"
 	// StateWaitingRetry: a failure the Runtime established is safe to repeat.
 	StateWaitingRetry State = "waiting_retry"
 	// StateWaitingResolution: an Invocation's outcome is unknown — the side
@@ -45,8 +43,7 @@ const (
 func States() []State {
 	return []State{
 		StateQueued, StateRunning,
-		StateWaitingApproval, StateWaitingChildren,
-		StateWaitingRetry, StateWaitingResolution,
+		StateWaitingApproval, StateWaitingRetry, StateWaitingResolution,
 		StateSucceeded, StatePartial, StateFailed, StateCancelled,
 	}
 }
@@ -65,7 +62,7 @@ func (s State) Terminal() bool {
 // Waiting reports whether the Run is parked on something outside itself.
 func (s State) Waiting() bool {
 	switch s {
-	case StateWaitingApproval, StateWaitingChildren, StateWaitingRetry, StateWaitingResolution:
+	case StateWaitingApproval, StateWaitingRetry, StateWaitingResolution:
 		return true
 	default:
 		return false

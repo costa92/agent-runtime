@@ -217,7 +217,6 @@ const (
 	CommandRetry  CommandKind = "retry"
 
 	CommandWaitApproval CommandKind = "wait_approval"
-	CommandWaitChildren CommandKind = "wait_children"
 	CommandWaitRetry    CommandKind = "wait_retry"
 
 	// The three governed effects. Each reserves budget before the effect is
@@ -225,8 +224,6 @@ const (
 	CommandInvokeModel CommandKind = "invoke_model"
 	CommandInvokeTool  CommandKind = "invoke_tool"
 	CommandWriteMemory CommandKind = "write_memory"
-
-	CommandCreateChildren CommandKind = "create_children"
 
 	// CommandRecordUnknown parks the Run because an Invocation's outcome could
 	// not be established.
@@ -249,8 +246,6 @@ type Command struct {
 
 	// Reserve is the spend an effect command charges before issuing.
 	Reserve Limits
-	// Slices are the child envelopes CommandCreateChildren grants.
-	Slices map[ID]Limits
 
 	// InvocationID names the Invocation for record_unknown and
 	// resolve_invocation.
@@ -275,7 +270,6 @@ const (
 	EffectModelCall   EffectKind = "model_call"
 	EffectToolCall    EffectKind = "tool_call"
 	EffectMemoryWrite EffectKind = "memory_write"
-	EffectChildCreate EffectKind = "child_create"
 	// EffectUnknown records an unresolved Invocation for reconciliation. It
 	// never makes the Run itself unknown.
 	EffectUnknown EffectKind = "unknown"
@@ -286,18 +280,16 @@ type Effect struct {
 	Kind         EffectKind
 	InvocationID ID
 	Reserve      Limits
-	Slices       map[ID]Limits
 }
 
-// EventKind is the observable record of a decision. Router, model selection,
-// policy, quota, budget and approval decisions are events rather than log
-// lines, so that a consumer can reconstruct why a Run did what it did.
+// EventKind is the observable record of a decision. Model selection, policy,
+// quota, budget and approval decisions are events rather than log lines, so
+// that a consumer can reconstruct why a Run did what it did.
 type EventKind string
 
 const (
 	EventStateChanged       EventKind = "state_changed"
 	EventBudgetReserved     EventKind = "budget_reserved"
-	EventChildrenGranted    EventKind = "children_granted"
 	EventInvocationParked   EventKind = "invocation_parked"
 	EventInvocationResolved EventKind = "invocation_resolved"
 )
