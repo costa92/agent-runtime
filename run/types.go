@@ -159,11 +159,19 @@ type Snapshot struct {
 
 // Restrictions are the per-Run narrowing.
 type Restrictions struct {
-	// Tools, when non-empty, is intersected with the Definition's declared
-	// tools. Empty means "no narrowing", not "no tools": an empty allowlist
-	// meaning nothing-allowed would silently disarm every Run that did not ask
-	// for a restriction.
-	Tools []string `json:"tools,omitempty"`
+	// ToolNarrowing, when non-empty, is intersected with the Definition's
+	// declared tools. Empty means "no narrowing", not "no tools": an empty
+	// allowlist meaning nothing-allowed would silently disarm every Run that did
+	// not ask for a restriction.
+	//
+	// Named for what it does rather than for what it holds, because
+	// workflow.Node.Tools is a list of the same shape, with the same json name,
+	// whose empty case means the exact opposite — a node grants nothing unless
+	// it says so. Both are read in tool_loop.go, one line apart. While this was
+	// also called Tools, an eval trial passed its "tools we expect to be called"
+	// assertion straight into it and granted the whole allowlist to every case
+	// that expected none.
+	ToolNarrowing []string `json:"tools,omitempty"`
 	// DenySideEffects refuses any call that changes state the Runtime cannot
 	// roll back, whatever the policy says about it.
 	DenySideEffects bool `json:"deny_side_effects,omitempty"`
@@ -184,13 +192,23 @@ type Restrictions struct {
 	Labels []string `json:"labels,omitempty"`
 }
 
+// Zero reports a Restrictions that narrows nothing.
+//
+// A store uses this to decide between writing the JSON and writing NULL, so it
+// has to name every field: one left out is written as NULL and read back as
+// "never restricted", losing the narrowing rather than failing. A reflection
+// test in this package fails when a field is added and not accounted for here.
+func (r Restrictions) Zero() bool {
+	return len(r.ToolNarrowing) == 0 && !r.DenySideEffects && len(r.Labels) == 0
+}
+
 // Narrow returns the allowlist a Run may actually use.
 func (r Restrictions) Narrow(declared []string) []string {
-	if len(r.Tools) == 0 {
+	if len(r.ToolNarrowing) == 0 {
 		return declared
 	}
-	allowed := make(map[string]bool, len(r.Tools))
-	for _, key := range r.Tools {
+	allowed := make(map[string]bool, len(r.ToolNarrowing))
+	for _, key := range r.ToolNarrowing {
 		allowed[key] = true
 	}
 	kept := make([]string, 0, len(declared))

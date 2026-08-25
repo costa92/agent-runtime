@@ -763,7 +763,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 
 		create := sampleCreate("run-1")
 		create.Restrictions = run.Restrictions{
-			Tools: []string{"search"}, DenySideEffects: true,
+			ToolNarrowing: []string{"search"}, DenySideEffects: true,
 			Labels: []string{"evidence_optional"},
 		}
 		created, err := harness.Store.Create(ctx, create)
@@ -771,7 +771,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			t.Fatalf("create: %v", err)
 		}
 		if !created.Restrictions.DenySideEffects ||
-			len(created.Restrictions.Tools) != 1 {
+			len(created.Restrictions.ToolNarrowing) != 1 {
 			t.Fatalf("restrictions = %+v", created.Restrictions)
 		}
 
@@ -796,7 +796,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			t.Fatalf("create: %v", err)
 		}
 		if unrestricted.Restrictions.DenySideEffects ||
-			len(unrestricted.Restrictions.Tools) != 0 ||
+			len(unrestricted.Restrictions.ToolNarrowing) != 0 ||
 			len(unrestricted.Restrictions.Labels) != 0 {
 			t.Fatalf("an unrestricted Run came back restricted: %+v",
 				unrestricted.Restrictions)

@@ -15,7 +15,7 @@ import (
 // be in the allowlist by the time anything looked.
 func TestARestrictionCannotGrantAToolTheDefinitionNeverDeclared(t *testing.T) {
 	declared := []string{"search"}
-	restricted := run.Restrictions{Tools: []string{"search", "publish"}}
+	restricted := run.Restrictions{ToolNarrowing: []string{"search", "publish"}}
 
 	allowed := restricted.Narrow(declared)
 	if slices.Contains(allowed, "publish") {
@@ -42,7 +42,7 @@ func TestAnEmptyRestrictionLeavesTheDeclaredToolsAlone(t *testing.T) {
 // A restriction naming nothing the Definition declared allows nothing, rather
 // than falling back to everything.
 func TestADisjointRestrictionAllowsNothing(t *testing.T) {
-	allowed := run.Restrictions{Tools: []string{"publish"}}.Narrow([]string{"search"})
+	allowed := run.Restrictions{ToolNarrowing: []string{"publish"}}.Narrow([]string{"search"})
 	if len(allowed) != 0 {
 		t.Fatalf("allowed = %v", allowed)
 	}
