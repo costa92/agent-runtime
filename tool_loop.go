@@ -121,7 +121,12 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 		return llm.Response{}, err
 	}
 
+	// Timed here rather than inside the client: this is the only place that
+	// sees every provider, and a per-client measurement would miss the ones
+	// that never got one.
+	callStarted := s.runtime.deps.Clock.Now()
 	response, callErr := client.Complete(ctx, request)
+	callElapsed := s.runtime.deps.Clock.Now().Sub(callStarted)
 
 	// Usage is settled from every attempt, including the failed ones. A
 	// provider that consumed the prompt and then errored still charged for it,
@@ -159,6 +164,11 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	if response.Model.Profile == "" {
 		response.Model = request.Model
 	}
+	// Recorded after the settled profile is known, and on the error path too:
+	// the call that spent the most wall time is often the one that failed, and
+	// leaving it out biases the very measurement used to size the ceiling that
+	// would have cut it short.
+	s.recordCallTiming(response.Model.Profile, callElapsed)
 	return response, callErr
 }
 
@@ -345,13 +355,31 @@ func (p *governedPorts) recordExplanation(name string, explanation policy.Explan
 // an unknown tool, a schema mismatch, an allowlist miss. The refusal is still a
 // governance decision and still has to be visible.
 func (p *governedPorts) recordPolicy(name string, err error) {
-	p.session.runtime.record(observe.Decision{
-		Name: observe.EventPolicyEvaluated, RunID: p.session.snapshot.ID,
-		Attributes: []observe.Attribute{
-			observe.Attr(observe.AttrTool, name),
-			observe.Attr(observe.AttrDecision, string(run.KindOf(err))),
-		},
-	})
+	p.session.runtime.record(prePolicyDecision(p.session.snapshot.ID, name, err))
+}
+
+// prePolicyDecision builds the record for a refusal that no Explanation
+// describes.
+//
+// The code goes on beside the kind because several refusals share a kind: an
+// allowlist miss, a missing permission and a blanket side-effect ban are all
+// "denied", and they are fixed in three different places. Recording only the
+// kind is what made a version whose stored graph granted no tools at all
+// indistinguishable, per call, from a version deliberately withholding one.
+func prePolicyDecision(runID run.ID, tool string, err error) observe.Decision {
+	attributes := []observe.Attribute{
+		observe.Attr(observe.AttrTool, tool),
+		observe.Attr(observe.AttrDecision, string(run.KindOf(err))),
+	}
+	// Omitted rather than empty when the error is not the Runtime's: an
+	// attribute present and blank claims the reason was looked up and found to
+	// be nothing.
+	if code := run.CodeOf(err); code != "" {
+		attributes = append(attributes, observe.Attr(observe.AttrReason, code))
+	}
+	return observe.Decision{
+		Name: observe.EventPolicyEvaluated, RunID: runID, Attributes: attributes,
+	}
 }
 
 // admitEffect applies the windowed quota at the gateway, then the budget.

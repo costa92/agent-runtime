@@ -124,6 +124,20 @@ func KindOf(err error) ErrorKind {
 	return ""
 }
 
+// CodeOf reports the code of an error, or "" when it is not a Runtime error.
+//
+// For observability, not for control flow: codes are read by operators and the
+// closed set built for branching is ErrorKind. It exists because a kind is
+// deliberately coarse — several unrelated refusals share one — so a record
+// carrying only the kind cannot say which thing to go and fix.
+func CodeOf(err error) string {
+	var target *Error
+	if errors.As(err, &target) {
+		return target.Code
+	}
+	return ""
+}
+
 // RetryOf reports the retry hint of an error, or RetryNever for anything that
 // is not a Runtime error. An unrecognized error is not evidence that repeating
 // the call is safe.

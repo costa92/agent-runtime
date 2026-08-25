@@ -40,6 +40,56 @@ type session struct {
 	// approvalHold is the write parked for a human. Loaded from Checkpoint
 	// on resume so confirm can perform that effect.
 	approvalHold *approvalHold
+
+	// callTimingMu guards callTiming, which accumulates how long each model
+	// call took for the node currently executing. The agent runs on one
+	// goroutine but may call the model from several, and this is written on
+	// every one of them.
+	callTimingMu sync.Mutex
+	callTiming   []run.ModelUsage
+}
+
+// recordCallTiming notes one provider round trip for the running node.
+func (s *session) recordCallTiming(profile string, elapsed time.Duration) {
+	s.callTimingMu.Lock()
+	defer s.callTimingMu.Unlock()
+	s.callTiming = run.MergeCallTiming(s.callTiming, profile, int(elapsed/time.Millisecond))
+}
+
+// takeCallTiming returns the timings gathered since the last node committed and
+// clears them, so the next node starts from nothing.
+func (s *session) takeCallTiming() []run.ModelUsage {
+	s.callTimingMu.Lock()
+	defer s.callTimingMu.Unlock()
+	timing := s.callTiming
+	s.callTiming = nil
+	return timing
+}
+
+// withCallTiming folds the Runtime's measured durations into the agent's
+// reported token lines.
+//
+// A profile the agent did not report still produces a line: a call that failed
+// after burning wall time is exactly the one worth seeing, and it is also the
+// one least likely to come back with a token count.
+func withCallTiming(reported, timing []run.ModelUsage) []run.ModelUsage {
+	for _, t := range timing {
+		found := false
+		for i := range reported {
+			if reported[i].Profile == t.Profile {
+				reported[i].Calls += t.Calls
+				if t.MaxCallMS > reported[i].MaxCallMS {
+					reported[i].MaxCallMS = t.MaxCallMS
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			reported = append(reported, t)
+		}
+	}
+	return reported
 }
 
 // AdvanceNext is the Worker entry point.
@@ -319,7 +369,8 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 		return err
 	}
 
-	committed, err := s.commitNode(ctx, transition, node.ID, result.OutputRef, response.Used, response.ModelUsage, fact)
+	modelUsage := withCallTiming(response.ModelUsage, s.takeCallTiming())
+	committed, err := s.commitNode(ctx, transition, node.ID, result.OutputRef, response.Used, modelUsage, fact)
 	if err != nil {
 		return err
 	}

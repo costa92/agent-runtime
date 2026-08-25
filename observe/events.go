@@ -41,6 +41,11 @@ const (
 	AttrPolicyName     = "policy_name"
 	AttrPolicyDigest   = "policy_digest"
 	AttrDecision       = "decision"
+	// AttrReason names which refusal it was, for the refusals that happen
+	// before a policy Explanation exists. AttrDecision carries the kind, which
+	// is what a caller switches on; several distinct refusals share one kind,
+	// so the kind alone cannot say what to fix.
+	AttrReason         = "reason"
 	AttrShadow         = "shadow"
 	AttrQuotaName      = "quota_name"
 	AttrQuotaScope     = "quota_scope"
@@ -80,6 +85,7 @@ func BuiltinEventSpecs() []EventSpec {
 			// nothing keeps.
 			Fields: []string{
 				AttrTool, AttrDecision, AttrPolicyName, AttrPolicyDigest, AttrShadow,
+				AttrReason,
 			},
 		},
 		{

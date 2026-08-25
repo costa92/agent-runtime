@@ -29,3 +29,40 @@ func TestMergeModelUsagePreservesOrder(t *testing.T) {
 		t.Fatalf("usage = %+v, want [b a]", usage)
 	}
 }
+
+// The ceiling a per-call timeout is set against is the worst single call, so
+// the maximum must survive being merged with faster ones.
+func TestCallTimingKeepsTheWorstCallNotTheLatest(t *testing.T) {
+	var usage []ModelUsage
+	usage = MergeCallTiming(usage, "deepseek/v4", 12_000)
+	usage = MergeCallTiming(usage, "deepseek/v4", 900)
+
+	if len(usage) != 1 {
+		t.Fatalf("lines = %d; one profile is one line", len(usage))
+	}
+	if usage[0].Calls != 2 {
+		t.Fatalf("calls = %d, want 2", usage[0].Calls)
+	}
+	if usage[0].MaxCallMS != 12_000 {
+		t.Fatalf("max = %d; a later fast call must not lower the worst one", usage[0].MaxCallMS)
+	}
+}
+
+// Timing and tokens are reported by different parties — the Runtime measures
+// the round trip, the agent reads the response — so a profile may arrive on one
+// path before the other.
+func TestCallTimingAndTokensAccumulateOnTheSameLine(t *testing.T) {
+	var usage []ModelUsage
+	usage = MergeCallTiming(usage, "openai/gpt-4o", 500)
+	usage = MergeModelUsage(usage, "openai/gpt-4o", 100, 50)
+
+	if len(usage) != 1 {
+		t.Fatalf("lines = %d; timing and tokens for one profile are one line", len(usage))
+	}
+	if usage[0].InputTokens != 100 || usage[0].OutputTokens != 50 {
+		t.Fatalf("tokens = %d/%d; merging timing first must not lose them", usage[0].InputTokens, usage[0].OutputTokens)
+	}
+	if usage[0].Calls != 1 || usage[0].MaxCallMS != 500 {
+		t.Fatalf("timing = %d calls / %d ms; merging tokens after must not clear it", usage[0].Calls, usage[0].MaxCallMS)
+	}
+}
