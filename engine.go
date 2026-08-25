@@ -191,7 +191,7 @@ func (r *runtime) newSession(ctx context.Context, claimed store.ClaimedRun) (*se
 		// The published graph moved under a Run that pinned the old one. Failing
 		// closed is the only safe answer: executing the new shape would silently
 		// run something the Run was never authorized or budgeted for.
-		return nil, run.NewError("graph_mismatch", run.ErrorConflict, run.RetryNever)
+		return nil, run.NewError("graph_mismatch", run.ErrorInvalid, run.RetryNever)
 	}
 	graph, err := r.graphs.Get(ctx, snapshot.Graph)
 	if err != nil {

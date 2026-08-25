@@ -330,8 +330,8 @@ func TestChangedGraphProducesADifferentDigestAndFailsRecovery(t *testing.T) {
 	}
 	if err := republished.Verify(pinned.Ref); err == nil {
 		t.Fatal("recovery accepted a graph the Run did not pin")
-	} else if run.KindOf(err) != run.ErrorConflict {
-		t.Fatalf("kind=%s want=conflict", run.KindOf(err))
+	} else if run.KindOf(err) != run.ErrorInvalid {
+		t.Fatalf("kind=%s want=invalid", run.KindOf(err))
 	}
 	if err := pinned.Verify(pinned.Ref); err != nil {
 		t.Fatalf("recovery refused the pinned graph: %v", err)

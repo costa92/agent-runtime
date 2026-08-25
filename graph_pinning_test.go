@@ -43,8 +43,10 @@ func TestAdvanceFailsClosedOnAGraphThatMoved(t *testing.T) {
 	h.source.graphRef.Digest = "some-other-digest"
 
 	_, err := h.runtime.Advance(t.Context(), started.ID)
-	if run.KindOf(err) != run.ErrorConflict {
-		t.Fatalf("kind=%s want=conflict", run.KindOf(err))
+	// Invalid, not conflict: reloading never produces the pinned graph again,
+	// and a worker meters conflicts as healthy contention.
+	if run.KindOf(err) != run.ErrorInvalid {
+		t.Fatalf("kind=%s want=invalid", run.KindOf(err))
 	}
 }
 
@@ -101,8 +103,8 @@ func TestACachedGraphIsStillVerified(t *testing.T) {
 		ID: "x", Version: 1, Digest: "a-different-digest",
 	}}
 
-	if _, err := cache.Get(t.Context(), ref); run.KindOf(err) != run.ErrorConflict {
-		t.Fatalf("kind=%s want=conflict", run.KindOf(err))
+	if _, err := cache.Get(t.Context(), ref); run.KindOf(err) != run.ErrorInvalid {
+		t.Fatalf("kind=%s want=invalid", run.KindOf(err))
 	}
 }
 

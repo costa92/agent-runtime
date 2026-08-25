@@ -83,7 +83,9 @@ func (c *GraphCache) Get(ctx context.Context, ref run.ExecutionGraphRef) (*workf
 		return nil, err
 	}
 	if graph == nil {
-		return nil, run.NewError("missing_graph", run.ErrorConflict, run.RetryNever)
+		// Invalid for the same reason as graph_mismatch: a pinned graph the
+		// catalog does not hold will not appear on the next attempt.
+		return nil, run.NewError("missing_graph", run.ErrorInvalid, run.RetryNever)
 	}
 	if err := graph.Verify(ref); err != nil {
 		return nil, err

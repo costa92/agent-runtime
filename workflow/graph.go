@@ -134,9 +134,17 @@ func (g *ExecutionGraph) Lookup(id string) (Node, error) {
 // Recovery loads by digest for this reason: a Definition republished under the
 // same ref with a different shape, or a deployment whose compiler changed, would
 // otherwise bring a Run back as something other than what it started as.
+// Invalid, not conflict. ErrorConflict promises the caller's view was stale and
+// that reloading resolves it; nothing here is resolved by reloading, because the
+// pinned graph is gone and every future attempt fails identically. That is
+// ErrorInvalid's contract, and the kind is what a worker acts on: the platform
+// worker meters ErrorConflict as "another worker won this claim — expected and
+// healthy in a fleet", with no log and no failure counter, so calling this a
+// conflict filed a Run that could never advance under normal contention and let
+// it be re-claimed forever while the metrics reported a working pool.
 func (g *ExecutionGraph) Verify(pinned run.ExecutionGraphRef) error {
 	if g.Ref == pinned {
 		return nil
 	}
-	return run.NewError("graph_mismatch", run.ErrorConflict, run.RetryNever)
+	return run.NewError("graph_mismatch", run.ErrorInvalid, run.RetryNever)
 }
