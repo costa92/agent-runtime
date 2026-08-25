@@ -11,6 +11,12 @@ import (
 // one of these, because a decision that was only logged cannot be queried, and
 // "why did this Run refuse" is asked long after the log line has rotated away.
 const (
+	// EventRouterPlanSelected is emitted once per node the scheduler picks, with
+	// the graph digest as its plan. The "router" in the name is historical: it
+	// was shared with a delegation router that has since been deleted, and the
+	// name is kept because it is a StableEvent whose value is already persisted
+	// in agent_run_decisions rows. Renaming would split one fact across two
+	// names for every query that reads history.
 	EventRouterPlanSelected   = "runtime.router.plan_selected"
 	EventModelSelected        = "runtime.model.selected"
 	EventPolicyEvaluated      = "runtime.policy.evaluated"

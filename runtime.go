@@ -19,7 +19,6 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"github.com/kart-io/wechat-account/agent-runtime/tool"
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
 )
 
 // DefinitionSource loads a published Definition by pinned ref.
@@ -51,13 +50,6 @@ type Dependencies struct {
 	Meter         quota.Meter
 
 	Agents *agent.Registry
-	// Router, Candidates and Synthesis are the delegation ports. All three are
-	// optional: a deployment with no orchestrators needs none of them, and a
-	// Runtime that demanded them would make single-agent embedding harder than
-	// it already is.
-	Router     workflow.Router
-	Candidates CandidateSource
-	Synthesis  workflow.SynthesisStrategy
 	// Schemas validates a node's output before anything downstream binds it.
 	// Optional: a host that ships no validator still gets every other check.
 	Schemas  definition.SchemaValidator

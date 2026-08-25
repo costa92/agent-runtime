@@ -63,7 +63,7 @@ func TestACheckpointFromAnOlderProtocolIsRefusedRatherThanPartlyRead(t *testing.
 // What this build writes, this build reads — and it is stamped, so the next one
 // can tell what it is looking at.
 func TestWhatIsWrittenCarriesTheProtocolAndRoundTrips(t *testing.T) {
-	encoded, err := encodeCheckpoint(checkpoint{Plan: json.RawMessage(`{"children":[]}`)})
+	encoded, err := encodeCheckpoint(checkpoint{Approval: json.RawMessage(`{"tool":"publish_article"}`)})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

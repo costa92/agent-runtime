@@ -109,26 +109,6 @@ func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) 
 		if current.snapshot.State.Terminal() {
 			return AdvanceResult{Run: current.snapshot}, nil
 		}
-		// Delegation is checked before the waiting states, because
-		// waiting_children is exactly the state a parent resumes from: whether
-		// its children have finished is the question this call exists to ask.
-		if current.orchestrating() {
-			// An orchestrator's work is its children. Running its own graph
-			// node as well would give the same Run two ways to produce a
-			// result, and nothing downstream could say which one was the
-			// answer.
-			delegated, err := current.delegate(ctx)
-			if err != nil {
-				return AdvanceResult{Run: current.snapshot}, err
-			}
-			if delegated {
-				if current.snapshot.State.Terminal() {
-					return AdvanceResult{Run: current.snapshot}, nil
-				}
-				return AdvanceResult{Run: current.snapshot, Waiting: true}, nil
-			}
-		}
-
 		if current.snapshot.State.Waiting() {
 			return AdvanceResult{Run: current.snapshot, Waiting: true}, nil
 		}

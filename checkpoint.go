@@ -17,26 +17,29 @@ import (
 // during a rolling deploy is routinely not the one that wrote it.
 //
 // Unversioned, a shape change is silent in the worst direction: json.Unmarshal
-// drops keys it does not know and zeroes fields that are absent, so an
-// orchestrator resumed against a changed shape does not fail — it comes back
-// with an empty plan and no children and starts delegating again.
+// drops keys it does not know and zeroes fields that are absent, so a Run
+// resumed against a changed shape does not fail — it comes back with a
+// half-empty state and carries on as if that were what was written.
 //
 // Bump this when the meaning or the shape of anything under it changes.
+//
+// Deliberately NOT bumped when the delegation plan was removed: no deployment
+// could ever write those two keys (they were only produced after a Router
+// returned RouteDelegate, and no host wired one), so no stored checkpoint can
+// contain them and no reader can observe their absence. Bumping would have
+// rejected every parked approval checkpoint that does exist.
 const checkpointProtocol = 1
 
 // checkpoint is the envelope every resume state is written in.
 //
-// The two payloads are the orchestrator's delegation plan and the write parked
-// for a human. They shared this field before by not colliding on key names,
-// which is an arrangement that holds until someone picks a name twice.
+// One payload today: the write parked for a human. The envelope stays because
+// the versioning above is what makes a second one safe to add.
 type checkpoint struct {
 	// Protocol is mandatory on every non-empty checkpoint. Legacy unversioned
 	// rows are upgraded once by the database migration; keeping that conversion
 	// here would turn a deployment boundary into permanent dual-protocol logic.
 	Protocol uint32 `json:"protocol"`
 
-	Plan     json.RawMessage `json:"plan,omitempty"`
-	Children json.RawMessage `json:"children,omitempty"`
 	Approval json.RawMessage `json:"approval,omitempty"`
 }
 
