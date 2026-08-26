@@ -128,7 +128,7 @@ func WithMaxResultBytes(limit int) Option {
 // may ask for less than the default (via MaxDurationMS) but never more than
 // the ceiling.
 //
-// (0, 0) is the rollback path: it disables the gateway's own timeout
+// Non-positive in both is the rollback path: it disables the gateway's own timeout
 // entirely, regardless of what any Spec declares, restoring the behaviour
 // before this option existed — a call's context is cancelled only when lease
 // renewal fails.
@@ -464,8 +464,18 @@ func (g *Gateway) callTimeout(spec Spec) time.Duration {
 // switch can decide whether it retries clean or must park as unknown: a
 // timeout on a non-idempotent write is exactly the "the side effect may
 // already have happened" case that switch already knows how to handle.
+//
+// A handler that already said what its failure was keeps it. The deadline
+// tells us the clock ran out, not that the clock is why the handler failed:
+// a handler racing the deadline can return an approval request or an invalid
+// argument microseconds late, and relabelling either would turn "park for a
+// human" into "retry" — the failure the ApprovalRequired comment above records.
 func classifyDeadline(parent, call context.Context, err error) error {
 	if parent.Err() != nil {
+		return err
+	}
+	var classified *run.Error
+	if errors.As(err, &classified) {
 		return err
 	}
 	if errors.Is(call.Err(), context.DeadlineExceeded) {

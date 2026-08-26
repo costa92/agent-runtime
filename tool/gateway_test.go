@@ -670,6 +670,34 @@ func TestASpecMayNotAskForLongerThanTheCeiling(t *testing.T) {
 
 // (0, 0) is the rollback path: it must restore the pre-timeout behaviour
 // where nothing but lease renewal failure ever cancels a stuck handler.
+// A handler that already classified its failure keeps that classification
+// even when it lands past the deadline. Relabelling an approval request as a
+// retryable timeout would turn "park for a human" into "retry", which is the
+// failure mode the gateway's ApprovalRequired handling exists to prevent.
+func TestADeadlineDoesNotRelabelAFailureTheHandlerAlreadyClassified(t *testing.T) {
+	spec := testkit.SearchSpec()
+	handler := tool.HandlerFunc(func(ctx context.Context, _ tool.Invocation) (tool.Result, error) {
+		<-ctx.Done()
+		return tool.Result{}, run.NewError("search.bad_query", run.ErrorInvalid, run.RetryNever, nil)
+	})
+	gateway := gatewayWith(t, spec, handler,
+		tool.WithToolTimeout(10*time.Millisecond, 50*time.Millisecond))
+
+	request := publishRequest()
+	request.Tool = "search"
+	prepared, err := gateway.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	_, err = gateway.Execute(context.Background(), tool.CommittedInvocation{Prepared: prepared})
+	if run.CodeOf(err) != "search.bad_query" {
+		t.Fatalf("code=%s want=search.bad_query: %v", run.CodeOf(err), err)
+	}
+	if run.KindOf(err) != run.ErrorInvalid {
+		t.Fatalf("kind=%s want=invalid", run.KindOf(err))
+	}
+}
+
 func TestWithToolTimeoutZeroZeroDisablesTheGatewaysOwnTimeout(t *testing.T) {
 	spec := testkit.SearchSpec()
 	spec.MaxDurationMS = 10 // a Spec ask, which must also be ignored once disabled
