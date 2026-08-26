@@ -66,6 +66,15 @@ type Dependencies struct {
 	// LeaseFor is how long a claim holds. The renew loop refreshes well inside
 	// it; the value only has to outlast a single effect's start.
 	LeaseFor time.Duration
+	// MaxNodeDuration bounds one node's execution in wall-clock time. The renew
+	// loop stops here whatever the Store says: a lease that renews forever means
+	// a wedged handler holds a worker slot forever, and the loop has no other way
+	// to find out. It must exceed the tool timeout ceiling, or a node would be
+	// abandoned before the tool call inside it was allowed to give up.
+	//
+	// Zero takes the 10m default; a negative value restores unbounded renewal —
+	// the rollback, at config level, and deliberate rather than a forgotten field.
+	MaxNodeDuration time.Duration
 	// GraphCacheSize bounds the digest-keyed graph cache.
 	GraphCacheSize int
 	// Owner identifies this worker in a lease.
@@ -207,6 +216,13 @@ func New(deps Dependencies) (Runtime, error) {
 
 	if deps.LeaseFor <= 0 {
 		deps.LeaseFor = 30 * time.Second
+	}
+	if deps.MaxNodeDuration == 0 {
+		// 10m: comfortably above the 180s tool ceiling a node may spend inside a
+		// single call, and low enough that a wedged worker slot comes back the
+		// same hour. Only an explicitly negative value disables it, so that
+		// unbounded renewal is something a host asks for rather than forgets.
+		deps.MaxNodeDuration = 10 * time.Minute
 	}
 	if deps.Owner == "" {
 		deps.Owner = "agent-runtime"

@@ -328,14 +328,38 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	// The renew loop runs for as long as the effect does. A node that calls a
 	// slow model can outlive the lease it was claimed under, and a worker whose
 	// lease lapsed mid-effect must not be the one that commits the result.
-	effectCtx, stop := s.renewing(ctx)
+	effectCtx, abandoned, stop := s.renewing(ctx)
 	ports := &governedPorts{session: s, node: node}
 	built, err := s.request(ctx, node, ports)
 	if err != nil {
 		stop()
 		return err
 	}
-	response, executeErr := implementation.Execute(effectCtx, built)
+
+	// The handler runs beside this goroutine rather than in it, because a
+	// handler that ignores its context is exactly the one the cap exists for and
+	// waiting on its return here would be waiting forever.
+	type execution struct {
+		response agent.Response
+		err      error
+	}
+	finished := make(chan execution, 1)
+	go func() {
+		response, err := implementation.Execute(effectCtx, built)
+		finished <- execution{response: response, err: err}
+	}()
+
+	var done execution
+	select {
+	case done = <-finished:
+	case <-abandoned:
+		// Cancelled at the cap and still running after the grace period. The
+		// lease is not released and the Run is not failed: the effect may
+		// already have landed, so the only honest state is an unknown outcome.
+		stop()
+		return s.abandonNode(ctx, node)
+	}
+	response, executeErr := done.response, done.err
 	renewErr := stop()
 
 	if executeErr != nil && approvalRequired(executeErr) {
@@ -494,6 +518,56 @@ func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
 		s.snapshot = committed
 		return nil
 	}
+	return nil
+}
+
+// abandonNode parks a Run whose node hit the wall-clock cap and did not return.
+//
+// Unknown, never failed. The handler is still running and reserve-before-effect
+// only promises that the begin fact is durable — whether the write landed is
+// precisely what nobody knows, and failing the Run tells the layer above it is
+// safe to try again. waiting_resolution says the true thing and is the same path
+// a tool with an unestablished outcome takes, so the same resolution — a human
+// or a reconciler — settles it.
+//
+// The invocation named is the one left in flight where there is one, so the
+// resolver has the effect itself to look at. A node wedged before it issued
+// anything gets a fresh id instead: the reducer needs one, and parking under an
+// invocation the Run never made would point the resolver at nothing.
+func (s *session) abandonNode(ctx context.Context, node workflow.Node) error {
+	invocationID := run.ID("")
+	for id, invocation := range s.snapshot.Invocations {
+		if invocation.Outcome == run.OutcomeInFlight {
+			invocationID = id
+			break
+		}
+	}
+	if invocationID == "" {
+		invocationID = s.runtime.deps.IDs.NewID("abandoned")
+	}
+
+	transition, err := run.Reduce(s.snapshot, run.Command{
+		Kind: run.CommandRecordUnknown, InvocationID: invocationID,
+	})
+	if err != nil {
+		return err
+	}
+	// The leaked goroutine is the accepted cost of never releasing the lease.
+	// This is what keeps it from being silent: a Run that reaches here names a
+	// handler that ignored its cancellation, and that is a bug to go and fix.
+	s.runtime.record(observe.Decision{
+		Name: observe.EventNodeAbandoned, RunID: s.snapshot.ID,
+		Attributes: []observe.Attribute{
+			observe.Attr(observe.AttrNode, node.ID),
+			observe.Attr(observe.AttrAgent, node.Implementation),
+			observe.Attr(observe.AttrInvocationID, string(invocationID)),
+		},
+	})
+	committed, err := s.commitNode(ctx, transition, node.ID, "", run.Limits{}, nil)
+	if err != nil {
+		return err
+	}
+	s.snapshot = committed
 	return nil
 }
 
@@ -679,13 +753,36 @@ func (s *session) setLease(lease store.Lease) {
 	s.lease = lease
 }
 
+// abandonGraceFor is how long a cancelled handler gets to return before its
+// node is abandoned.
+//
+// A twentieth of the cap and never more than 30s: at the 10m default that is
+// the 30s wind-down, and a caller that sets a short cap — which in practice
+// means a test — gets a proportionally short grace rather than a fixed 30s wait
+// it has no way to shorten.
+func abandonGraceFor(limit time.Duration) time.Duration {
+	grace := limit / 20
+	if grace > 30*time.Second {
+		grace = 30 * time.Second
+	}
+	if grace <= 0 {
+		grace = time.Millisecond
+	}
+	return grace
+}
+
 // renewing starts a bounded renew loop and returns a context that is cancelled
-// the moment ownership is lost.
+// the moment ownership is lost, plus a channel closed if the node is abandoned.
 //
 // One loop per active Advance, refreshing before a third of the TTL has
 // elapsed. A third rather than a half so that one missed tick is survivable:
 // renewing at the last moment means the first hiccup is a lost lease.
-func (s *session) renewing(ctx context.Context) (context.Context, func() error) {
+//
+// The loop is also where the node's wall-clock cap lives, because it is the only
+// thing running beside an effect that has not returned. At the cap it cancels
+// the effect and keeps renewing through a grace period — the lease must still be
+// alive to park the Run — and only then gives up on the handler.
+func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{}, func() error) {
 	effectCtx, cancel := context.WithCancel(ctx)
 	interval := s.runtime.deps.LeaseFor / 3
 	if interval <= 0 {
@@ -693,10 +790,11 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 	}
 
 	var (
-		once     sync.Once
-		done     = make(chan struct{})
-		stopping = make(chan struct{})
-		failure  error
+		once      sync.Once
+		done      = make(chan struct{})
+		stopping  = make(chan struct{})
+		abandoned = make(chan struct{})
+		failure   error
 	)
 	// Captured before the goroutine starts. The ID never changes, but the
 	// Snapshot around it is replaced on every commit, so reading it from here
@@ -724,11 +822,54 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+
+		// A negative cap is the rollback: renewal is unbounded again, exactly as
+		// it was before the cap existed.
+		var deadline <-chan time.Time
+		if limit := s.runtime.deps.MaxNodeDuration; limit > 0 {
+			timer := time.NewTimer(limit)
+			defer timer.Stop()
+			deadline = timer.C
+		}
+		// Both stay nil until the cap fires: grace is the wind-down window, and
+		// effectDone is dropped once we are the ones who cancelled, so our own
+		// cancellation does not end the renewal the wind-down still needs.
+		var grace <-chan time.Time
+		effectDone := effectCtx.Done()
+
+		// Once the cap has fired, every way out of this loop is an abandonment,
+		// not only the one that waits out the grace period: a renewal that fails
+		// mid-wind-down leaves the same wedged handler, and returning without
+		// saying so would leave the node blocked on a handler that never returns
+		// — the wedged slot this whole mechanism exists to release.
+		winding := false
+		defer func() {
+			if winding {
+				close(abandoned)
+			}
+		}()
 		for {
 			select {
 			case <-stopping:
 				return
-			case <-effectCtx.Done():
+			case <-effectDone:
+				return
+			case <-deadline:
+				// The node outran its wall-clock budget. Cancel it and keep the
+				// lease alive: whichever way the wind-down ends, this worker is
+				// the one that records it.
+				failure = run.NewError("node_deadline_exceeded", run.ErrorUnknown, run.RetryReconcile)
+				cancel()
+				winding = true
+				deadline, effectDone = nil, nil
+				timer := time.NewTimer(abandonGraceFor(s.runtime.deps.MaxNodeDuration))
+				defer timer.Stop()
+				grace = timer.C
+			case <-grace:
+				// Cancelled and still running. Renewal stops here so the lease
+				// lapses on its own, and the node's caller parks the Run out of
+				// running before it can — a Run that is not running is not one
+				// another worker can take over.
 				return
 			case <-ticker.C:
 				lease, err := s.runtime.deps.Store.Renew(ctx, store.RenewCommand{
@@ -748,7 +889,7 @@ func (s *session) renewing(ctx context.Context) (context.Context, func() error) 
 		}
 	}()
 
-	return effectCtx, func() error {
+	return effectCtx, abandoned, func() error {
 		once.Do(func() { close(stopping) })
 		<-done
 		cancel()

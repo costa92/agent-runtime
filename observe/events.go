@@ -27,6 +27,12 @@ const (
 	EventApprovalDecided      = "runtime.approval.decided"
 	EventEgressHostResolved   = "runtime.egress.host_resolved"
 	EventInvocationReconciled = "runtime.invocation.reconciled"
+	// EventNodeAbandoned is emitted when a node hit the wall-clock cap and did
+	// not return within the grace period after being cancelled. The Run is parked
+	// with an unknown outcome and the handler's goroutine is left running: a
+	// handler that reaches this ignored its context, and this event is the only
+	// thing that says so.
+	EventNodeAbandoned = "runtime.node.abandoned"
 )
 
 // The declared attribute keys. Named constants rather than string literals at
@@ -118,6 +124,10 @@ func BuiltinEventSpecs() []EventSpec {
 		{
 			Name: EventInvocationReconciled, APIVersion: "v1", Stability: StableEvent,
 			Fields: []string{AttrInvocationID, AttrIdempotencyKey, AttrOutcome},
+		},
+		{
+			Name: EventNodeAbandoned, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrNode, AttrAgent, AttrInvocationID},
 		},
 	}
 }
