@@ -64,6 +64,13 @@ type session struct {
 
 // detachedErr refuses anything a detached handler tries to do through this
 // session, before it touches the Snapshot.
+//
+// It is meant to end that handler's loop, not to be retried around. Denied and
+// RetryNever say so in the taxonomy every agent already reads: nothing about
+// this session will ever succeed again, and a handler that treats it as a
+// recoverable tool error and keeps going spins against a closed gateway inside a
+// goroutine nobody is watching. That is the one thing worse than the leak this
+// refusal exists to contain.
 func (s *session) detachedErr() error {
 	if s.detached.Load() {
 		return run.NewError("session_detached", run.ErrorDenied, run.RetryNever)
@@ -382,7 +389,22 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 		return s.abandonNode(ctx, node)
 	}
 	response, executeErr := done.response, done.err
-	renewErr := stop()
+	stopped := stop()
+
+	if stopped.capped {
+		// The handler returned because we cancelled it at the cap. That is the
+		// same governance decision as the branch above and has to reach the same
+		// place — a well-behaved abandonment is still an abandonment. Reporting
+		// it as an error instead left the Run running with renewal already
+		// stopped, which is the takeover this cap exists to prevent, and the
+		// node re-executed effects that had already completed.
+		//
+		// Ahead of the approval and ownership branches on purpose: the cap has
+		// already fired, and an answer that arrives after it does not get to
+		// decide what happens to the Run.
+		return s.abandonNode(ctx, node)
+	}
+	renewErr := stopped.err
 
 	if executeErr != nil && approvalRequired(executeErr) {
 		return s.parkForApproval(ctx, node.ID)
@@ -811,6 +833,20 @@ func (s *session) setLease(lease store.Lease) {
 	s.lease = lease
 }
 
+// windDown is why the renew loop stopped.
+//
+// The two reasons are not interchangeable, and conflating them is what let a
+// cancelled node fall through to takeover: losing ownership means this worker
+// must not commit anything, while hitting the cap means it is the only worker
+// that may — it still holds the lease and has to park the Run before it lapses.
+type windDown struct {
+	// err is set when ownership was lost while the effect was in flight.
+	err error
+	// capped is set when the node hit its wall-clock cap, whether or not the
+	// handler went on to return.
+	capped bool
+}
+
 // abandonGraceFor is how long a cancelled handler gets to return before its
 // node is abandoned.
 //
@@ -840,7 +876,7 @@ func abandonGraceFor(limit time.Duration) time.Duration {
 // thing running beside an effect that has not returned. At the cap it cancels
 // the effect and keeps renewing through a grace period — the lease must still be
 // alive to park the Run — and only then gives up on the handler.
-func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{}, func() error) {
+func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{}, func() windDown) {
 	effectCtx, cancel := context.WithCancel(ctx)
 	interval := s.runtime.deps.LeaseFor / 3
 	if interval <= 0 {
@@ -852,7 +888,7 @@ func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{
 		done      = make(chan struct{})
 		stopping  = make(chan struct{})
 		abandoned = make(chan struct{})
-		failure   error
+		outcome   windDown
 	)
 	// Captured before the goroutine starts. The ID never changes, but the
 	// Snapshot around it is replaced on every commit, so reading it from here
@@ -871,7 +907,7 @@ func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{
 		if lease, err := s.runtime.deps.Store.Renew(ctx, store.RenewCommand{
 			RunID: runID, LeaseToken: s.leaseToken(), LeaseFor: s.runtime.deps.LeaseFor,
 		}); err != nil {
-			failure = err
+			outcome.err = err
 			cancel()
 			return
 		} else {
@@ -916,7 +952,7 @@ func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{
 				// The node outran its wall-clock budget. Cancel it and keep the
 				// lease alive: whichever way the wind-down ends, this worker is
 				// the one that records it.
-				failure = run.NewError("node_deadline_exceeded", run.ErrorUnknown, run.RetryReconcile)
+				outcome.capped = true
 				cancel()
 				winding = true
 				deadline, effectDone = nil, nil
@@ -934,7 +970,13 @@ func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{
 					RunID: runID, LeaseToken: s.leaseToken(), LeaseFor: s.runtime.deps.LeaseFor,
 				})
 				if err != nil {
-					failure = err
+					// A renewal that fails after the cap has fired changes
+					// nothing: the node is abandoned either way, and reporting
+					// lost ownership instead would send it back down the path
+					// that leaves the Run running.
+					if !outcome.capped {
+						outcome.err = err
+					}
 					// Cancelling the effect context is what stops the in-flight
 					// call. An already-started side effect still follows the
 					// Invocation reconciliation rules — it is never retried on
@@ -947,10 +989,10 @@ func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{
 		}
 	}()
 
-	return effectCtx, abandoned, func() error {
+	return effectCtx, abandoned, func() windDown {
 		once.Do(func() { close(stopping) })
 		<-done
 		cancel()
-		return failure
+		return outcome
 	}
 }

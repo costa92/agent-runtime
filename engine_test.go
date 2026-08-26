@@ -16,10 +16,18 @@ import (
 
 // These tests are about the wall-clock cap on one node's execution.
 //
-// The handler they run is the one the cap exists for: it ignores ctx entirely,
-// so cancelling it changes nothing and only the Runtime's own wind-down ends the
-// node. It returns eventually rather than blocking forever so that a Runtime
-// without the cap fails these assertions instead of hanging the suite.
+// Two handlers appear here, and the difference between them is the whole point.
+// wedgedAgent is the one the cap exists for: it ignores ctx entirely, so only
+// the Runtime's own wind-down ends the node. It returns eventually rather than
+// blocking forever so that a Runtime without the cap fails these assertions
+// instead of hanging the suite.
+//
+// cancellableAgent is the common case, and for a while it was the untested one:
+// a handler that returns the moment we cancel it at the cap. Hitting the cap is
+// the same governance decision either way, so it must reach the same place. It
+// did not — the well-behaved return fell through to the lost-ownership branch,
+// which left the Run running with renewal already stopped, and the next worker
+// re-executed the node.
 
 // wedgedAgent runs for wedgeFor no matter what the context says.
 func wedgedAgent(wedgeFor time.Duration, returned *atomic.Bool) agent.Agent {
@@ -28,6 +36,54 @@ func wedgedAgent(wedgeFor time.Duration, returned *atomic.Bool) agent.Agent {
 		returned.Store(true)
 		return agent.Response{Output: json.RawMessage(`"too late"`)}, nil
 	}}
+}
+
+// cancellableAgent returns as soon as its context is cancelled.
+func cancellableAgent(returned *atomic.Bool) agent.Agent {
+	return scriptedAgent{execute: func(ctx context.Context, _ agent.Request) (agent.Response, error) {
+		<-ctx.Done()
+		returned.Store(true)
+		return agent.Response{}, ctx.Err()
+	}}
+}
+
+// A handler that honours the cancellation is still a node that hit its cap, and
+// the cap's whole promise is that this worker keeps the Run. Returning the
+// deadline up the lost-ownership path instead left the Run running with renewal
+// stopped: the lease lapsed, another worker claimed it, and the node re-executed
+// from scratch — every effect that had already completed, done twice. A node
+// that deterministically overruns turned into a claim/lapse/reclaim loop that
+// burned a worker slot forever and never once said it had been abandoned.
+
+func TestANodeIsAbandonedEvenWhenItsHandlerHonoursTheCancellation(t *testing.T) {
+	var returned atomic.Bool
+	h := newHarness(t, cancellableAgent(&returned),
+		withDeps(func(deps *agentruntime.Dependencies) {
+			deps.LeaseFor = 300 * time.Millisecond
+			deps.MaxNodeDuration = 150 * time.Millisecond
+		}))
+	started := start(t, h)
+
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if !returned.Load() {
+		t.Fatal("the handler never saw the cancellation; this test proves nothing about the honoured case")
+	}
+	if result.Run.State != run.StateWaitingResolution {
+		t.Fatalf("state=%s, want waiting_resolution", result.Run.State)
+	}
+	if len(h.observer.named(observe.EventNodeAbandoned)) != 1 {
+		t.Fatal("a node that hit its cap said nothing about it")
+	}
+
+	h.clock.Advance(time.Hour)
+	if _, _, err := h.store.Claim(context.Background(), store.ClaimCommand{
+		RunID: started.ID, Owner: "worker-2", LeaseFor: time.Minute,
+	}); err == nil {
+		t.Fatal("another worker claimed the Run and will re-execute the node")
+	}
 }
 
 func TestRenewalStopsAtTheNodeDeadline(t *testing.T) {
