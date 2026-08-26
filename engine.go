@@ -354,6 +354,12 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	if err != nil {
 		return err
 	}
+	// The scheduler owns the schema boundary. Commit exactly the normalized
+	// value and settled reference it returned; retaining the agent's raw value
+	// here would validate one representation and publish another.
+	result.Output = progress.Output
+	result.OutputRef = progress.Nodes[node.ID].OutputRef
+	result.Failed = progress.Nodes[node.ID].Status == run.StateFailed
 
 	command := run.Command{Kind: run.CommandSucceed}
 	if progress.Command != nil {

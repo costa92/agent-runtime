@@ -98,6 +98,10 @@ type NodeResult struct {
 type Progress struct {
 	Nodes   map[string]run.NodeState
 	Command *run.Command
+	// Output is the single value the commit path may persist. When a schema is
+	// declared it is the processor's normalized representation; failed output
+	// validation leaves it empty.
+	Output json.RawMessage
 }
 
 // ApplyNodeResult folds one node result into the graph's progress.
@@ -107,7 +111,7 @@ type Progress struct {
 // before that output can feed anything downstream — a leaf whose output does
 // not match what the Definition promised is a failure of that node, not a
 // surprise for whoever consumes the Run's result.
-func ApplyNodeResult(graph *ExecutionGraph, snapshot run.Snapshot, result NodeResult, schemas definition.SchemaValidator) (Progress, error) {
+func ApplyNodeResult(graph *ExecutionGraph, snapshot run.Snapshot, result NodeResult, schemas definition.SchemaProcessor) (Progress, error) {
 	if graph == nil {
 		return Progress{}, run.NewError("missing_graph", run.ErrorInternal, run.RetryNever)
 	}
@@ -122,9 +126,12 @@ func ApplyNodeResult(graph *ExecutionGraph, snapshot run.Snapshot, result NodeRe
 	}
 
 	failed := result.Failed
+	output := result.Output
 	if !failed && len(node.OutputSchema) > 0 && schemas != nil {
-		if err := schemas.ValidateValue(node.OutputSchema, result.Output); err != nil {
+		output, err = schemas.NormalizeValue(node.OutputSchema, result.Output)
+		if err != nil {
 			failed = true
+			output = nil
 		}
 	}
 
@@ -144,7 +151,7 @@ func ApplyNodeResult(graph *ExecutionGraph, snapshot run.Snapshot, result NodeRe
 	if err != nil {
 		return Progress{}, err
 	}
-	return Progress{Nodes: nodes, Command: command}, nil
+	return Progress{Nodes: nodes, Command: command, Output: output}, nil
 }
 
 // commandFor decides what the node result means for the Run.

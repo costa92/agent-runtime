@@ -49,7 +49,7 @@ type Compiler struct {
 	// Schemas is the host's JSON Schema implementation, used to reject a
 	// malformed schema at publish rather than at the first Run that binds it.
 	// Optional: a host that ships no validator still gets every other check.
-	Schemas definition.SchemaValidator
+	Schemas definition.SchemaProcessor
 }
 
 // Compile turns a normalized Definition into an immutable graph and its digest.

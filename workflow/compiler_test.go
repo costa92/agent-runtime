@@ -358,7 +358,7 @@ func TestCompilationIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestSchemaValidatorRejectsAMalformedSchemaAtPublish(t *testing.T) {
+func TestSchemaProcessorRejectsAMalformedSchemaAtPublish(t *testing.T) {
 	d := base(definition.Definition{})
 	d.OutputSchema = json.RawMessage(`{"type":"nonsense"}`)
 
@@ -417,7 +417,9 @@ func (refusingSchemas) ValidateSchema(json.RawMessage) error {
 	return errors.New("unsupported type")
 }
 
-func (refusingSchemas) ValidateValue(_, _ json.RawMessage) error { return nil }
+func (refusingSchemas) NormalizeValue(_, value json.RawMessage) (json.RawMessage, error) {
+	return value, nil
+}
 
 // Tool authority is per node. Handing every node the Definition's whole tool
 // list is how a planner ended up spending its entire turn budget answering a

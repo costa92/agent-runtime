@@ -3,6 +3,7 @@ package agentruntime_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -188,8 +189,9 @@ func newHarness(t *testing.T, implementation agent.Agent, options ...harnessOpti
 	observer := &recordingObserver{}
 	source := &fakeSource{declared: declared}
 
+	memoryStore := testkit.NewMemoryStore(clock)
 	deps := agentruntime.Dependencies{
-		Store:         testkit.NewMemoryStore(clock),
+		Store:         memoryStore,
 		Definitions:   source,
 		Graphs:        graphLoader{source: source},
 		Governance:    fakeGovernance{},
@@ -225,11 +227,31 @@ func newHarness(t *testing.T, implementation agent.Agent, options ...harnessOpti
 	}
 	return &harness{
 		runtime:  runtime,
-		store:    deps.Store.(*testkit.MemoryStore),
+		store:    memoryStore,
 		clock:    clock,
 		observer: observer,
 		source:   source,
 	}
+}
+
+type schemaProcessor struct {
+	normalize func(schema, value json.RawMessage) (json.RawMessage, error)
+}
+
+func (schemaProcessor) ValidateSchema(json.RawMessage) error { return nil }
+
+func (p schemaProcessor) NormalizeValue(schema, value json.RawMessage) (json.RawMessage, error) {
+	return p.normalize(schema, value)
+}
+
+type createCountingStore struct {
+	store.Execution
+	creates int
+}
+
+func (s *createCountingStore) Create(ctx context.Context, command store.CreateCommand) (run.Snapshot, error) {
+	s.creates++
+	return s.Execution.Create(ctx, command)
 }
 
 type frozenKeys struct{ keys []string }
@@ -277,6 +299,66 @@ func start(t *testing.T, h *harness) run.Snapshot {
 }
 
 // --- tests ----------------------------------------------------------------
+
+func TestStartRejectsInvalidDefinitionInputBeforeStoreCreate(t *testing.T) {
+	var tracked *createCountingStore
+	h := newHarness(t, answering("done"),
+		withDefinition(definition.Definition{
+			Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+			Mode:           definition.ModeSpecialist,
+			Implementation: "answer",
+			InputSchema:    json.RawMessage(`{"type":"integer"}`),
+			Model:          definition.ModelPolicy{Profile: "fast"},
+		}),
+		withDeps(func(deps *agentruntime.Dependencies) {
+			tracked = &createCountingStore{Execution: deps.Store}
+			deps.Store = tracked
+			deps.Schemas = schemaProcessor{normalize: func(_, _ json.RawMessage) (json.RawMessage, error) {
+				return nil, errors.New("fraction is not an integer")
+			}}
+		}),
+	)
+
+	_, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+		Principal: principal(), Definition: h.source.declared.Ref, Input: json.RawMessage(`1.5`),
+	})
+	if err == nil {
+		t.Fatal("invalid Definition input started a Run")
+	}
+	if tracked.creates != 0 {
+		t.Fatalf("Store.Create calls = %d, want 0", tracked.creates)
+	}
+}
+
+func TestStartPersistsNormalizedDefinitionInput(t *testing.T) {
+	h := newHarness(t, answering("done"),
+		withDefinition(definition.Definition{
+			Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+			Mode:           definition.ModeSpecialist,
+			Implementation: "answer",
+			InputSchema:    json.RawMessage(`{"type":"integer"}`),
+			Model:          definition.ModelPolicy{Profile: "fast"},
+		}),
+		withDeps(func(deps *agentruntime.Dependencies) {
+			deps.Schemas = schemaProcessor{normalize: func(schema, value json.RawMessage) (json.RawMessage, error) {
+				if string(schema) != `{"type":"integer"}` || string(value) != `1.0` {
+					t.Fatalf("NormalizeValue(%s, %s)", schema, value)
+				}
+				return json.RawMessage(`1`), nil
+			}}
+		}),
+	)
+
+	snapshot, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+		Principal: principal(), Definition: h.source.declared.Ref, Input: json.RawMessage(`1.0`),
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if string(snapshot.Input) != `1` {
+		t.Fatalf("persisted input = %s, want normalized literal 1", snapshot.Input)
+	}
+}
 
 func TestRuntimeRunsASingleAgentToTerminal(t *testing.T) {
 	h := newHarness(t, answering("done"))

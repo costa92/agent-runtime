@@ -148,12 +148,12 @@ type Definition struct {
 	RunLabels []string `json:"run_labels,omitempty"`
 }
 
-// SchemaValidator is the host's JSON Schema implementation.
+// SchemaProcessor is the host's JSON Schema implementation.
 //
-// The Runtime does not ship one: schema validation is a large dependency with
-// opinions, and a Runtime whose production graph is standard-library-only
-// cannot carry it. The host supplies whichever it already uses.
-type SchemaValidator interface {
+// Validation and normalization are one operation so a boundary cannot approve
+// one representation and persist or execute another. The Runtime does not ship
+// an implementation; the host supplies the subset its contracts use.
+type SchemaProcessor interface {
 	ValidateSchema(schema json.RawMessage) error
-	ValidateValue(schema, value json.RawMessage) error
+	NormalizeValue(schema, value json.RawMessage) (json.RawMessage, error)
 }

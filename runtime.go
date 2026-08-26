@@ -50,9 +50,9 @@ type Dependencies struct {
 	Meter         quota.Meter
 
 	Agents *agent.Registry
-	// Schemas validates a node's output before anything downstream binds it.
-	// Optional: a host that ships no validator still gets every other check.
-	Schemas  definition.SchemaValidator
+	// Schemas validates and normalizes values at every declared schema boundary.
+	// Optional: a host that ships no processor still gets every other check.
+	Schemas  definition.SchemaProcessor
 	Models   llm.Registry
 	Tools    *tool.Gateway
 	Memories *memory.Gateway
@@ -276,6 +276,13 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 	if err := declaredLabels(declared, request.Restrictions.Labels); err != nil {
 		return run.Snapshot{}, err
 	}
+	input := request.Input
+	if r.deps.Schemas != nil && len(declared.InputSchema) > 0 {
+		input, err = r.deps.Schemas.NormalizeValue(declared.InputSchema, request.Input)
+		if err != nil {
+			return run.Snapshot{}, run.NewError("invalid_definition_input", run.ErrorInvalid, run.RetryNever, err)
+		}
+	}
 
 	policies, err := r.deps.Governance.PolicySnapshot(ctx, principal.Tenant, "")
 	if err != nil {
@@ -290,7 +297,7 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 		Graph:        graphRef,
 		Principal:    principal,
 		Budget:       run.Budget{Envelope: envelopeFor(request.Budget, declared.Budget)},
-		Input:        request.Input,
+		Input:        input,
 		Restrictions: request.Restrictions,
 		Projections:  request.Projections,
 		Pins: run.Pins{

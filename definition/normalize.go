@@ -163,7 +163,7 @@ func validate(definition Definition) error {
 }
 
 // validateSchemaShape checks only that a schema is well-formed JSON object.
-// Whether it is a valid JSON Schema is the host's SchemaValidator's answer —
+// Whether it is a valid JSON Schema is the host's SchemaProcessor's answer —
 // the Runtime does not ship a schema implementation.
 func validateSchemaShape(field string, schema json.RawMessage) error {
 	if len(schema) == 0 {

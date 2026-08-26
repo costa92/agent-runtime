@@ -2,9 +2,13 @@ package agentruntime_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 
+	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
+	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
 )
@@ -25,6 +29,70 @@ func factsFor(t *testing.T, h *harness, id run.ID) []store.ProjectionFact {
 		}
 	}
 	return facts
+}
+
+func TestEngineCommitsTheSchedulersNormalizedOutput(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(context.Context, agent.Request) (agent.Response, error) {
+		return agent.Response{Output: json.RawMessage(`{"count":1.0}`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		OutputSchema:   json.RawMessage(`{"type":"object","properties":{"count":{"type":"integer"}}}`),
+		Model:          definition.ModelPolicy{Profile: "fast"},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Schemas = schemaProcessor{normalize: func(_, value json.RawMessage) (json.RawMessage, error) {
+			if string(value) != `{"count":1.0}` {
+				t.Fatalf("scheduler received output %s", value)
+			}
+			return json.RawMessage(`{"count":1}`), nil
+		}}
+	}))
+	snapshot := start(t, h)
+
+	if _, err := h.runtime.Advance(t.Context(), snapshot.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	facts := factsFor(t, h, snapshot.ID)
+	message, err := store.DecodeProjection[store.AssistantMessagePayload](facts[0])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(message.Output) != `{"count":1}` {
+		t.Fatalf("committed output = %s, want normalized literal %s", message.Output, `{"count":1}`)
+	}
+}
+
+func TestEngineDoesNotCommitAReferenceOrSuccessFactForInvalidOutput(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(context.Context, agent.Request) (agent.Response, error) {
+		return agent.Response{Output: json.RawMessage(`"not an object"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		OutputSchema:   json.RawMessage(`{"type":"object"}`),
+		Model:          definition.ModelPolicy{Profile: "fast"},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Schemas = schemaProcessor{normalize: func(_, _ json.RawMessage) (json.RawMessage, error) {
+			return nil, errors.New("output is not an object")
+		}}
+	}))
+	started := start(t, h)
+
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	for nodeID, state := range result.Run.Nodes {
+		if state.OutputRef != "" {
+			t.Fatalf("node %s retained invalid output ref %q", nodeID, state.OutputRef)
+		}
+	}
+	for _, fact := range factsFor(t, h, started.ID) {
+		if fact.Kind == store.ProjectionAssistantMessage {
+			t.Fatal("invalid output was committed as a successful assistant message")
+		}
+	}
 }
 
 func kindsOf(facts []store.ProjectionFact) []store.ProjectionKind {

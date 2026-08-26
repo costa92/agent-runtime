@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
@@ -56,13 +57,6 @@ type QuotaChecker interface {
 	CheckTenant(ctx context.Context, tenant string, spec Spec) error
 }
 
-// SchemaValidator validates arguments against the tool's declared schema. The
-// Runtime ships no schema library, so the host supplies one; a nil validator
-// skips the stage rather than silently accepting nothing.
-type SchemaValidator interface {
-	ValidateValue(schema, value json.RawMessage) error
-}
-
 // ApprovalRequired is returned when governance parks the call. It is a distinct
 // error rather than a flag because every caller has to handle it, and a flag
 // gets forgotten.
@@ -83,7 +77,7 @@ type Gateway struct {
 	registry   *Registry
 	authorizer Authorizer
 	quota      QuotaChecker
-	schema     SchemaValidator
+	schema     definition.SchemaProcessor
 	strategies []policy.Strategy
 	observers  []Observer
 	recorder   Recorder
@@ -95,8 +89,10 @@ type Gateway struct {
 // Option configures a Gateway.
 type Option func(*Gateway)
 
-func WithQuota(checker QuotaChecker) Option       { return func(g *Gateway) { g.quota = checker } }
-func WithSchema(validator SchemaValidator) Option { return func(g *Gateway) { g.schema = validator } }
+func WithQuota(checker QuotaChecker) Option { return func(g *Gateway) { g.quota = checker } }
+func WithSchema(processor definition.SchemaProcessor) Option {
+	return func(g *Gateway) { g.schema = processor }
+}
 
 func WithObserver(observer Observer) Option {
 	return func(g *Gateway) { g.observers = append(g.observers, observer) }
@@ -168,11 +164,12 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 		return PreparedInvocation{}, run.NewError("missing_invocation_id", run.ErrorInvalid, run.RetryNever)
 	}
 
-	err = g.validateSchema(spec, request.Arguments)
+	arguments, err := g.normalizeArguments(spec, request.Arguments)
 	stage(StageSchema, spec, err)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
+	decision.ArgsDigest = digest(arguments)
 
 	err = allowlisted(spec, request.Allowlist)
 	stage(StageAllowlist, spec, err)
@@ -249,7 +246,7 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 			ID:             request.InvocationID,
 			Tool:           spec.Name,
 			RunID:          request.RunID,
-			Arguments:      request.Arguments,
+			Arguments:      arguments,
 			Principal:      request.Principal,
 			IdempotencyKey: request.IdempotencyKey,
 		},
@@ -363,14 +360,15 @@ func (g *Gateway) observe(stage Stage, spec Spec, err error) {
 	}
 }
 
-func (g *Gateway) validateSchema(spec Spec, arguments json.RawMessage) error {
+func (g *Gateway) normalizeArguments(spec Spec, arguments json.RawMessage) (json.RawMessage, error) {
 	if g.schema == nil || len(spec.Parameters) == 0 {
-		return nil
+		return arguments, nil
 	}
-	if err := g.schema.ValidateValue(spec.Parameters, arguments); err != nil {
-		return run.NewError("tool.invalid_arguments", run.ErrorInvalid, run.RetryNever, err)
+	normalized, err := g.schema.NormalizeValue(spec.Parameters, arguments)
+	if err != nil {
+		return nil, run.NewError("tool.invalid_arguments", run.ErrorInvalid, run.RetryNever, err)
 	}
-	return nil
+	return normalized, nil
 }
 
 func (g *Gateway) checkQuota(ctx context.Context, tenant string, spec Spec) error {

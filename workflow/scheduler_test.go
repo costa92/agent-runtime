@@ -246,9 +246,11 @@ func TestEverySoftFailureFailsTheRun(t *testing.T) {
 // A leaf's output is the Run's output. Checking it here is what stops a
 // malformed result from reaching whoever consumes the Run.
 func TestOutputIsValidatedBeforeItCanBeConsumed(t *testing.T) {
-	d := dag(definition.NodeSpec{Name: "a", Agent: "draft"})
-	d.OutputSchema = json.RawMessage(`{"type":"object"}`)
-	graph := compile(t, d)
+	graph := compile(t, dag(
+		definition.NodeSpec{Name: "a", Agent: "draft"},
+		definition.NodeSpec{Name: "b", Agent: "review", DependsOn: []string{"a"}},
+	))
+	graph.Nodes[0].OutputSchema = json.RawMessage(`{"type":"object"}`)
 
 	progress, err := workflow.ApplyNodeResult(graph, running(nil), workflow.NodeResult{
 		NodeID: "a", Output: json.RawMessage(`"a string"`), OutputRef: "blob-1",
@@ -264,6 +266,31 @@ func TestOutputIsValidatedBeforeItCanBeConsumed(t *testing.T) {
 	}
 	if progress.Command == nil || progress.Command.Kind != run.CommandFail {
 		t.Fatalf("command=%+v want=fail", progress.Command)
+	}
+	if ready := readyIDs(graph, running(progress.Nodes)); len(ready) != 0 {
+		t.Fatalf("downstream nodes became ready after invalid output: %v", ready)
+	}
+	if len(progress.Output) != 0 {
+		t.Fatalf("invalid output escaped normalization: %s", progress.Output)
+	}
+}
+
+func TestNormalizedOutputIsReturnedToTheCommitPath(t *testing.T) {
+	d := dag(definition.NodeSpec{Name: "a", Agent: "draft"})
+	d.OutputSchema = json.RawMessage(`{"type":"object","properties":{"count":{"type":"integer"}}}`)
+	graph := compile(t, d)
+
+	progress, err := workflow.ApplyNodeResult(graph, running(nil), workflow.NodeResult{
+		NodeID: "a", Output: json.RawMessage(`{"count":1.0}`), OutputRef: "blob-1",
+	}, valueSchemas{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if string(progress.Output) != `{"count":1}` {
+		t.Fatalf("progress output = %s, want normalized literal %s", progress.Output, `{"count":1}`)
+	}
+	if progress.Nodes["a"].Status != run.StateSucceeded || progress.Nodes["a"].OutputRef != "blob-1" {
+		t.Fatalf("node = %+v", progress.Nodes["a"])
 	}
 }
 
@@ -306,7 +333,10 @@ type valueSchemas struct{}
 
 func (valueSchemas) ValidateSchema(json.RawMessage) error { return nil }
 
-func (valueSchemas) ValidateValue(_, value json.RawMessage) error {
+func (valueSchemas) NormalizeValue(_, value json.RawMessage) (json.RawMessage, error) {
 	var object map[string]any
-	return json.Unmarshal(value, &object)
+	if err := json.Unmarshal(value, &object); err != nil {
+		return nil, err
+	}
+	return json.RawMessage(`{"count":1}`), nil
 }

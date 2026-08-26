@@ -2,7 +2,10 @@ package tool_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -49,6 +52,102 @@ func gatewayWith(t *testing.T, spec tool.Spec, handler tool.Handler, options ...
 	}
 	registry.Freeze()
 	return tool.NewGateway(registry, testkit.AllowAllToolAuthorizer(), options...)
+}
+
+type gatewaySchemaProcessor struct {
+	normalize func(schema, value json.RawMessage) (json.RawMessage, error)
+}
+
+func (gatewaySchemaProcessor) ValidateSchema(json.RawMessage) error { return nil }
+
+func (p gatewaySchemaProcessor) NormalizeValue(schema, value json.RawMessage) (json.RawMessage, error) {
+	return p.normalize(schema, value)
+}
+
+type countingAuthorizer struct{ calls int }
+
+func (a *countingAuthorizer) Authorize(context.Context, authorization.PrincipalRef, tool.Spec) error {
+	a.calls++
+	return nil
+}
+
+type decisionRecorder struct{ decisions []tool.DecisionRecord }
+
+func (r *decisionRecorder) Decided(_ context.Context, decision tool.DecisionRecord) {
+	r.decisions = append(r.decisions, decision)
+}
+
+func (*decisionRecorder) Finished(context.Context, tool.ResultRecord) {}
+
+func TestInvalidToolArgumentsStopBeforeAuthorizationAndHandler(t *testing.T) {
+	authorizer := &countingAuthorizer{}
+	handler := testkit.ToolSucceeding(`{"ok":true}`)
+	processor := gatewaySchemaProcessor{normalize: func(_, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, errors.New("count must be an integer")
+	}}
+	registry := tool.NewRegistry()
+	spec := testkit.PublishSpec()
+	spec.Parameters = json.RawMessage(`{"type":"object"}`)
+	if err := registry.Register(spec, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+	gateway := tool.NewGateway(registry, authorizer, tool.WithSchema(processor))
+
+	request := publishRequest()
+	request.Arguments = json.RawMessage(`{"count":1.5}`)
+	if _, err := gateway.Prepare(t.Context(), request); run.KindOf(err) != run.ErrorInvalid {
+		t.Fatalf("kind = %s, want invalid: %v", run.KindOf(err), err)
+	}
+	if authorizer.calls != 0 {
+		t.Fatalf("authorization calls = %d, want 0", authorizer.calls)
+	}
+	if handler.Calls() != 0 {
+		t.Fatalf("handler calls = %d, want 0", handler.Calls())
+	}
+}
+
+func TestNormalizedToolArgumentsReachTheInvocationRecordAndHandler(t *testing.T) {
+	const normalized = `{"count":1}`
+	var handled json.RawMessage
+	handler := tool.HandlerFunc(func(_ context.Context, invocation tool.Invocation) (tool.Result, error) {
+		handled = append(json.RawMessage(nil), invocation.Arguments...)
+		return tool.Result{Output: json.RawMessage(`{"ok":true}`)}, nil
+	})
+	recorder := &decisionRecorder{}
+	processor := gatewaySchemaProcessor{normalize: func(schema, value json.RawMessage) (json.RawMessage, error) {
+		if string(value) != `{"count":1.0}` {
+			return nil, fmt.Errorf("unexpected value %s", value)
+		}
+		return json.RawMessage(normalized), nil
+	}}
+	spec := testkit.PublishSpec()
+	spec.Parameters = json.RawMessage(`{"type":"object"}`)
+	gateway := gatewayWith(t, spec, handler,
+		tool.WithSchema(processor), tool.WithRecorder(recorder))
+
+	request := publishRequest()
+	request.Arguments = json.RawMessage(`{"count":1.0}`)
+	prepared, err := gateway.Prepare(t.Context(), request)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if string(prepared.Invocation.Arguments) != normalized {
+		t.Fatalf("invocation arguments = %s, want %s", prepared.Invocation.Arguments, normalized)
+	}
+	if len(recorder.decisions) != 1 {
+		t.Fatalf("decision records = %d, want 1", len(recorder.decisions))
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(normalized)))
+	if recorder.decisions[0].ArgsDigest != wantDigest {
+		t.Fatalf("argument digest = %s, want normalized digest %s", recorder.decisions[0].ArgsDigest, wantDigest)
+	}
+	if _, err := gateway.Execute(t.Context(), tool.CommittedInvocation{Prepared: prepared}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(handled) != normalized {
+		t.Fatalf("handler arguments = %s, want %s", handled, normalized)
+	}
 }
 
 // The whole reason unknown is a separate outcome: the effect may have happened,
