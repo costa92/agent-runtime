@@ -630,9 +630,12 @@ func (s *session) parkAbandoned(ctx context.Context, node workflow.Node, announc
 	if err != nil {
 		return err
 	}
-	// The leaked goroutine is the accepted cost of never releasing the lease.
-	// This is what keeps it from being silent: a Run that reaches here names a
-	// handler that ignored its cancellation, and that is a bug to go and fix.
+	// This event is what keeps the cap from being silent. It says the node hit
+	// its wall-clock ceiling and the Run was parked as unknown — not that any
+	// handler misbehaved. Both wind-down paths reach here: the one whose handler
+	// returned the moment we cancelled it, and the one that never returned at
+	// all. Only the second leaks a goroutine, which is the accepted cost of
+	// never releasing the lease, and this event alone does not tell them apart.
 	if announce {
 		s.runtime.record(observe.Decision{
 			Name: observe.EventNodeAbandoned, RunID: s.snapshot.ID,
