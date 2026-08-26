@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
@@ -525,5 +526,169 @@ func TestGatewayTellsTheHandlerWhichRunTheCallBelongsTo(t *testing.T) {
 	}
 	if seen != "run-abc123" {
 		t.Fatalf("handler saw RunID %q, want run-abc123", seen)
+	}
+}
+
+// sleepingHandler blocks until its call context is done, the way a real
+// handler that respects cancellation would, and reports the context's own
+// error as its failure.
+func sleepingHandler() tool.Handler {
+	return tool.HandlerFunc(func(ctx context.Context, _ tool.Invocation) (tool.Result, error) {
+		<-ctx.Done()
+		return tool.Result{}, ctx.Err()
+	})
+}
+
+// A read-only tool that outlives its call ceiling is an ordinary retryable
+// failure: nothing it might have done needs reconciling.
+func TestASlowReadToolTimesOutAsRetryable(t *testing.T) {
+	gateway := gatewayWith(t, testkit.SearchSpec(), sleepingHandler(),
+		tool.WithToolTimeout(10*time.Millisecond, 50*time.Millisecond))
+	ctx := context.Background()
+
+	request := publishRequest()
+	request.Tool = "search"
+	prepared, err := gateway.Prepare(ctx, request)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	mutation, err := gateway.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
+	if run.KindOf(err) != run.ErrorRetryable {
+		t.Fatalf("kind=%s want=retryable: %v", run.KindOf(err), err)
+	}
+	if run.CodeOf(err) != "tool.timeout" {
+		t.Fatalf("code=%s want=tool.timeout", run.CodeOf(err))
+	}
+	if mutation.Outcome != run.OutcomeNotApplied {
+		t.Fatalf("outcome=%s want=not_applied", mutation.Outcome)
+	}
+}
+
+// The core assertion of tool-call timeouts: a non-idempotent write that times
+// out must not be judged failed. The side effect may already have happened,
+// and judging it failed would invite the caller to retry something that may
+// have already succeeded.
+func TestASlowNonIdempotentWriteTimesOutAsUnknownOutcome(t *testing.T) {
+	spec := testkit.PublishSpec() // Idempotent: false, SideEffect: write, FailSafe: false
+	gateway := gatewayWith(t, spec, sleepingHandler(),
+		tool.WithToolTimeout(10*time.Millisecond, 50*time.Millisecond))
+	ctx := context.Background()
+
+	prepared, err := gateway.Prepare(ctx, publishRequest())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	mutation, err := gateway.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
+	if run.KindOf(err) != run.ErrorUnknown {
+		t.Fatalf("kind=%s want=unknown: %v", run.KindOf(err), err)
+	}
+	if run.CodeOf(err) != "tool.unknown_outcome" {
+		t.Fatalf("code=%s want=tool.unknown_outcome", run.CodeOf(err))
+	}
+	if mutation.Outcome != run.OutcomeUnknown {
+		t.Fatalf("outcome=%s want=unknown", mutation.Outcome)
+	}
+}
+
+// An idempotent write's timeout is safe to retry: replaying with the same
+// idempotency key converges, so it stays an ordinary retryable failure rather
+// than parking the Run for human resolution.
+func TestASlowIdempotentWriteTimesOutAsRetryable(t *testing.T) {
+	spec := testkit.PublishSpec()
+	spec.Idempotent = true
+	gateway := gatewayWith(t, spec, sleepingHandler(),
+		tool.WithToolTimeout(10*time.Millisecond, 50*time.Millisecond))
+	ctx := context.Background()
+
+	prepared, err := gateway.Prepare(ctx, publishRequest())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	mutation, err := gateway.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
+	if run.KindOf(err) != run.ErrorRetryable {
+		t.Fatalf("kind=%s want=retryable: %v", run.KindOf(err), err)
+	}
+	if run.CodeOf(err) != "tool.timeout" {
+		t.Fatalf("code=%s want=tool.timeout", run.CodeOf(err))
+	}
+	if mutation.Outcome != run.OutcomeNotApplied {
+		t.Fatalf("outcome=%s want=not_applied", mutation.Outcome)
+	}
+}
+
+// A dead parent context means somebody upstream cancelled — a lost lease, a
+// cancelled Run — and that is their decision, not our timeout expiring. It
+// must not be reported as tool.timeout.
+func TestAnUpstreamCancelIsNotReportedAsATimeout(t *testing.T) {
+	gateway := gatewayWith(t, testkit.SearchSpec(), sleepingHandler(),
+		tool.WithToolTimeout(time.Hour, time.Hour))
+	parent, cancel := context.WithCancel(context.Background())
+
+	request := publishRequest()
+	request.Tool = "search"
+	prepared, err := gateway.Prepare(parent, request)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	_, err = gateway.Execute(parent, tool.CommittedInvocation{Prepared: prepared})
+	if run.CodeOf(err) == "tool.timeout" {
+		t.Fatalf("an upstream cancel was reported as our own timeout: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want it to carry context.Canceled", err)
+	}
+}
+
+// A Spec may ask for less than the ceiling, never more: the registration
+// table cannot see the lease its number is about to outlive.
+func TestASpecMayNotAskForLongerThanTheCeiling(t *testing.T) {
+	spec := testkit.SearchSpec()
+	spec.MaxDurationMS = int((10 * time.Second).Milliseconds())
+	gateway := gatewayWith(t, spec, sleepingHandler(),
+		tool.WithToolTimeout(10*time.Millisecond, 20*time.Millisecond))
+
+	request := publishRequest()
+	request.Tool = "search"
+	prepared, err := gateway.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	started := time.Now()
+	if _, err := gateway.Execute(context.Background(), tool.CommittedInvocation{Prepared: prepared}); run.CodeOf(err) != "tool.timeout" {
+		t.Fatalf("code=%s want=tool.timeout", run.CodeOf(err))
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed=%s, spec's 10s request was not clamped to the 20ms ceiling", elapsed)
+	}
+}
+
+// (0, 0) is the rollback path: it must restore the pre-timeout behaviour
+// where nothing but lease renewal failure ever cancels a stuck handler.
+func TestWithToolTimeoutZeroZeroDisablesTheGatewaysOwnTimeout(t *testing.T) {
+	spec := testkit.SearchSpec()
+	spec.MaxDurationMS = 10 // a Spec ask, which must also be ignored once disabled
+	gateway := gatewayWith(t, spec, sleepingHandler(), tool.WithToolTimeout(0, 0))
+
+	request := publishRequest()
+	request.Tool = "search"
+	prepared, err := gateway.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err = gateway.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
+	// The caller's own context still cancels the handler (parent expiring is
+	// not the gateway's timeout), so this returns — but it must not be
+	// reported as our own ceiling.
+	if run.CodeOf(err) == "tool.timeout" {
+		t.Fatalf("gateway applied a timeout after WithToolTimeout(0, 0): %v", err)
 	}
 }

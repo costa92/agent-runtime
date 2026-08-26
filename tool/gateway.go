@@ -72,6 +72,14 @@ func IsApprovalRequired(err error) bool {
 	return errors.As(err, &runtimeErr) && runtimeErr.Code == ApprovalRequired.Code
 }
 
+// DefaultToolCallTimeout is the default ceiling on one tool call's wall clock,
+// used when a Spec declares no MaxDurationMS of its own.
+const DefaultToolCallTimeout = 60 * time.Second
+
+// DefaultToolCallTimeoutCeiling is the hard cap no Spec's MaxDurationMS may
+// exceed, whatever the registration table asks for.
+const DefaultToolCallTimeoutCeiling = 180 * time.Second
+
 // Gateway is the one path to a tool handler.
 type Gateway struct {
 	registry   *Registry
@@ -84,6 +92,16 @@ type Gateway struct {
 
 	// defaultMaxResultBytes caps a result that declares no cap of its own.
 	defaultMaxResultBytes int
+
+	// defaultToolTimeout and toolTimeoutCeiling bound one call's wall clock.
+	// See WithToolTimeout for how (0, 0) turns this off entirely.
+	defaultToolTimeout time.Duration
+	toolTimeoutCeiling time.Duration
+	// toolTimeoutDisabled is the rollback path: WithToolTimeout(0, 0) sets it,
+	// and callTimeout then ignores both the gateway's defaults and the Spec's
+	// own MaxDurationMS, restoring the pre-timeout behaviour where only lease
+	// renewal failure could ever cancel a stuck handler.
+	toolTimeoutDisabled bool
 }
 
 // Option configures a Gateway.
@@ -106,6 +124,22 @@ func WithMaxResultBytes(limit int) Option {
 	return func(g *Gateway) { g.defaultMaxResultBytes = limit }
 }
 
+// WithToolTimeout sets the default and ceiling a call may run under. A Spec
+// may ask for less than the default (via MaxDurationMS) but never more than
+// the ceiling.
+//
+// (0, 0) is the rollback path: it disables the gateway's own timeout
+// entirely, regardless of what any Spec declares, restoring the behaviour
+// before this option existed — a call's context is cancelled only when lease
+// renewal fails.
+func WithToolTimeout(def, ceiling time.Duration) Option {
+	return func(g *Gateway) {
+		g.defaultToolTimeout = def
+		g.toolTimeoutCeiling = ceiling
+		g.toolTimeoutDisabled = def <= 0 && ceiling <= 0
+	}
+}
+
 // LookupSpec returns a registered declaration. Used to show the model the
 // tools this Run was published with.
 func (g *Gateway) LookupSpec(name string) (Spec, bool) {
@@ -124,6 +158,8 @@ func NewGateway(registry *Registry, authorizer Authorizer, options ...Option) *G
 		registry:              registry,
 		authorizer:            authorizer,
 		defaultMaxResultBytes: 64 * 1024,
+		defaultToolTimeout:    DefaultToolCallTimeout,
+		toolTimeoutCeiling:    DefaultToolCallTimeoutCeiling,
 	}
 	for _, option := range options {
 		option(gateway)
@@ -299,7 +335,16 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 	}
 
 	startedAt := time.Now()
-	result, err := handler.Invoke(ctx, prepared.Invocation)
+	callCtx := ctx
+	cancel := func() {}
+	if d := g.callTimeout(prepared.Spec); d > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, d)
+	}
+	defer cancel()
+	result, err := handler.Invoke(callCtx, prepared.Invocation)
+	if err != nil {
+		err = classifyDeadline(ctx, callCtx, err)
+	}
 	// Recorded on every path out of here, including the ones that classify a
 	// failure as unknown: "we do not know whether this happened" is the single
 	// most important thing an audit can carry, and it is exactly the outcome a
@@ -390,6 +435,43 @@ func (g *Gateway) capResult(spec Spec, output json.RawMessage) (json.RawMessage,
 			fmt.Errorf("tool %q returned %d bytes, limit %d", spec.Name, len(output), limit))
 	}
 	return output, nil
+}
+
+// callTimeout answers how long one call to spec may run. Zero means no
+// timeout is applied at all — the toolTimeoutDisabled rollback path.
+func (g *Gateway) callTimeout(spec Spec) time.Duration {
+	if g.toolTimeoutDisabled {
+		return 0
+	}
+	d := g.defaultToolTimeout
+	if spec.MaxDurationMS > 0 {
+		d = time.Duration(spec.MaxDurationMS) * time.Millisecond
+	}
+	if d <= 0 {
+		return 0
+	}
+	if g.toolTimeoutCeiling > 0 && d > g.toolTimeoutCeiling {
+		return g.toolTimeoutCeiling
+	}
+	return d
+}
+
+// classifyDeadline follows modelprovider.callError's order: look at the parent
+// first. A dead parent means somebody upstream cancelled — a lost lease, a
+// cancelled Run — and that is their decision, not our timeout. Only a live
+// parent with a dead call context is our own ceiling expiring, and that is
+// translated into an ordinary retryable error so Execute's existing outcome
+// switch can decide whether it retries clean or must park as unknown: a
+// timeout on a non-idempotent write is exactly the "the side effect may
+// already have happened" case that switch already knows how to handle.
+func classifyDeadline(parent, call context.Context, err error) error {
+	if parent.Err() != nil {
+		return err
+	}
+	if errors.Is(call.Err(), context.DeadlineExceeded) {
+		return run.NewError("tool.timeout", run.ErrorRetryable, run.RetryBackoff, err)
+	}
+	return err
 }
 
 // ticketFor derives the ticket deterministically from the invocation, so a

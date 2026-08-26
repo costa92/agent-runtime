@@ -46,6 +46,11 @@ type Spec struct {
 	// MaxResultBytes caps what the tool may return into a prompt. Zero means
 	// the gateway's default; an uncapped result is an uncapped prompt.
 	MaxResultBytes int `json:"max_result_bytes,omitempty"`
+	// MaxDurationMS caps how long one call may occupy the Run. Zero means the
+	// gateway's default; the gateway's ceiling applies either way, because a
+	// number in a registration table cannot see the lease it is about to
+	// outlive.
+	MaxDurationMS int `json:"max_duration_ms,omitempty"`
 
 	Labels []string `json:"labels,omitempty"`
 }
