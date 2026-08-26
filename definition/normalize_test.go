@@ -226,13 +226,20 @@ func TestNormalizeKeepsEveryNodeSpecField(t *testing.T) {
 		field := value.Field(i)
 		switch field.Kind() {
 		case reflect.String:
-			field.SetString("x")
+			field.SetString("v")
 		case reflect.Bool:
 			field.SetBool(true)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			field.SetInt(3)
 		case reflect.Slice:
 			field.Set(reflect.ValueOf([]string{"x"}))
 		default:
-			t.Fatalf("NodeSpec.%s has an unhandled kind %s; teach this test to populate it",
+			// A kind this test cannot populate is a kind it cannot prove
+			// survives normalizeGraph's field-by-field rebuild. Failing is the
+			// only honest answer: passing would report coverage it does not
+			// have, which is exactly how a dropped field reaches production.
+			t.Fatalf("NodeSpec.%s has kind %s, which this test cannot populate; "+
+				"extend the switch and confirm normalizeGraph copies the field",
 				value.Type().Field(i).Name, field.Kind())
 		}
 	}
