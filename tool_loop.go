@@ -59,6 +59,9 @@ func nodeToolDefs(keys []string, gateway *tool.Gateway) []llm.ToolDef {
 // rather than evidence if the process dies mid-flight.
 func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Response, error) {
 	s := p.session
+	if err := s.detachedErr(); err != nil {
+		return llm.Response{}, err
+	}
 	if s.runtime.deps.Models == nil {
 		return llm.Response{}, run.NewError("no_model_registry", run.ErrorInternal, run.RetryNever)
 	}
@@ -175,6 +178,9 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 // Tool invokes a declared tool through the fixed gateway chain.
 func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.RawMessage) (json.RawMessage, error) {
 	s := p.session
+	if err := s.detachedErr(); err != nil {
+		return nil, err
+	}
 	if s.runtime.deps.Tools == nil {
 		return nil, run.NewError("no_tool_gateway", run.ErrorInternal, run.RetryNever)
 	}
@@ -257,6 +263,9 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 // front of the model, and that fails as a model error far from the read.
 func (p *governedPorts) Recall(ctx context.Context, key, text string) ([]memory.Record, error) {
 	s := p.session
+	if err := s.detachedErr(); err != nil {
+		return nil, err
+	}
 	// The declaration is checked before the wiring: whether this Definition may
 	// touch this key is a property of what was published, not of what the
 	// deployment happens to have installed.
@@ -287,6 +296,9 @@ func (p *governedPorts) Recall(ctx context.Context, key, text string) ([]memory.
 // other effect.
 func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotencyKey string) error {
 	s := p.session
+	if err := s.detachedErr(); err != nil {
+		return err
+	}
 	declared, err := declaredMemory(s, key)
 	if err != nil {
 		return err
@@ -432,6 +444,9 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 func (s *session) begin(
 	ctx context.Context, id run.ID, idempotencyKey string, reserve run.Limits, consumesGrant bool, node string,
 ) error {
+	if err := s.detachedErr(); err != nil {
+		return err
+	}
 	command := run.Command{
 		Kind: run.CommandInvokeTool, Reserve: reserve,
 		InvocationID: id, IdempotencyKey: idempotencyKey,
@@ -466,6 +481,9 @@ func (s *session) begin(
 
 // complete settles the reservation against what was actually used.
 func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, used run.Limits, node string) error {
+	if err := s.detachedErr(); err != nil {
+		return err
+	}
 	if outcome != run.OutcomeApplied {
 		slog.Warn("session: invocation settled non-applied",
 			"run_id", string(s.snapshot.ID), "invocation", string(id), "outcome", string(outcome))

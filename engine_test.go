@@ -94,6 +94,79 @@ func TestTheLeaseIsNotReleasedForTakeoverAfterTheDeadline(t *testing.T) {
 	}
 }
 
+// settlingBehindTheAbandonment reproduces the interleaving where the detached
+// handler's settle lands first.
+//
+// The abandonment's own commit is what this intercepts: before it goes through,
+// a commit is made under the same lease at the revision the session still
+// believes in — which is exactly what the leaked handler's settle does, and it
+// leaves the abandonment holding a stale fence.
+type settlingBehindTheAbandonment struct {
+	store.Execution
+	raced bool
+}
+
+func (s *settlingBehindTheAbandonment) CommitNodeResult(
+	ctx context.Context, command store.CommitNodeResultCommand,
+) (run.Snapshot, error) {
+	if !s.raced && command.NodeName != "run" {
+		s.raced = true
+		current, err := s.Execution.Get(ctx, command.Fence.RunID)
+		if err != nil {
+			return run.Snapshot{}, err
+		}
+		ahead := run.Transition{Next: current}
+		ahead.Next.Revision = current.Revision + 1
+		if _, err := s.Execution.CommitNodeResult(ctx, store.CommitNodeResultCommand{
+			Fence: store.ExecutionFence{
+				RunID:            command.Fence.RunID,
+				ExpectedRevision: current.Revision,
+				LeaseToken:       command.Fence.LeaseToken,
+			},
+			NodeName: "leaked-settle",
+			Commit:   store.CommitContext{Transition: ahead},
+		}); err != nil {
+			return run.Snapshot{}, err
+		}
+	}
+	return s.Execution.CommitNodeResult(ctx, command)
+}
+
+// The settle path never consults the Run's state, so a detached handler's
+// settle is accepted on its own terms and bumps the revision. If the
+// abandonment took that conflict as its answer, the Run would be left running
+// with renewal already stopped — the lease lapses, another worker claims it, and
+// the handler is still going.
+
+func TestASettleThatLandsDuringTheWindDownStillLeavesTheRunUnclaimable(t *testing.T) {
+	var returned atomic.Bool
+	h := newHarness(t, wedgedAgent(2*time.Second, &returned),
+		withDeps(func(deps *agentruntime.Dependencies) {
+			deps.LeaseFor = 300 * time.Millisecond
+			deps.MaxNodeDuration = 150 * time.Millisecond
+			deps.Store = &settlingBehindTheAbandonment{Execution: deps.Store}
+		}))
+	started := start(t, h)
+
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if result.Run.State == run.StateRunning {
+		t.Fatal("the Run was left running after a lost fence race, with renewal already stopped")
+	}
+	if result.Run.State != run.StateWaitingResolution {
+		t.Fatalf("state=%s, want waiting_resolution", result.Run.State)
+	}
+
+	h.clock.Advance(time.Hour)
+	if _, _, err := h.store.Claim(context.Background(), store.ClaimCommand{
+		RunID: started.ID, Owner: "worker-2", LeaseFor: time.Minute,
+	}); err == nil {
+		t.Fatal("another worker claimed a Run whose effect is still running")
+	}
+}
+
 // renewFailingAfterCancel makes the Store stop renewing the moment the effect
 // is cancelled, which is the moment the wind-down starts.
 type renewFailingAfterCancel struct {
@@ -120,13 +193,13 @@ func TestAStoreThatFailsMidWindDownStillAbandonsTheNode(t *testing.T) {
 			<-ctx.Done()
 			failing.Store(true)
 		}()
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 		return agent.Response{Output: json.RawMessage(`"too late"`)}, nil
 	}}, withDeps(func(deps *agentruntime.Dependencies) {
-		// A 2ms tick against a 7ms grace, so renewal is certain to be attempted
-		// — and to fail — inside the wind-down.
-		deps.LeaseFor = 6 * time.Millisecond
-		deps.MaxNodeDuration = 150 * time.Millisecond
+		// A ~7ms tick against a 60ms grace, so renewal is attempted — and fails —
+		// several times inside the wind-down, with room to spare on a loaded box.
+		deps.LeaseFor = 20 * time.Millisecond
+		deps.MaxNodeDuration = 1200 * time.Millisecond
 		deps.Store = renewFailingAfterCancel{Execution: deps.Store, failing: &failing}
 	}))
 	started := start(t, h)

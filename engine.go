@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
@@ -41,12 +42,33 @@ type session struct {
 	// on resume so confirm can perform that effect.
 	approvalHold *approvalHold
 
+	// detached is set when a node was abandoned at its wall-clock cap and the
+	// handler is still running. Everything that would touch the session on that
+	// handler's behalf refuses from then on.
+	//
+	// The handler's goroutine is left running — that is the accepted cost of
+	// never releasing the lease — but it must stop being a second writer of this
+	// session. It would otherwise write Invocations into the same map the
+	// abandonment is reading, which is a Go runtime fatal rather than a failed
+	// commit, and its settle path never consults the state, so a commit that won
+	// the race would leave the abandonment holding a stale fence.
+	detached atomic.Bool
+
 	// callTimingMu guards callTiming, which accumulates how long each model
 	// call took for the node currently executing. The agent runs on one
 	// goroutine but may call the model from several, and this is written on
 	// every one of them.
 	callTimingMu sync.Mutex
 	callTiming   []run.ModelUsage
+}
+
+// detachedErr refuses anything a detached handler tries to do through this
+// session, before it touches the Snapshot.
+func (s *session) detachedErr() error {
+	if s.detached.Load() {
+		return run.NewError("session_detached", run.ErrorDenied, run.RetryNever)
+	}
+	return nil
 }
 
 // recordCallTiming notes one provider round trip for the running node.
@@ -534,7 +556,41 @@ func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
 // resolver has the effect itself to look at. A node wedged before it issued
 // anything gets a fresh id instead: the reducer needs one, and parking under an
 // invocation the Run never made would point the resolver at nothing.
+//
+// It refuses the detached handler first and then insists, because leaving the
+// Run running is the one outcome that must not happen. Renewal has already
+// stopped by the time this runs, so a Run still running when this returns is a
+// Run whose lease lapses under a handler that is still going — the takeover this
+// whole mechanism exists to prevent. A settle from the detached handler that won
+// the race bumps the revision and leaves this holding a stale fence, so a
+// conflict is answered by re-reading the Run and parking it again rather than by
+// giving up.
 func (s *session) abandonNode(ctx context.Context, node workflow.Node) error {
+	s.detached.Store(true)
+
+	const attempts = 3
+	for attempt := 0; ; attempt++ {
+		if s.snapshot.State != run.StateRunning {
+			// The detached handler parked or settled the Run itself. Nothing to
+			// park, and nothing another worker can claim.
+			return nil
+		}
+		err := s.parkAbandoned(ctx, node, attempt == 0)
+		if err == nil || attempt == attempts-1 || run.KindOf(err) != run.ErrorConflict {
+			return err
+		}
+		refreshed, getErr := s.runtime.deps.Store.Get(ctx, s.snapshot.ID)
+		if getErr != nil {
+			return getErr
+		}
+		s.snapshot = refreshed
+	}
+}
+
+// parkAbandoned is one attempt at recording the abandonment. It announces the
+// abandonment on the first attempt only: a retry is the same event, and an
+// operator counting them would be counting fence conflicts.
+func (s *session) parkAbandoned(ctx context.Context, node workflow.Node, announce bool) error {
 	invocationID := run.ID("")
 	for id, invocation := range s.snapshot.Invocations {
 		if invocation.Outcome == run.OutcomeInFlight {
@@ -555,14 +611,16 @@ func (s *session) abandonNode(ctx context.Context, node workflow.Node) error {
 	// The leaked goroutine is the accepted cost of never releasing the lease.
 	// This is what keeps it from being silent: a Run that reaches here names a
 	// handler that ignored its cancellation, and that is a bug to go and fix.
-	s.runtime.record(observe.Decision{
-		Name: observe.EventNodeAbandoned, RunID: s.snapshot.ID,
-		Attributes: []observe.Attribute{
-			observe.Attr(observe.AttrNode, node.ID),
-			observe.Attr(observe.AttrAgent, node.Implementation),
-			observe.Attr(observe.AttrInvocationID, string(invocationID)),
-		},
-	})
+	if announce {
+		s.runtime.record(observe.Decision{
+			Name: observe.EventNodeAbandoned, RunID: s.snapshot.ID,
+			Attributes: []observe.Attribute{
+				observe.Attr(observe.AttrNode, node.ID),
+				observe.Attr(observe.AttrAgent, node.Implementation),
+				observe.Attr(observe.AttrInvocationID, string(invocationID)),
+			},
+		})
+	}
 	committed, err := s.commitNode(ctx, transition, node.ID, "", run.Limits{}, nil)
 	if err != nil {
 		return err
