@@ -117,7 +117,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("model")
-	if err := s.begin(ctx, invocationID, "", reserve, false); err != nil {
+	if err := s.begin(ctx, invocationID, "", reserve, false, p.node.ID); err != nil {
 		return llm.Response{}, err
 	}
 
@@ -151,7 +151,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 			outcome = run.OutcomeUnknown
 		}
 	}
-	if err := s.complete(ctx, invocationID, outcome, used); err != nil {
+	if err := s.complete(ctx, invocationID, outcome, used, p.node.ID); err != nil {
 		return llm.Response{}, err
 	}
 	// The response handed to the agent carries the settled totals, so an
@@ -239,12 +239,12 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	if err := s.admitEffect(ctx, prepared.Reserve, name); err != nil {
 		return nil, err
 	}
-	if err := s.begin(ctx, invocationID, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted); err != nil {
+	if err := s.begin(ctx, invocationID, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted, p.node.ID); err != nil {
 		return nil, err
 	}
 
 	mutation, callErr := s.runtime.deps.Tools.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
-	if err := s.complete(ctx, invocationID, mutation.Outcome, mutation.Used); err != nil {
+	if err := s.complete(ctx, invocationID, mutation.Outcome, mutation.Used, p.node.ID); err != nil {
 		return nil, err
 	}
 	return mutation.Output, callErr
@@ -315,12 +315,12 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	if err := s.admitEffect(ctx, prepared.Reserve, ""); err != nil {
 		return err
 	}
-	if err := s.begin(ctx, invocationID, idempotencyKey, prepared.Reserve, false); err != nil {
+	if err := s.begin(ctx, invocationID, idempotencyKey, prepared.Reserve, false, p.node.ID); err != nil {
 		return err
 	}
 
 	fact, writeErr := s.runtime.deps.Memories.ExecuteWrite(ctx, memory.CommittedWrite{Prepared: prepared})
-	if err := s.commitMemory(ctx, invocationID, key, declared.Namespace, fact); err != nil {
+	if err := s.commitMemory(ctx, invocationID, key, declared.Namespace, fact, p.node.ID); err != nil {
 		return err
 	}
 	return writeErr
@@ -430,7 +430,7 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 // because this is the last durable write before it — anything later leaves a
 // window where the effect has happened and the grant is still standing.
 func (s *session) begin(
-	ctx context.Context, id run.ID, idempotencyKey string, reserve run.Limits, consumesGrant bool,
+	ctx context.Context, id run.ID, idempotencyKey string, reserve run.Limits, consumesGrant bool, node string,
 ) error {
 	command := run.Command{
 		Kind: run.CommandInvokeTool, Reserve: reserve,
@@ -443,6 +443,7 @@ func (s *session) begin(
 	if consumesGrant {
 		transition.Next.Checkpoint = nil
 	}
+	stampNode(transition.Events, node)
 
 	committed, err := s.runtime.deps.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 		Fence: s.fence(),
@@ -464,7 +465,7 @@ func (s *session) begin(
 }
 
 // complete settles the reservation against what was actually used.
-func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, used run.Limits) error {
+func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, used run.Limits, node string) error {
 	if outcome != run.OutcomeApplied {
 		slog.Warn("session: invocation settled non-applied",
 			"run_id", string(s.snapshot.ID), "invocation", string(id), "outcome", string(outcome))
@@ -501,6 +502,7 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 		parked.Next.Budget = transition.Next.Budget
 		transition = parked
 	}
+	stampNode(transition.Events, node)
 
 	committed, err := s.runtime.deps.Store.CompleteInvocation(ctx, store.CompleteInvocationCommand{
 		Fence:  s.fence(),

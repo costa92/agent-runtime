@@ -254,7 +254,19 @@ func approvalRequired(err error) bool {
 	return tool.IsApprovalRequired(err)
 }
 
-func (s *session) parkForApproval(ctx context.Context) error {
+// stampNode names the node an event happened inside. Reduce cannot do this: it
+// is pure over the Snapshot, which carries no current node. Same shape as the
+// ApprovalID stamping in parkForApproval.
+func stampNode(events []run.Event, node string) {
+	if node == "" {
+		return
+	}
+	for i := range events {
+		events[i].NodeID = node
+	}
+}
+
+func (s *session) parkForApproval(ctx context.Context, node string) error {
 	transition, err := run.Reduce(s.snapshot, run.Command{Kind: run.CommandWaitApproval})
 	if err != nil {
 		return err
@@ -265,6 +277,7 @@ func (s *session) parkForApproval(ctx context.Context) error {
 			transition.Events[i].ApprovalID = approvalID
 		}
 	}
+	stampNode(transition.Events, node)
 	transition.Next.PendingApprovalID = approvalID
 	if s.approvalHold != nil {
 		transition.Next.Checkpoint = encodeApprovalHold(*s.approvalHold)
@@ -326,7 +339,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	renewErr := stop()
 
 	if executeErr != nil && approvalRequired(executeErr) {
-		return s.parkForApproval(ctx)
+		return s.parkForApproval(ctx, node.ID)
 	}
 
 	if renewErr != nil {
@@ -502,6 +515,7 @@ func (s *session) commitNode(
 	}); err != nil {
 		return run.Snapshot{}, err
 	}
+	stampNode(transition.Events, node)
 
 	name := node
 	if name == "" {

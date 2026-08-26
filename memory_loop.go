@@ -48,7 +48,7 @@ func declaredMemory(s *session, key string) (definition.MemoryRef, error) {
 // The provider does not commit it. A provider that wrote its own record would
 // be a second writer of Run-adjacent state, outside the fence — and the write
 // and its budget settlement could then land separately.
-func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace string, fact memory.ResultFact) error {
+func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace string, fact memory.ResultFact, node string) error {
 	reserved := s.snapshot.Invocations[id].Reserved
 	charged := run.Limits{ToolCalls: 1}
 
@@ -77,6 +77,7 @@ func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace st
 		parked.Next.Budget = transition.Next.Budget
 		transition = parked
 	}
+	stampNode(transition.Events, node)
 
 	committed, err := s.runtime.deps.Store.CommitMemoryMutation(ctx, store.CommitMemoryMutationCommand{
 		Fence:      s.fence(),

@@ -328,6 +328,14 @@ type Event struct {
 	// without it cannot be answered.
 	ApprovalID ID
 	Reserve    Limits
+	// NodeID names the graph node the event happened inside. Empty when no node
+	// was executing: the Run's start, control-plane resolutions, crash recovery,
+	// and a termination reached with nothing left schedulable. A terminal event
+	// committed as part of a node's own result carries that node — on the
+	// ordinary path, where the last node's result concludes the graph, that is
+	// the id an operator needs first. Stamped by the engine at commit rather
+	// than by Reduce, which owns Run state and knows nothing about nodes.
+	NodeID string
 }
 
 // Transition is what Reduce returns: the next snapshot, the events to append
