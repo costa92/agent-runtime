@@ -71,6 +71,18 @@ func compile(t *testing.T, d definition.Definition) *workflow.ExecutionGraph {
 	return graph
 }
 
+// compileRef is compile for a Definition that already carries the Ref it wants.
+// compile applies base(), which overwrites Ref, so a test asking whether the
+// ref reaches the digest cannot use it.
+func compileRef(t *testing.T, d definition.Definition) *workflow.ExecutionGraph {
+	t.Helper()
+	graph, err := workflow.Compiler{Registries: registries()}.Compile(d)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return graph
+}
+
 func compileError(t *testing.T, d definition.Definition) *run.Error {
 	t.Helper()
 	_, err := workflow.Compiler{Registries: registries()}.Compile(base(d))

@@ -77,7 +77,7 @@ func (c Compiler) Compile(declared definition.Definition) (*ExecutionGraph, erro
 		return nil, err
 	}
 
-	digest, err := resource.DigestOf(nodes)
+	digest, err := GraphDigest(normalized, nodes)
 	if err != nil {
 		return nil, err
 	}
@@ -395,4 +395,28 @@ func keySet(keys []string) map[string]bool {
 		set[key] = true
 	}
 	return set
+}
+
+// GraphDigest is the identity of one compiled graph.
+//
+// Exported because it has two callers that must agree: the compiler that stamps
+// it at publish, and the loader that recomputes it from stored bytes. Two
+// spellings of this formula would let a stored graph verify against a digest
+// nothing could reproduce — which is the check the loader used to skip.
+//
+// It covers the nodes AND the behavior they carry out. Prompt, model policy and
+// memory scopes never reach a Node — they are read live off the Definition on
+// every resume — so hashing nodes alone let a Definition change what it executes
+// while keeping the identity a Run pinned. For a builtin, whose Version is a
+// hardcoded 1 for its whole life, this digest is the only identity there is.
+//
+// The ref is deliberately excluded: a Run pins {ID, Version, Protocol}
+// separately, so folding them in would make the digest restate what the ref
+// already says and give one behavior two identities.
+func GraphDigest(declared definition.Definition, nodes []Node) (string, error) {
+	declared.Ref = run.DefinitionRef{}
+	return resource.DigestOf(struct {
+		Declared definition.Definition `json:"declared"`
+		Nodes    []Node                `json:"nodes"`
+	}{Declared: declared, Nodes: nodes})
 }
