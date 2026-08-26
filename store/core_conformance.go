@@ -925,6 +925,58 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 	})
 
+	t.Run("EventNodeIDRoundTrips", func(t *testing.T) {
+		// The engine stamps NodeID on events at commitNode (engine.go's
+		// stampNode), after Reduce returns and before the Store persists them —
+		// Reduce is pure over the Snapshot and knows no current node. This test
+		// reproduces that stamping and checks the Store carries the field back,
+		// which is what lets an operator find "which node" without replaying
+		// the whole run. A run-level event (no node executing) must round-trip
+		// as empty, not as some sentinel.
+		harness := newHarness(t)
+		ctx := context.Background()
+		claimed := mustStart(t, harness, "run-1")
+
+		transition, err := run.Reduce(claimed.Snapshot, run.Command{
+			Kind: run.CommandInvokeModel, Reserve: run.Limits{Tokens: 10},
+		})
+		if err != nil {
+			t.Fatalf("reduce: %v", err)
+		}
+		for i := range transition.Events {
+			transition.Events[i].NodeID = "planner"
+		}
+		if _, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
+			Invocation: InvocationBegin{ID: "inv-1", Reservation: BudgetReservation{ID: "res-1"}},
+			Commit:     CommitContext{Transition: transition, Events: transition.Events},
+		}); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+
+		page, err := harness.Store.Events(ctx, EventQuery{RunID: "run-1"})
+		if err != nil {
+			t.Fatalf("events: %v", err)
+		}
+		var sawNode, sawEmpty bool
+		for _, event := range page.Events {
+			switch event.NodeID {
+			case "planner":
+				sawNode = true
+			case "":
+				sawEmpty = true
+			default:
+				t.Fatalf("unexpected node id %q", event.NodeID)
+			}
+		}
+		if !sawNode {
+			t.Fatal("the stamped node id did not survive the round trip")
+		}
+		if !sawEmpty {
+			t.Fatal("the run's own start event should carry no node, but every event came back with one")
+		}
+	})
+
 	t.Run("ConcurrentClaimsYieldOneOwner", func(t *testing.T) {
 		harness := newHarness(t)
 		ctx := context.Background()
