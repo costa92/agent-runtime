@@ -11,6 +11,7 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
+	"github.com/kart-io/wechat-account/agent-runtime/observe"
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/tool"
@@ -382,5 +383,46 @@ func TestAFailedToolCallCostsTheBudgetNothing(t *testing.T) {
 			"the budget bounds failures too and the per-loop request bound may be "+
 			"redundant — revisit the governance matrix row that assumes it is not",
 			handler.calls)
+	}
+}
+
+// A budget refusal names the dimension that was actually short.
+//
+// Every refusal used to report "tokens", so an operator sizing max_tool_calls
+// from telemetry read tool exhaustion as a token problem. A wrong label is
+// worse than a missing one: it points somewhere.
+func TestABudgetRefusalNamesTheExhaustedDimension(t *testing.T) {
+	registry, _ := searchRegistry(t)
+
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		for range 2 {
+			_, _ = request.Ports.Tool(ctx, "search_evidence", json.RawMessage(`{}`))
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDefinition(searchingDefinition(nil)), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+	}))
+
+	started, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+		Principal:  principal(),
+		Definition: run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Input:      json.RawMessage(`{"q":"x"}`),
+		// Generous on tokens, so a refusal reported as "tokens" is provably the
+		// stale literal rather than the truth.
+		Budget: run.Limits{LLMCalls: 10, Tokens: 10_000, ToolCalls: 1},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	refusals := h.observer.named(observe.EventBudgetRefused)
+	if len(refusals) != 1 {
+		t.Fatalf("budget refusals = %d, want 1", len(refusals))
+	}
+	if got := attributeOf(refusals[0], observe.AttrUnit); got != "tool_calls" {
+		t.Errorf("unit = %q, want tool_calls; the refusal points at the wrong number", got)
 	}
 }

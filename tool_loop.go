@@ -399,6 +399,32 @@ func prePolicyDecision(runID run.ID, tool string, err error) observe.Decision {
 	}
 }
 
+// exhaustedUnit names the budget dimension that refused this effect.
+//
+// It used to be the literal "tokens" on every refusal, whichever dimension was
+// actually short. An operator sizing max_tool_calls from telemetry would have
+// read every one of those refusals as a token problem and moved the wrong
+// number — the reading is worse than none, because it points somewhere.
+//
+// The order matches Affords: the first dimension that would be exceeded is the
+// one reported. A refusal on two at once is reported as the first, which is
+// enough to act on.
+func exhaustedUnit(budget run.Budget, want run.Limits) string {
+	committed := budget.Committed().Add(want)
+	switch {
+	case budget.Envelope.LLMCalls > 0 && committed.LLMCalls > budget.Envelope.LLMCalls:
+		return "llm_calls"
+	case budget.Envelope.Tokens > 0 && committed.Tokens > budget.Envelope.Tokens:
+		return "tokens"
+	case budget.Envelope.ToolCalls > 0 && committed.ToolCalls > budget.Envelope.ToolCalls:
+		return "tool_calls"
+	}
+	// Affords said no, so one of the three should have matched. Reporting an
+	// empty unit rather than guessing keeps a future fourth dimension from
+	// being silently filed under one of these three.
+	return ""
+}
+
 // admitEffect applies the windowed quota at the gateway, then the budget.
 //
 // Both, in that order. Quota is the tenant's ceiling and budget is this Run's;
@@ -427,7 +453,7 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 		s.runtime.record(observe.Decision{
 			Name: observe.EventBudgetRefused, RunID: s.snapshot.ID,
 			Attributes: []observe.Attribute{
-				observe.Attr(observe.AttrUnit, "tokens"),
+				observe.Attr(observe.AttrUnit, exhaustedUnit(s.snapshot.Budget, want)),
 				observe.Attr(observe.AttrTool, toolName),
 			},
 		})
