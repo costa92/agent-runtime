@@ -38,7 +38,14 @@ func (u Unit) Admission() bool {
 	return u == UnitConcurrentRuns || u == UnitQueuedRuns
 }
 
-// Scope is who a limit applies to.
+// Scope is who a limit applies to — and, for a Limit, what it is measured
+// across. Those are the same set, and saying so is the point.
+//
+// They used to differ: the scope decided which limits applied, but usage was
+// then observed at the *caller's* scope, so a limit written for a whole tenant
+// was measured one principal at a time. "Empty means the whole tenant" was
+// already what this comment claimed and never what happened — every principal
+// simply got the tenant's allowance to themselves.
 type Scope struct {
 	Tenant string
 	// Principal narrows a limit to one actor. Empty means the whole tenant.
@@ -64,10 +71,14 @@ func (s Scope) String() string {
 
 // Limit is one published cap.
 type Limit struct {
-	Name  string `json:"name"`
-	Scope Scope  `json:"scope"`
-	Unit  Unit   `json:"unit"`
-	Max   int    `json:"max"`
+	Name string `json:"name"`
+	// Scope is the set this cap covers, and the set its usage is summed over.
+	// A Tenant is required: the meter cannot measure a scope it cannot name,
+	// and a cap over a set nobody can count is one that fails closed the first
+	// time it is consulted.
+	Scope Scope `json:"scope"`
+	Unit  Unit  `json:"unit"`
+	Max   int   `json:"max"`
 	// Window is the period a consumption unit is measured over. Ignored for
 	// admission units, which are instantaneous counts.
 	Window time.Duration `json:"window,omitempty"`
@@ -85,6 +96,15 @@ type Limit struct {
 func (l Limit) validate() error {
 	if l.Name == "" {
 		return run.NewError("unnamed_quota", run.ErrorInvalid, run.RetryNever)
+	}
+	if l.Scope.Tenant == "" {
+		// A limit is measured across its own scope, and a meter is asked for a
+		// named tenant. An unnamed one would be unanswerable, and an
+		// unanswerable observation fails closed — so publishing this would
+		// refuse every effect it applied to. Refusing at publication is the
+		// last moment anybody is still reading.
+		return run.NewError("unscoped_quota", run.ErrorInvalid, run.RetryNever,
+			fmt.Errorf("quota %q names no tenant", l.Name))
 	}
 	if l.Max < 0 {
 		return run.NewError("negative_quota", run.ErrorInvalid, run.RetryNever,
@@ -231,7 +251,11 @@ func (e *Enforcer) check(ctx context.Context, scope Scope, wantFor func(Unit) in
 		if want == 0 {
 			continue
 		}
-		observed, err := e.meter.Observe(ctx, scope, limit.Unit, limit.Window)
+		// The limit's scope, not the caller's. A cap declared for a tenant is a
+		// cap on that tenant's total; measuring it at the caller's narrower
+		// scope hands the whole allowance to every principal separately, which
+		// is not a smaller version of the rule but a different one.
+		observed, err := e.meter.Observe(ctx, limit.Scope, limit.Unit, limit.Window)
 		if err != nil {
 			// A meter that cannot answer fails closed. Treating an unreachable
 			// meter as "no usage" removes every cap at exactly the moment the

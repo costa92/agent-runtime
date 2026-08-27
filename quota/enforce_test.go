@@ -12,17 +12,30 @@ import (
 
 type fakeMeter struct {
 	usage map[quota.Unit]int
-	err   error
+	// perScope answers for one named scope and takes precedence over usage.
+	// Without it a fake cannot tell "measured across the tenant" from
+	// "measured for this caller" — which is how the two were confused for as
+	// long as they were.
+	perScope map[quota.Scope]map[quota.Unit]int
+	err      error
 	// asked records what was measured, to prove a check actually happened
 	// rather than being skipped.
 	asked []quota.Unit
+	// scopes records which scope each observation named.
+	scopes []quota.Scope
 }
 
-func (m *fakeMeter) Observe(_ context.Context, _ quota.Scope, unit quota.Unit, _ time.Duration) (int, error) {
+func (m *fakeMeter) Observe(
+	_ context.Context, scope quota.Scope, unit quota.Unit, _ time.Duration,
+) (int, error) {
 	if m.err != nil {
 		return 0, m.err
 	}
 	m.asked = append(m.asked, unit)
+	m.scopes = append(m.scopes, scope)
+	if at, ok := m.perScope[scope]; ok {
+		return at[unit], nil
+	}
 	return m.usage[unit], nil
 }
 
@@ -368,5 +381,73 @@ func TestAskingForNoneOfAUnitSkipsItsLimit(t *testing.T) {
 	}
 	if decision.Allowed {
 		t.Fatalf("want=1 should have been refused against Max=1 with usage spent: %+v", decision)
+	}
+}
+
+// A cap declared for a tenant is measured across the tenant, not once per
+// principal.
+//
+// The two readings differ by exactly the number of principals: measured at the
+// caller's scope, a "tenant cap" of 100 hands 100 to everyone who asks. Nothing
+// used to distinguish them, because the limits under test always had a scope
+// equal to the caller's — and the fake ignored the scope anyway.
+func TestATenantCapIsMeasuredAcrossTheTenant(t *testing.T) {
+	alice := quota.Scope{Tenant: "acme", Principal: "alice"}
+	meter := &fakeMeter{perScope: map[quota.Scope]map[quota.Unit]int{
+		// Alice alone is well under; the tenant as a whole is at the line.
+		alice:    {quota.UnitConcurrentRuns: 3},
+		tenant(): {quota.UnitConcurrentRuns: 100},
+	}}
+	subject := enforcer(t, meter, quota.Limit{
+		Name: "tenant-runs", Scope: tenant(),
+		Unit: quota.UnitConcurrentRuns, Max: 100,
+	})
+
+	decision, err := subject.AdmitRun(t.Context(), alice)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("alice was admitted while the tenant was already at its cap")
+	}
+	if len(meter.scopes) != 1 || meter.scopes[0] != tenant() {
+		t.Fatalf("measured %v, want the limit's own scope %v", meter.scopes, tenant())
+	}
+}
+
+// The narrower form still narrows: a principal-scoped limit is measured for
+// that principal, and does not see the tenant's other traffic.
+func TestAPrincipalCapIsMeasuredForThatPrincipalAlone(t *testing.T) {
+	alice := quota.Scope{Tenant: "acme", Principal: "alice"}
+	meter := &fakeMeter{perScope: map[quota.Scope]map[quota.Unit]int{
+		alice:    {quota.UnitConcurrentRuns: 1},
+		tenant(): {quota.UnitConcurrentRuns: 100},
+	}}
+	subject := enforcer(t, meter, quota.Limit{
+		Name: "alice-runs", Scope: alice,
+		Unit: quota.UnitConcurrentRuns, Max: 5,
+	})
+
+	decision, err := subject.AdmitRun(t.Context(), alice)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatal("a principal cap was refused on the tenant's usage")
+	}
+}
+
+// A limit with no tenant cannot be measured, so it must not be publishable.
+//
+// Accepting it would produce a cap that fails closed the first time it applied
+// to anything — the meter is asked for a named tenant and an unanswerable
+// observation is a refusal.
+func TestALimitWithNoTenantIsRefusedAtPublication(t *testing.T) {
+	invalid := quota.Snapshot{Limits: []quota.Limit{{
+		Name: "everyone", Unit: quota.UnitConcurrentRuns, Max: 1,
+	}}}
+	err := invalid.Validate()
+	if run.CodeOf(err) != "unscoped_quota" {
+		t.Fatalf("code = %q, want unscoped_quota (%v)", run.CodeOf(err), err)
 	}
 }
