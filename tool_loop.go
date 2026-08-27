@@ -31,18 +31,33 @@ type governedPorts struct {
 
 var _ agent.Ports = (*governedPorts)(nil)
 
-// nodeToolDefs is what this node is allowed to call, described for the model.
+// nodeToolDefs is what this node can still call, described for the model.
 //
 // It is the node's grant, not the Definition's declaration: offering a tool the
-// gateway would refuse invites the model to spend a turn discovering that.
-func nodeToolDefs(keys []string, gateway *tool.Gateway) []llm.ToolDef {
+// gateway would refuse invites the model to spend a turn discovering that. Two
+// things used to be offered anyway despite the gateway being certain to refuse
+// them, and both are removed here rather than left for the model to find out:
+//
+//   - a key the Run's own Restrictions narrowed away. The gateway builds its
+//     allowlist from Restrictions.Narrow(node.Tools); this used the raw grant,
+//     so a narrowed Run was offered exactly the tools it had asked not to have.
+//   - a tool whose declared per-Run allowance is spent. The refusal in
+//     withinCallCeiling still stands — it is the boundary, and it has to hold
+//     for calls the model emits in the same round, before a new offer exists —
+//     but there is no reason to keep advertising a tool that can only answer
+//     with tool_call_ceiling_exhausted.
+func (s *session) nodeToolDefs(keys []string) []llm.ToolDef {
+	gateway := s.runtime.deps.Tools
 	if gateway == nil || len(keys) == 0 {
 		return nil
 	}
 	out := make([]llm.ToolDef, 0, len(keys))
-	for _, key := range keys {
+	for _, key := range s.snapshot.Restrictions.Narrow(keys) {
 		spec, ok := gateway.LookupSpec(key)
 		if !ok {
+			continue
+		}
+		if _, _, exhausted := s.callCeiling(key); exhausted {
 			continue
 		}
 		out = append(out, llm.ToolDef{
@@ -99,7 +114,17 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	// NoTools is the caller saying "offer none"; empty is the caller saying
 	// nothing, which means the node's grant.
 	if !request.NoTools && len(request.Tools) == 0 {
-		request.Tools = nodeToolDefs(p.node.Tools, s.runtime.deps.Tools)
+		request.Tools = s.nodeToolDefs(p.node.Tools)
+		// Nothing survived the grant, the narrowing and the ceilings. That is a
+		// withdrawal and has to be said as one: an empty Tools with NoTools
+		// false is "no opinion" to everything downstream, and the host client
+		// routes it to the streaming path, which folds the whole conversation
+		// into a single user string and drops every tool_call_id. Doing that on
+		// the round that produces the final answer is the corruption the
+		// routing rule exists to prevent.
+		if len(request.Tools) == 0 {
+			request.NoTools = true
+		}
 	}
 	if len(request.Tools) > 0 && !capabilities.Tools {
 		// Asked rather than assumed, and degraded rather than failed: an engine
@@ -478,18 +503,32 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 // answer from what it already retrieved should do that, rather than treating
 // the refusal as something to retry.
 func (s *session) withinCallCeiling(name string) error {
-	var ceiling *int
+	ceiling, used, exhausted := s.callCeiling(name)
+	if !exhausted {
+		return nil
+	}
+	return run.NewError("tool_call_ceiling_exhausted", run.ErrorDenied, run.RetryNever,
+		fmt.Errorf("definition %s allows %d call(s) to %q per run; %d already recorded",
+			s.snapshot.Definition.ID, ceiling, name, used))
+}
+
+// callCeiling answers how much of a tool's declared per-Run allowance is left.
+//
+// One predicate for two jobs: refusing a call that would exceed it, and leaving
+// the tool out of what the model is offered next. They have to agree, and the
+// only way to be sure of that is for them to be the same code.
+func (s *session) callCeiling(name string) (ceiling, used int, exhausted bool) {
+	var declaredCeiling *int
 	for _, declared := range s.declared.Tools {
 		if declared.Key == name {
-			ceiling = declared.MaxCalls
+			declaredCeiling = declared.MaxCalls
 			break
 		}
 	}
-	if ceiling == nil {
-		return nil
+	if declaredCeiling == nil {
+		return 0, 0, false
 	}
 
-	used := 0
 	for _, invocation := range s.snapshot.Invocations {
 		if invocation.Tool == name {
 			used++
@@ -499,12 +538,7 @@ func (s *session) withinCallCeiling(name string) error {
 	// unknown. A ceiling that only counted successes would make a broken
 	// backend an unlimited retry loop, which is the shape of the incident this
 	// bounds in the first place.
-	if used < *ceiling {
-		return nil
-	}
-	return run.NewError("tool_call_ceiling_exhausted", run.ErrorDenied, run.RetryNever,
-		fmt.Errorf("definition %s allows %d call(s) to %q per run; %d already recorded",
-			s.snapshot.Definition.ID, *ceiling, name, used))
+	return *declaredCeiling, used, used >= *declaredCeiling
 }
 
 // begin reserves and commits the invocation-begin fact before the effect.

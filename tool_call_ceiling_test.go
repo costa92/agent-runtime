@@ -11,6 +11,7 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
+	"github.com/kart-io/wechat-account/agent-runtime/llm"
 	"github.com/kart-io/wechat-account/agent-runtime/observe"
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
@@ -425,4 +426,198 @@ func TestABudgetRefusalNamesTheExhaustedDimension(t *testing.T) {
 	if got := attributeOf(refusals[0], observe.AttrUnit); got != "tool_calls" {
 		t.Errorf("unit = %q, want tool_calls; the refusal points at the wrong number", got)
 	}
+}
+
+// An exhausted tool stops being offered, while the others stay.
+//
+// The refusal in withinCallCeiling is the boundary and it still stands. This is
+// about not advertising a tool that can now only answer with
+// tool_call_ceiling_exhausted: a model that can see a tool asks for it, and
+// each ask costs a round with the whole conversation resent.
+func TestAnExhaustedToolIsNoLongerOfferedButItsSiblingsAre(t *testing.T) {
+	registry := twoToolRegistry(t)
+
+	var offered [][]string
+	models := capturingModels{onRequest: func(request llm.Request) {
+		names := make([]string, 0, len(request.Tools))
+		for _, def := range request.Tools {
+			names = append(names, def.Name)
+		}
+		offered = append(offered, names)
+	}}
+
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "start"}},
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		// Spend the one call search_evidence is allowed.
+		if _, err := request.Ports.Tool(ctx, "search_evidence", json.RawMessage(`{"q":"x"}`)); err != nil {
+			return agent.Response{}, err
+		}
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "again"}},
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools: []definition.ToolRef{
+			{Key: "search_evidence", MaxCalls: ceiling(1)},
+			{Key: "render_picture_book"},
+		},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		deps.Models = models
+	}))
+	started := start(t, h)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	if len(offered) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(offered))
+	}
+	if len(offered[0]) != 2 {
+		t.Fatalf("first call was offered %v, want both tools", offered[0])
+	}
+	if len(offered[1]) != 1 || offered[1][0] != "render_picture_book" {
+		t.Fatalf("after the ceiling was spent the model was offered %v, "+
+			"want render_picture_book alone", offered[1])
+	}
+}
+
+// A tool the Run narrowed away is not offered either.
+//
+// The gateway builds its allowlist from Restrictions.Narrow(node.Tools) and
+// would refuse it, so offering it spends a round on the model discovering that
+// — which is exactly what nodeToolDefs' own doc comment says must not happen.
+func TestANarrowedAwayToolIsNotOffered(t *testing.T) {
+	registry := twoToolRegistry(t)
+
+	var offered []string
+	models := capturingModels{onRequest: func(request llm.Request) {
+		for _, def := range request.Tools {
+			offered = append(offered, def.Name)
+		}
+	}}
+
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "start"}},
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools: []definition.ToolRef{
+			{Key: "search_evidence"}, {Key: "render_picture_book"},
+		},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		deps.Models = models
+	}))
+
+	started, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+		Principal:    principal(),
+		Definition:   run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Input:        json.RawMessage(`{"q":"x"}`),
+		Budget:       run.Limits{LLMCalls: 10, Tokens: 10_000, ToolCalls: 10},
+		Restrictions: run.Restrictions{ToolNarrowing: []string{"render_picture_book"}},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	if len(offered) != 1 || offered[0] != "render_picture_book" {
+		t.Fatalf("model was offered %v; the Run narrowed to render_picture_book "+
+			"and the gateway would have refused anything else", offered)
+	}
+}
+
+// When nothing survives, the withdrawal has to be said out loud.
+//
+// An empty Tools with NoTools false reads as "no opinion" to everything
+// downstream, and the host client routes it to the streaming path, which folds
+// the conversation into one user string and drops every tool_call_id. On the
+// round that produces the final answer that is silent corruption.
+func TestAnAllExhaustedNodeReportsAWithdrawalRatherThanAnEmptyList(t *testing.T) {
+	registry, _ := searchRegistry(t)
+
+	var sawNoTools []bool
+	models := capturingModels{onRequest: func(request llm.Request) {
+		sawNoTools = append(sawNoTools, request.NoTools)
+	}}
+
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "start"}},
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		// The node's only tool is disallowed outright.
+		Tools: []definition.ToolRef{{Key: "search_evidence", MaxCalls: ceiling(0)}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		deps.Models = models
+	}))
+	started := start(t, h)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	if len(sawNoTools) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(sawNoTools))
+	}
+	if !sawNoTools[0] {
+		t.Fatal("every tool was filtered out and the request still said " +
+			"\"no opinion\"; downstream that is the streaming path, which " +
+			"flattens the conversation")
+	}
+}
+
+// twoToolRegistry holds a second tool so the tests above can tell "this one was
+// dropped" from "everything was dropped".
+func twoToolRegistry(t *testing.T) *tool.Registry {
+	t.Helper()
+	registry := tool.NewRegistry()
+	for _, spec := range []tool.Spec{
+		{
+			Name: "search_evidence", Description: "search the web",
+			Parameters: json.RawMessage(`{"type":"object"}`),
+			RiskLevel:  policy.RiskLow, SideEffect: policy.SideEffectRead,
+		},
+		{
+			Name: "render_picture_book", Description: "draw a book",
+			Parameters: json.RawMessage(`{"type":"object"}`),
+			RiskLevel:  policy.RiskLow, SideEffect: policy.SideEffectRead,
+		},
+	} {
+		if err := registry.Register(spec, testkit.ToolSucceeding(`{"ok":true}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry.Freeze()
+	return registry
 }
