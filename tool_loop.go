@@ -484,7 +484,7 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 				observe.Attr(observe.AttrTool, toolName),
 			},
 		})
-		return run.NewError("budget_exhausted", run.ErrorDenied, run.RetryNever)
+		return run.NewError(run.CodeBudgetExhausted, run.ErrorDenied, run.RetryNever)
 	}
 	return nil
 }

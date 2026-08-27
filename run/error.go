@@ -36,6 +36,22 @@ const (
 	// constant is then the evidence that it did.
 	CodeUndeclaredMemoryKey = "undeclared_memory_key"
 
+	// CodeBudgetExhausted is returned when a Run's envelope can no longer
+	// afford the effect being admitted.
+	//
+	// Promoted for the same reason as the two above: a tool loop has to tell it
+	// apart from every other ErrorDenied, because the right response differs.
+	// A policy denying one tool means ask for a different one; the Run's budget
+	// being gone means no tool will ever be affordable again, so leaving the
+	// definitions in front of the model buys nothing but rounds. The kind alone
+	// cannot separate them — that is the coarseness CodeOf's doc describes.
+	//
+	// Safe to act on permanently because the envelope is written once, at Run
+	// creation, and Used only grows: nothing makes an exhausted budget
+	// affordable again within the Run, not approval resume and not cap_budget,
+	// which evaluate.go treats as a pass-through.
+	CodeBudgetExhausted = "budget_exhausted"
+
 	// ErrorInvalid: the definition, schema or command is not legal here. The
 	// same call will never succeed; something has to change first.
 	ErrorInvalid ErrorKind = "invalid"
@@ -126,10 +142,16 @@ func KindOf(err error) ErrorKind {
 
 // CodeOf reports the code of an error, or "" when it is not a Runtime error.
 //
-// For observability, not for control flow: codes are read by operators and the
-// closed set built for branching is ErrorKind. It exists because a kind is
-// deliberately coarse — several unrelated refusals share one — so a record
-// carrying only the kind cannot say which thing to go and fix.
+// Mostly for observability: codes are read by operators and the closed set
+// built for branching is ErrorKind. It exists because a kind is deliberately
+// coarse — several unrelated refusals share one — so a record carrying only
+// the kind cannot say which thing to go and fix.
+//
+// That same coarseness is why a few callers do branch on a code, and the rule
+// for when that is legitimate is the one stated on CodeUndeclaredMemoryKey: the
+// code must first be promoted to a constant here. A caller matching a string
+// literal across a module boundary would survive a rename in this file and
+// silently stop matching; a caller referencing the constant cannot.
 func CodeOf(err error) string {
 	var target *Error
 	if errors.As(err, &target) {

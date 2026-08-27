@@ -125,7 +125,7 @@ func reserveEffect(snapshot Snapshot, command Command, kind EffectKind) (Transit
 		return Transition{Next: snapshot}, NewError("not_running", ErrorInvalid, RetryNever)
 	}
 	if !snapshot.Budget.Affords(command.Reserve) {
-		return Transition{Next: snapshot}, NewError("budget_exhausted", ErrorDenied, RetryNever)
+		return Transition{Next: snapshot}, NewError(CodeBudgetExhausted, ErrorDenied, RetryNever)
 	}
 
 	next := snapshot
