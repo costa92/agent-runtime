@@ -89,23 +89,18 @@ const (
 	FactToolTargetHost  Fact = "tool.target_host"
 	FactToolPermissions Fact = "tool.required_permissions"
 	FactAgentName       Fact = "agent.name"
-	FactDefinitionName  Fact = "definition.name"
-	FactMemoryNamespace Fact = "memory.namespace"
-	FactModelName       Fact = "model.name"
 	FactPrincipalKind   Fact = "principal.kind"
 	FactPrincipalTenant Fact = "principal.tenant"
 	FactLabel           Fact = "label"
 	FactBudgetRemaining Fact = "budget.remaining"
-	FactTimeWindow      Fact = "time.window"
 )
 
 // Facts returns every declared fact, in a stable order.
 func Facts() []Fact {
 	return []Fact{
 		FactToolName, FactToolRiskLevel, FactToolSideEffect, FactToolTargetHost,
-		FactToolPermissions, FactAgentName, FactDefinitionName, FactMemoryNamespace,
-		FactModelName, FactPrincipalKind, FactPrincipalTenant, FactLabel,
-		FactBudgetRemaining, FactTimeWindow,
+		FactToolPermissions, FactAgentName, FactPrincipalKind, FactPrincipalTenant,
+		FactLabel, FactBudgetRemaining,
 	}
 }
 

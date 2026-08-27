@@ -35,6 +35,27 @@ const (
 // compile time. A map would make "what can a policy read" a runtime question,
 // and the honest answer would become "whatever the caller happened to put in".
 // Nothing here comes from the Run's business payload.
+//
+// Every field here must be filled on every governed call. It used to also carry
+// DefinitionName, ModelName and MemoryNamespace, which nothing ever assigned:
+// a condition on them compiled, published, listed and pinned into every Run's
+// policy_digest while comparing against "" — eq always false, ne and not_in
+// always true. They are gone rather than filled, because the two that mattered
+// named domains policy structurally does not reach: Evaluate has one caller,
+// the tool gateway, so model calls and memory reads are not governed at all and
+// a "model" fact on a tool call would have meant the model of something else
+// that happened nearby.
+//
+// time.window went with them for a sharper reason: Evaluate is documented as
+// having no clock, so a time fact could only ever be computed by the caller —
+// and no caller computed it. Declaring it invited a rule like "no writes
+// outside business hours" that would publish and never once apply.
+//
+// Definition was the one cheap to fill, and it went too: run.DefinitionRef has
+// an ID and no Name, so definition.name would have held a slug. If per-
+// definition rules are wanted, add definition.id filled from
+// snapshot.Definition.ID and put ScopeDefinition in scopeFact — a truthful
+// fact, added when something needs it, rather than a declared one nobody fills.
 type CallFacts struct {
 	ToolName           string
 	ToolRiskLevel      RiskLevel
@@ -42,14 +63,10 @@ type CallFacts struct {
 	ToolTargetHost     string
 	ToolPermissions    []string
 	AgentName          string
-	DefinitionName     string
-	MemoryNamespace    string
-	ModelName          string
 	PrincipalKind      string
 	PrincipalTenant    string
 	Labels             []string
 	BudgetRemainingPct int
-	TimeWindow         string
 }
 
 // values returns the fact's value(s) for comparison. Multi-valued facts —
@@ -68,12 +85,6 @@ func (f CallFacts) values(fact Fact) []string {
 		return f.ToolPermissions
 	case FactAgentName:
 		return []string{f.AgentName}
-	case FactDefinitionName:
-		return []string{f.DefinitionName}
-	case FactMemoryNamespace:
-		return []string{f.MemoryNamespace}
-	case FactModelName:
-		return []string{f.ModelName}
 	case FactPrincipalKind:
 		return []string{f.PrincipalKind}
 	case FactPrincipalTenant:
@@ -82,8 +93,6 @@ func (f CallFacts) values(fact Fact) []string {
 		return f.Labels
 	case FactBudgetRemaining:
 		return []string{strconv.Itoa(f.BudgetRemainingPct)}
-	case FactTimeWindow:
-		return []string{f.TimeWindow}
 	default:
 		return nil
 	}

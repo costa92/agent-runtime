@@ -129,3 +129,62 @@ func TestEveryScopeWithANameHasAFactSomethingFills(t *testing.T) {
 		}
 	}
 }
+
+// A condition on a fact nothing fills is refused at publication.
+//
+// These three were declared, readable and never assigned. A rule using one
+// published cleanly and compared against "" forever — the same silent-no-match
+// class as the scope bug above, one layer down. Deleting the constants makes
+// Validate's undeclared_fact branch do the refusing, which is the branch a
+// reviewer already knows about.
+func TestAConditionOnADeletedFactIsRefused(t *testing.T) {
+	for _, fact := range []Fact{"definition.name", "model.name", "memory.namespace", "time.window"} {
+		rule := Policy{
+			Name: "pin-it", Scope: ScopeTenant, Decision: DecisionDeny,
+			Conditions: []Condition{{Fact: fact, Operator: OpEquals, Values: []string{"x"}}},
+		}
+		err := rule.Validate()
+		if err == nil {
+			t.Errorf("fact %q still publishes; nothing fills it, so the rule "+
+				"would compare against the empty string forever", fact)
+			continue
+		}
+		if !strings.Contains(err.Error(), "undeclared_fact") {
+			t.Errorf("fact %q refused for the wrong reason: %v", fact, err)
+		}
+	}
+}
+
+// Every declared fact is one something fills.
+//
+// The list is the contract: a fact here is a promise that a policy condition on
+// it compares against a real value. Adding one without a matching assignment in
+// tool_loop.go or the Gateway recreates exactly what the three deleted facts
+// were.
+func TestEveryDeclaredFactIsOneSomethingFills(t *testing.T) {
+	filledBy := map[Fact]string{
+		FactToolName:        "gateway, from the resolved spec",
+		FactToolRiskLevel:   "gateway, from the resolved spec",
+		FactToolSideEffect:  "gateway, from the resolved spec",
+		FactToolTargetHost:  "gateway, from the resolved spec",
+		FactToolPermissions: "gateway, from the resolved spec",
+		FactAgentName:       "tool loop, from the node's implementation",
+		FactPrincipalKind:   "gateway, from the Run's principal",
+		FactPrincipalTenant: "gateway, from the Run's principal",
+		FactLabel:           "tool loop and gateway, both contribute",
+		FactBudgetRemaining: "tool loop, from the Run's budget",
+	}
+
+	for _, fact := range Facts() {
+		if _, ok := filledBy[fact]; !ok {
+			t.Errorf("fact %q is declared but this list does not say what fills it. "+
+				"Name the assignment site here, or delete the fact: a declared fact "+
+				"nobody assigns is a rule that publishes and compares against \"\".", fact)
+		}
+	}
+	for fact := range filledBy {
+		if !fact.Valid() {
+			t.Errorf("fact %q is listed as filled but is no longer declared", fact)
+		}
+	}
+}
