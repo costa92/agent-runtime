@@ -16,10 +16,18 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
-// ExecutionMode distinguishes an agent that does the work from one that routes
-// to others. It is declared rather than inferred from whether a graph is
-// present, because "it had no children this time" is not the same fact as "it
-// is not allowed to have any".
+// ExecutionMode distinguishes a Definition that executes as a single step from
+// one that executes a multi-node graph. It once distinguished a worker from a
+// router that could delegate to other Runs; delegation no longer exists, and
+// the surviving meaning is structural — an orchestrator is a Definition whose
+// GraphSpec has nodes, a specialist is one that runs its implementation
+// directly.
+//
+// It stays declared rather than derived at compile time because the two facts
+// are still different: a Definition published as a specialist is one that may
+// not grow a graph without a new published version, which is what makes the
+// mode reviewable. Hosts that build a Definition from stored rows may of course
+// set it from the graph they read — see the host's runtimeDefinitionFrom.
 type ExecutionMode string
 
 const (
@@ -106,15 +114,6 @@ type NodeSpec struct {
 	Optional bool `json:"optional,omitempty"`
 }
 
-// RoutingPolicy bounds an orchestrator's delegation. The limits live in the
-// Definition rather than in the runtime configuration so that a published
-// change to them is versioned, audited and attributable.
-type RoutingPolicy struct {
-	MaxDelegations int `json:"max_delegations,omitempty"`
-	MaxConcurrency int `json:"max_concurrency,omitempty"`
-	MaxDepth       int `json:"max_depth,omitempty"`
-}
-
 // Definition is the whole declaration.
 type Definition struct {
 	Ref  run.DefinitionRef `json:"ref"`
@@ -132,8 +131,7 @@ type Definition struct {
 	Tools    []ToolRef   `json:"tools,omitempty"`
 	Memories []MemoryRef `json:"memories,omitempty"`
 
-	Graph   GraphSpec     `json:"graph,omitzero"`
-	Routing RoutingPolicy `json:"routing,omitzero"`
+	Graph GraphSpec `json:"graph,omitzero"`
 
 	// RunLabels is the closed vocabulary of labels a caller may set on a Run of
 	// this Definition. Empty means a Run of it carries no labels at all.

@@ -135,9 +135,6 @@ func TestNormalizeRejectsLocallyInconsistentDeclarations(t *testing.T) {
 	cases := map[string]func(*Definition){
 		"no implementation": func(d *Definition) { d.Implementation = "  " },
 		"unknown mode":      func(d *Definition) { d.Mode = "supervisor" },
-		"routing on specialist": func(d *Definition) {
-			d.Routing = RoutingPolicy{MaxDelegations: 2}
-		},
 		"duplicate tool": func(d *Definition) {
 			d.Tools = []ToolRef{{Key: "search"}, {Key: "search"}}
 		},

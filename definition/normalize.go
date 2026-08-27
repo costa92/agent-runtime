@@ -63,12 +63,6 @@ func validate(definition Definition) error {
 	if strings.TrimSpace(definition.Implementation) == "" {
 		return run.NewError("missing_implementation", run.ErrorInvalid, run.RetryNever)
 	}
-	if definition.Mode == ModeSpecialist && definition.Routing != (RoutingPolicy{}) {
-		// A specialist that carries delegation limits is a declaration whose
-		// two halves disagree, and the reader cannot tell which was meant.
-		return run.NewError("routing_on_specialist", run.ErrorInvalid, run.RetryNever)
-	}
-
 	if err := validateSchemaShape("input_schema", definition.InputSchema); err != nil {
 		return err
 	}
