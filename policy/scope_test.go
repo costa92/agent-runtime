@@ -64,68 +64,40 @@ func TestScopeDoesNotOverrideConditions(t *testing.T) {
 	}
 }
 
-// A ScopeName the evaluator could never compare is refused at publication.
+// Every declared Scope is one the Runtime can evaluate.
 //
-// DefinitionName, ModelName and MemoryNamespace are declared on CallFacts and
-// filled by no live path, so a rule scoped to one of them would publish
-// cleanly, appear in every listing, and apply to nothing. Refusing is the
-// honest answer: the alternative is a rule that looks enforced and is not,
-// which is the whole failure class this file exists to close.
-func TestAScopeNameTheRuntimeCannotEvaluateIsRefusedAtPublication(t *testing.T) {
-	for _, scope := range []Scope{ScopeModel, ScopeDefinition, ScopeMemory} {
-		rule := Policy{
-			Name: "pin-it", Scope: scope, ScopeName: "something",
-			Decision: DecisionDeny,
-		}
-		err := rule.Validate()
-		if err == nil {
-			t.Errorf("scope %q accepted a scope_name it can never evaluate", scope)
-			continue
-		}
-		if !strings.Contains(err.Error(), "unevaluatable_scope_name") {
-			t.Errorf("scope %q refused for the wrong reason: %v", scope, err)
-		}
-	}
-}
-
-// The same scopes must still publish without a name: "every model call" is a
-// meaningful rule even though "this one model" is not evaluatable yet.
-func TestThoseScopesStillPublishWithoutAName(t *testing.T) {
-	for _, scope := range []Scope{ScopeModel, ScopeDefinition, ScopeMemory} {
-		rule := Policy{Name: "broad", Scope: scope, Decision: DecisionDeny}
-		if err := rule.Validate(); err != nil {
-			t.Errorf("scope %q without a name was refused: %v", scope, err)
-		}
-	}
-}
-
-// scopeFact is a claim about what the Runtime fills, not a preference.
+// This is the invariant that closed the failure class: definition, model and
+// memory were declared Scopes with no fact behind them, so a rule scoped to one
+// published cleanly, listed, pinned into every Run's policy_digest, and applied
+// to nothing. Not "not yet wired" — Evaluate has one production caller, the
+// tool gateway, so those paths have no evaluation point to wire to.
 //
-// Adding an entry says "something now populates this fact on every governed
-// call". If that is not true, the rules it unlocks match nothing — the state
-// this change exists to make unrepresentable. Removing one silently disarms
-// every published rule that used it. Either way the edit should be deliberate,
-// so it has to come here too.
-func TestEveryScopeWithANameHasAFactSomethingFills(t *testing.T) {
+// So the table below is not a preference list. An entry says "something fills
+// this fact on every governed call", and the test fails both ways: adding a
+// Scope without adding what fills it, and removing a fact that published rules
+// still depend on.
+func TestEveryScopeIsEvaluatable(t *testing.T) {
 	filled := map[Scope]Fact{
 		ScopeTenant: FactPrincipalTenant, // Gateway, from the Run's principal
 		ScopeAgent:  FactAgentName,       // tool loop, from the node
 		ScopeTool:   FactToolName,        // Gateway, from the resolved spec
 	}
 
-	for _, scope := range []Scope{
-		ScopeTenant, ScopeDefinition, ScopeAgent, ScopeModel, ScopeMemory, ScopeTool,
-	} {
+	for scope, want := range filled {
 		fact, ok := scopeFact(scope)
-		want, wantOK := filled[scope]
-		if ok != wantOK {
-			t.Errorf("scope %q evaluatable=%v, want %v — if a fact really is filled "+
-				"now, name what fills it here; if one stopped being filled, every "+
-				"published rule scoped to it just went quiet", scope, ok, wantOK)
+		if !ok {
+			t.Errorf("scope %q has no fact; every declared scope must have one, "+
+				"or rules scoped to it go quiet without saying so", scope)
 			continue
 		}
-		if ok && fact != want {
+		if fact != want {
 			t.Errorf("scope %q compares against %q, want %q", scope, fact, want)
+		}
+	}
+	// The other direction: a Scope added to Scopes() without an entry above.
+	for _, candidate := range Scopes() {
+		if _, listed := filled[candidate]; !listed {
+			t.Errorf("scope %q is declared but nothing above says what fills its fact", candidate)
 		}
 	}
 }

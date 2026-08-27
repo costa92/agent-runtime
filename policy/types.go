@@ -12,54 +12,74 @@ import (
 )
 
 // Scope is what a Policy applies to.
+//
+// Only scopes this Runtime can actually evaluate exist. There used to be three
+// more — definition, model and memory — and none of them had an evaluation
+// point: Evaluate has one production caller, the tool gateway, so a model call
+// and a memory read never reach a policy at all. A rule scoped to one of them
+// published cleanly, appeared in every listing, was pinned into every Run's
+// policy_digest, and governed nothing.
+//
+// Deleting them rather than wiring them up, because wiring them up was the
+// larger mistake. It would have meant re-declaring the model.name and
+// memory.namespace facts that were removed for being unfillable, and then
+// leaving every tool fact empty on those paths — where a tenant-wide rule like
+// "tool.side_effect != write" would not fail to apply but would apply wrongly,
+// matching every model call. Both paths already have their own admission
+// (undeclared_memory_key, memory_not_writable, the Definition's ModelPolicy and
+// the models registry), so a policy layer there would be a second gatekeeper
+// that can disagree with the first, not a missing one.
+//
+// Re-adding a scope is a claim that something fills its fact — scopeFact is
+// where the claim is written down and TestEveryScopeIsEvaluatable is what
+// refuses one made without evidence.
 type Scope string
 
 const (
-	ScopeTenant     Scope = "tenant"
-	ScopeDefinition Scope = "definition"
-	ScopeAgent      Scope = "agent"
-	ScopeTool       Scope = "tool"
-	ScopeMemory     Scope = "memory"
-	ScopeModel      Scope = "model"
+	ScopeTenant Scope = "tenant"
+	ScopeAgent  Scope = "agent"
+	ScopeTool   Scope = "tool"
 )
+
+// Scopes returns every declared scope, broadest first.
+//
+// An enumeration rather than a switch on its own, matching Facts and Decisions,
+// so that "what scopes exist" is one list a test can walk. A new constant that
+// is not added here is not a scope: Valid rejects it and no rule using it
+// publishes, which is the failure direction that says something rather than the
+// one that goes quiet.
+func Scopes() []Scope {
+	return []Scope{ScopeTenant, ScopeAgent, ScopeTool}
+}
 
 // Specificity orders scopes from broadest to narrowest. Two policies that
 // reach the same decision level are ordered by this, then by name, so that
 // evaluation is deterministic rather than map-order dependent.
+//
+// Only the relative order carries meaning, so closing the gaps the deleted
+// scopes left behind changes nothing about how any published rule sorts.
 func (s Scope) Specificity() int {
-	switch s {
-	case ScopeTenant:
-		return 0
-	case ScopeDefinition:
-		return 1
-	case ScopeAgent:
-		return 2
-	case ScopeModel:
-		return 3
-	case ScopeMemory:
-		return 4
-	case ScopeTool:
-		return 5
-	default:
-		return -1
+	for i, known := range Scopes() {
+		if s == known {
+			return i
+		}
 	}
+	return -1
 }
 
 func (s Scope) Valid() bool { return s.Specificity() >= 0 }
 
 // scopeFact names the fact a scope's ScopeName is compared against.
 //
-// Only the scopes whose fact the Runtime actually populates are here. Tool,
-// principal and agent facts are filled on every governed call — the Gateway
-// fills the first two and the tool loop the third — while DefinitionName,
-// ModelName and MemoryNamespace are declared on CallFacts and never set by any
-// live path. A ScopeName on one of those could only ever match nothing, so
-// Validate refuses it instead: a rule that publishes cleanly and silently never
-// applies is worse than one that will not publish.
+// Every Scope has an entry, and that is now an invariant rather than a
+// coincidence: a scope with no fact is one whose ScopeName could only ever
+// match nothing, which is exactly the state the deleted three were in. Adding a
+// scope is therefore not a naming decision but a claim that something fills its
+// fact on every governed call — the Gateway fills tenant and tool from the Run's
+// principal and the resolved spec, the tool loop fills agent from the node.
 //
-// Adding a scope here is therefore not a policy change but a claim that
-// something now fills its fact, and TestEveryScopeWithANameHasAFactSomethingFills
-// is what checks the claim.
+// The bool is kept for a Scope that came off the wire as an unknown string. It
+// fails closed: an unrecognised scope matches nothing rather than everything.
 func scopeFact(s Scope) (Fact, bool) {
 	switch s {
 	case ScopeTenant:
@@ -205,13 +225,10 @@ func (p Policy) Validate() error {
 		return run.NewError("unknown_decision", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("decision %q", p.Decision))
 	}
-	if p.ScopeName != "" {
-		if _, ok := scopeFact(p.Scope); !ok {
-			return run.NewError("unevaluatable_scope_name", run.ErrorInvalid, run.RetryNever,
-				fmt.Errorf("scope %q carries no fact this Runtime fills, so scope_name %q "+
-					"could only ever match nothing", p.Scope, p.ScopeName))
-		}
-	}
+	// There is no separate "this scope cannot be evaluated" rejection any more.
+	// It existed to catch a ScopeName on definition, model or memory; now that
+	// every declared Scope has a fact, the unknown_scope check above is the only
+	// way to reach an unevaluatable one.
 	for _, condition := range p.Conditions {
 		if !condition.Fact.Valid() {
 			// This is the branch that catches a condition reaching into the
