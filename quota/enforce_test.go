@@ -260,6 +260,39 @@ func TestMalformedQuotaSetsAreRefusedAtConstruction(t *testing.T) {
 	}
 }
 
+// Degrading means dropping the tool loop, so only a tool-call cap can ask for
+// it. A token cap that asked would be silently ignored at the gateway, and an
+// operator reading the published set would believe a ceiling exists that never
+// stops anything.
+func TestOnlyToolCallsMayAskToDegrade(t *testing.T) {
+	limit := quota.Limit{
+		Name: "hourly-tokens", Scope: tenant(), Unit: quota.UnitTokens,
+		Max: 100, Window: time.Hour, Degrade: true,
+	}
+
+	_, err := quota.NewEnforcer(quota.Snapshot{Limits: []quota.Limit{limit}}, &fakeMeter{})
+	var runtimeError *run.Error
+	if !errors.As(err, &runtimeError) || runtimeError.Code != "undegradable_unit" {
+		t.Fatalf("err=%v want undegradable_unit", err)
+	}
+	if runtimeError.Kind != run.ErrorInvalid || runtimeError.Retry != run.RetryNever {
+		t.Errorf("kind=%v retry=%v", runtimeError.Kind, runtimeError.Retry)
+	}
+}
+
+// The one unit that may: refusing this would take the only degrading limit the
+// deployment publishes with it.
+func TestAToolCallLimitMayAskToDegrade(t *testing.T) {
+	limit := quota.Limit{
+		Name: "hourly-tools", Scope: tenant(), Unit: quota.UnitToolCalls,
+		Max: 100, Window: time.Hour, Degrade: true,
+	}
+
+	if _, err := quota.NewEnforcer(quota.Snapshot{Limits: []quota.Limit{limit}}, &fakeMeter{}); err != nil {
+		t.Fatalf("a tool-call limit was refused for degrading: %v", err)
+	}
+}
+
 func TestDuplicateQuotaNamesAreRefused(t *testing.T) {
 	limit := quota.Limit{Name: "a", Scope: tenant(), Unit: quota.UnitConcurrentRuns, Max: 1}
 

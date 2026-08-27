@@ -71,10 +71,14 @@ type Limit struct {
 	// Window is the period a consumption unit is measured over. Ignored for
 	// admission units, which are instantaneous counts.
 	Window time.Duration `json:"window,omitempty"`
-	// Degrade asks the Runtime to do less rather than refuse: drop the tool
-	// loop, take the cheaper model. It is declared per limit because the right
-	// answer differs — running without tools is useful, running without tokens
-	// is not.
+	// Degrade asks for a decision that allows rather than refuses when the cap
+	// is crossed. Only UnitToolCalls may ask, because dropping the tool loop is
+	// the only reduced form there is — validate refuses it elsewhere.
+	//
+	// What it does today is narrower than the name suggests: the Runtime emits
+	// runtime.quota.degraded and lets the effect through unchanged. Nothing
+	// drops the tool loop, so this limit does not currently bound anything. It
+	// is an observation signal, not a ceiling.
 	Degrade bool `json:"degrade,omitempty"`
 }
 
@@ -91,6 +95,15 @@ func (l Limit) validate() error {
 	default:
 		return run.NewError("unknown_quota_unit", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("quota %q counts %q", l.Name, l.Unit))
+	}
+	if l.Degrade && l.Unit != UnitToolCalls {
+		// Degrading means doing less of the one thing that can be dropped: the
+		// tool loop. There is no reduced form of an admission or a token cap,
+		// so a Degrade there would be accepted at publication and then ignored
+		// at the gateway — a published ceiling that stops nothing. Refusing at
+		// publication is the only moment anybody is still reading.
+		return run.NewError("undegradable_unit", run.ErrorInvalid, run.RetryNever,
+			fmt.Errorf("quota %q counts %q, which has no degraded form", l.Name, l.Unit))
 	}
 	if !l.Unit.Admission() && l.Window <= 0 {
 		// A consumption cap with no window is a lifetime cap that nothing ever
@@ -141,9 +154,11 @@ type Meter interface {
 
 // Decision is one enforcement answer.
 type Decision struct {
-	// Allowed is false only for a refusal. A degraded decision is allowed:
-	// something still runs, just less of it.
-	Allowed  bool
+	// Allowed is false only for a refusal. A degraded decision is allowed.
+	Allowed bool
+	// Degraded reports that a degrading limit was crossed. No caller reduces
+	// anything in response — the tool loop records the event and proceeds — so
+	// this is currently a signal that the cap was passed, not that less ran.
 	Degraded bool
 	// Limit is the cap that decided, empty when nothing was near the line.
 	Limit    Limit
