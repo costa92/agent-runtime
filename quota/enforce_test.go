@@ -329,3 +329,44 @@ func TestRefusalsAreDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// A want of zero skips the limit entirely, however far over the cap the scope
+// already is.
+//
+// This is `check`'s "asking for none of a unit is not a request against it"
+// rule, and on its own it is correct. It is pinned here because of what it
+// costs elsewhere: the Runtime reserves `Tokens: request.MaxTokens`, that value
+// comes from the published Definition, and no Definition in the host sets it —
+// so every model call asks for zero tokens and every token limit is skipped
+// before its usage is ever read.
+//
+// The consequence is that a token limit has TWO independent ways to do nothing:
+// nobody records usage (so observed is zero), and nobody asks for tokens (so
+// the limit is never reached). Fixing either alone changes nothing, which is
+// the trap this test exists to keep visible. See TD-056.
+func TestAskingForNoneOfAUnitSkipsItsLimit(t *testing.T) {
+	meter := &fakeMeter{usage: map[quota.Unit]int{quota.UnitTokens: 10_000_000}}
+	subject := enforcer(t, meter, quota.Limit{
+		Name: "hourly-tokens", Scope: tenant(), Unit: quota.UnitTokens,
+		Max: 1, Window: time.Hour,
+	})
+
+	// Ten million tokens spent against a cap of one, and this is allowed.
+	decision, err := subject.AdmitEffect(t.Context(), tenant(), run.Limits{Tokens: 0, LLMCalls: 1})
+	if err != nil {
+		t.Fatalf("admit effect: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("a zero-token request was judged against a token cap: %+v", decision)
+	}
+
+	// The same call asking for one token is refused, which is what makes the
+	// line above a statement about `want` and not about the meter.
+	decision, err = subject.AdmitEffect(t.Context(), tenant(), run.Limits{Tokens: 1, LLMCalls: 1})
+	if err != nil {
+		t.Fatalf("admit effect: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("want=1 should have been refused against Max=1 with usage spent: %+v", decision)
+	}
+}
