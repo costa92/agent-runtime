@@ -242,9 +242,8 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 
 	explanation, err := policy.Evaluate(request.Policies, facts, g.strategies...)
 	decision.Explanation = explanation
-	if err == nil && explanation.Decision == policy.DecisionDeny {
-		err = run.NewError("tool.denied_by_policy", run.ErrorDenied, run.RetryNever,
-			fmt.Errorf("tool %q denied", spec.Name))
+	if err == nil {
+		err = enforce(explanation.Decision, spec)
 	}
 	stage(StagePolicy, spec, err)
 	if err != nil {
@@ -511,4 +510,45 @@ func requiresIdempotencyKey(spec Spec, key string) error {
 	}
 	return run.NewError("tool.missing_idempotency_key", run.ErrorInvalid, run.RetryNever,
 		fmt.Errorf("write tool %q needs an idempotency key", spec.Name))
+}
+
+// enforce turns a policy decision into the gateway's action at the policy
+// stage, exhaustively.
+//
+// A switch rather than the two ifs that used to be here, because the two ifs
+// had a fall-through and the fall-through was silent consent. cap_budget and
+// require_reconciler both reach this point, match, get written into the audit
+// explanation — and then proceed, because nothing named them. A rule that
+// publishes, matches and is recorded reads as enforced to everyone except the
+// person who greps the gateway.
+//
+// So the two unenforced decisions are named here, saying what they actually do
+// rather than being absent. They are not converted to denials: cap_budget is
+// live in the published Policy document, and changing what a published rule
+// does is a publish, not a deploy. See TD-058 for the ordering that removes
+// them for good.
+//
+// The default branch fails closed, and TestEveryDecisionIsNamedInTheGateway
+// keeps it unreachable: a fourth decision added to policy.Decisions() without a
+// case here fails the test rather than quietly joining the allow side.
+func enforce(decision policy.Decision, spec Spec) error {
+	switch decision {
+	case policy.DecisionDeny:
+		return run.NewError("tool.denied_by_policy", run.ErrorDenied, run.RetryNever,
+			fmt.Errorf("tool %q denied", spec.Name))
+	case policy.DecisionAllow:
+		return nil
+	case policy.DecisionRequireApproval:
+		// Handled further down, after the quota and budget stages: parking a
+		// Run that would have been refused anyway would put a human in front of
+		// a question that has already been answered.
+		return nil
+	case policy.DecisionCapBudget, policy.DecisionRequireReconciler:
+		// No enforcement point. cap_budget would need a ceiling on Explanation
+		// to cap anything, and require_reconciler has no mechanism at all.
+		return nil
+	default:
+		return run.NewError("tool.unknown_policy_decision", run.ErrorDenied, run.RetryNever,
+			fmt.Errorf("decision %q has no enforcement point", decision))
+	}
 }

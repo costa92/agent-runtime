@@ -197,8 +197,3 @@ func (e Explanation) ShadowWouldTighten() (Match, bool) {
 	return strictest, found
 }
 
-// Executable reports whether the decision permits the call to proceed now.
-// require_approval is not executable: the Run parks and comes back.
-func (e Explanation) Executable() bool {
-	return e.Decision == DecisionAllow || e.Decision == DecisionCapBudget
-}
