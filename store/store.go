@@ -125,6 +125,18 @@ type ResourceReader interface {
 	ListActive(ctx context.Context, query ResourceQuery) ([]PublishedResource, error)
 }
 
+// ResourceDigestReader resolves a pinned digest back to the version that
+// carries it.
+//
+// Deliberately beside ResourceReader rather than inside it. A pin records the
+// bytes a Run was admitted under, not the number the version happened to be
+// filed as, so a Run that outlives the process which started it holds a digest
+// and nothing else — and looking that up by (name, version) would need the one
+// thing a pin has never carried.
+type ResourceDigestReader interface {
+	GetByDigest(ctx context.Context, kind resource.Kind, name, digest string) (PublishedResource, error)
+}
+
 // PublishIntent is what a publish authorization decision is made about. It
 // carries the Kind because publish rights are granted per Kind: Policy and
 // Quota must be grantable independently of Definition, since publishing either
