@@ -1,6 +1,7 @@
 package resource_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -51,6 +52,45 @@ func TestUnknownOrUnparseableAPIVersionIsInvalid(t *testing.T) {
 	}
 	if run.KindOf(resource.ValidateAPIVersion("Nonsense", "v1")) != run.ErrorInvalid {
 		t.Error("an unknown Kind was accepted")
+	}
+}
+
+// The parse node's job is "the payload is a JSON object", which is a narrower
+// claim than "it unmarshals into a map" — encoding/json takes a literal null
+// into any target without complaint. The cases are parameterised together
+// because the hole that existed here survived by being the one value that is
+// not a type mismatch, and picking cases one at a time is how it was missed.
+func TestParseNodeAcceptsOnlyJSONObjects(t *testing.T) {
+	for _, testCase := range []struct {
+		payload string
+		code    string // empty means the node must accept it
+	}{
+		{`{}`, ""},
+		{`{"a":1}`, ""},
+		{`null`, "null_payload"},
+		{`[1,2]`, "unparseable_payload"},
+		{`"x"`, "unparseable_payload"},
+		{`42`, "unparseable_payload"},
+		{`true`, "unparseable_payload"},
+	} {
+		err := resource.ParseNode.Admit(context.Background(), resource.AdmissionRequest{
+			Kind:       resource.KindPolicy,
+			Name:       "default",
+			APIVersion: "v1",
+			Payload:    json.RawMessage(testCase.payload),
+		})
+		if testCase.code == "" {
+			if err != nil {
+				t.Errorf("payload %s rejected: %v", testCase.payload, err)
+			}
+			continue
+		}
+		if run.CodeOf(err) != testCase.code {
+			t.Errorf("payload %s code=%q want=%q", testCase.payload, run.CodeOf(err), testCase.code)
+		}
+		if run.KindOf(err) != run.ErrorInvalid {
+			t.Errorf("payload %s kind=%s want=invalid", testCase.payload, run.KindOf(err))
+		}
 	}
 }
 

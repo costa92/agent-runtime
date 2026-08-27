@@ -104,6 +104,12 @@ func (f AdmissionFunc) Admit(ctx context.Context, request AdmissionRequest) erro
 // ParseNode is the first node of every chain: the payload must be a JSON
 // object. It is a node rather than an inline check so that the audit fact
 // records that parsing happened, and so the chain has no untracked prologue.
+//
+// "Unmarshals into a map" is not the same test as "is an object": encoding/json
+// accepts a literal null into any target by zeroing it, so null would parse
+// without error and leave a nil map behind. The node has to look at the result,
+// not only at the error, or the audit fact records a parse that did not
+// establish what it claims to.
 var ParseNode = AdmissionFunc{
 	NodeName: "parse",
 	Check: func(_ context.Context, request AdmissionRequest) error {
@@ -111,6 +117,10 @@ var ParseNode = AdmissionFunc{
 		if err := json.Unmarshal(request.Payload, &object); err != nil {
 			return run.NewError("unparseable_payload", run.ErrorInvalid, run.RetryNever,
 				fmt.Errorf("%s/%s: %w", request.Kind, request.Name, err))
+		}
+		if object == nil {
+			return run.NewError("null_payload", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("%s/%s: payload is JSON null, not an object", request.Kind, request.Name))
 		}
 		return nil
 	},
