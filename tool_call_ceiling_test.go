@@ -223,3 +223,164 @@ func TestTheCeilingCountsAcrossAPark(t *testing.T) {
 		t.Errorf("refused for the wrong reason: %v", resumedErr)
 	}
 }
+
+// Every succeeding tool call costs exactly one ToolCall from the Run budget,
+// whatever the tool is.
+//
+// The governance matrix leans on this: it calls Budget.ToolCalls the governed
+// per-Run tool ceiling, published with the Definition and adjustable without a
+// deploy. That is only true while the reservation is unconditional across
+// tools. A "free" tool exempted from it — the thing the tool loop's own comment
+// used to claim already existed — would put an unbounded hole in the ceiling.
+//
+// Succeeding is the operative word, and the limit of the claim: see
+// TestAFailedToolCallCostsTheBudgetNothing, which is why the matrix files the
+// per-loop request bound as still worth having rather than as redundant.
+func TestEverySucceedingToolCallCostsOneToolCall(t *testing.T) {
+	registry := tool.NewRegistry()
+	cheap := testkit.ToolSucceeding(`{"ok":true}`)
+	costly := testkit.ToolSucceeding(`{"ok":true}`)
+	if err := registry.Register(tool.Spec{
+		Name: "search_evidence", Description: "retrieve",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskLow, SideEffect: policy.SideEffectRead,
+	}, cheap); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "draw a book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, costly); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+
+	var errs []error
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		for i := range 5 {
+			name := "search_evidence"
+			if i%2 == 1 {
+				name = "render_picture_book"
+			}
+			_, err := request.Ports.Tool(ctx, name, json.RawMessage(`{}`))
+			errs = append(errs, err)
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools:          []definition.ToolRef{{Key: "search_evidence"}, {Key: "render_picture_book"}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		// The default rule set refuses high-risk writes, which would refuse
+		// this tool before anything is reserved — and then the test would be
+		// comparing one tool against nothing.
+		deps.Governance = fakeGovernance{policies: policy.Snapshot{
+			Policies: []policy.Policy{{
+				Name:  "allow-the-write",
+				Scope: policy.ScopeTenant,
+				Conditions: []policy.Condition{{
+					Fact: policy.FactToolSideEffect, Operator: policy.OpEquals,
+					Values: []string{string(policy.SideEffectWrite)},
+				}},
+				Decision: policy.DecisionAllow,
+			}},
+		}}
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+	}))
+
+	started, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+		Principal:  principal(),
+		Definition: run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Input:      json.RawMessage(`{"q":"x"}`),
+		Budget:     run.Limits{LLMCalls: 10, Tokens: 10_000, ToolCalls: 3},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	dispatched := cheap.Calls() + costly.Calls()
+	if dispatched != 3 {
+		t.Fatalf("dispatched %d calls against a budget of 3; "+
+			"some tool is not charging one ToolCall", dispatched)
+	}
+	// Both kinds ran, so the count above is not three of one cheap tool.
+	if cheap.Calls() == 0 || costly.Calls() == 0 {
+		t.Fatalf("only one kind of tool ran (cheap=%d costly=%d); "+
+			"the test no longer compares them", cheap.Calls(), costly.Calls())
+	}
+	for i, err := range errs[:3] {
+		if err != nil {
+			t.Errorf("call %d was refused inside the budget: %v", i, err)
+		}
+	}
+	if errs[3] == nil {
+		t.Fatal("the fourth call was allowed against a budget of 3")
+	}
+}
+
+// failingHandler fails without reporting usage, which is what a real handler
+// that never reached its backend does.
+type failingHandler struct{ calls int }
+
+func (h *failingHandler) Invoke(context.Context, tool.Invocation) (tool.Result, error) {
+	h.calls++
+	return tool.Result{}, run.NewError("upstream_down", run.ErrorRetryable, run.RetryBackoff)
+}
+
+// A failed tool call costs the Run budget nothing, so Budget.ToolCalls does not
+// bound a model that hammers a broken tool.
+//
+// This is the gap the compiled-in per-loop request bound covers, and the reason
+// the governance matrix files that bound as an implementation detail rather
+// than deleting it as redundant. The reservation is released when the effect
+// settles as not-applied with no usage, which is correct — a call that did
+// nothing should not spend the envelope — and it is exactly why "the budget is
+// the only tool ceiling you need" is false.
+func TestAFailedToolCallCostsTheBudgetNothing(t *testing.T) {
+	registry := tool.NewRegistry()
+	handler := &failingHandler{}
+	if err := registry.Register(tool.Spec{
+		Name: "search_evidence", Description: "search the web",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskLow, SideEffect: policy.SideEffectRead,
+	}, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		for range 3 {
+			_, _ = request.Ports.Tool(ctx, "search_evidence", json.RawMessage(`{}`))
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDefinition(searchingDefinition(nil)), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+	}))
+
+	started, err := h.runtime.Start(t.Context(), agentruntime.StartRequest{
+		Principal:  principal(),
+		Definition: run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Input:      json.RawMessage(`{"q":"x"}`),
+		Budget:     run.Limits{LLMCalls: 10, Tokens: 10_000, ToolCalls: 1},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	if handler.calls != 3 {
+		t.Fatalf("handler ran %d times against a budget of 1; if this is now 1, "+
+			"the budget bounds failures too and the per-loop request bound may be "+
+			"redundant — revisit the governance matrix row that assumes it is not",
+			handler.calls)
+	}
+}
