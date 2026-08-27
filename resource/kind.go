@@ -18,11 +18,14 @@ const (
 	KindPolicy       Kind = "Policy"
 	KindQuota        Kind = "Quota"
 	KindModelProfile Kind = "ModelProfile"
-	// KindToolBinding is storable but inert: publishing one changes nothing.
+	// KindToolBinding has no execution path: nothing loads a published one.
 	//
 	// The Gateway seam that would have made a bound tool invocable was removed
-	// once it turned out nothing had ever wired it — see Gateway.resolve. The
-	// Kind stays because removing a member of a closed set is a data question,
+	// once it turned out nothing had ever wired it — see Gateway.resolve. A
+	// host that has no reader for it is expected to refuse it in its admission
+	// chain, so that publishing fails loudly instead of storing a version no
+	// Run will ever consult. The Kind stays because removing a member of a
+	// closed set is a data question,
 	// not a code one: a deployment with stored ToolBinding rows would find them
 	// unreadable. Retire it by migrating those rows away first, then dropping
 	// the constant, its storage version and this comment together.
