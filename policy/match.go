@@ -138,14 +138,46 @@ func compareNumeric(operator Operator, actual []string, want string) bool {
 	return left < right
 }
 
-// Matches reports whether every condition holds. Conditions are conjunctive, so
-// a policy with none matches everything in its scope — which is how a
-// scope-wide rule is written.
+// Matches reports whether the call is in the policy's scope and every condition
+// holds. Conditions are conjunctive, so a policy with none matches everything in
+// its scope — which is how a scope-wide rule is written.
+//
+// The scope half of that sentence used to be a lie. ScopeName was validated at
+// publish, ordered by, and reported in explanations, but never compared against
+// anything: a rule written as scope=tool / scope_name=publish_article / deny
+// with no conditions read as "deny that one tool" and behaved as "deny every
+// tool call in the deployment". The failure direction was the dangerous one —
+// more refusal than the author asked for, not less.
+//
+// The seeded rule that uses ScopeName survived only because it repeats its
+// scope_name as a tool.name condition; that duplication was load-bearing and
+// nothing said so.
 func (p Policy) Matches(facts CallFacts) bool {
+	if !p.inScope(facts) {
+		return false
+	}
 	for _, condition := range p.Conditions {
 		if !condition.Matches(facts) {
 			return false
 		}
 	}
 	return true
+}
+
+// inScope compares ScopeName against the fact its scope names.
+//
+// An empty ScopeName means the whole scope, which is how every tenant-wide rule
+// is written. A scope whose fact this Runtime never populates cannot get here
+// with a ScopeName set — Validate refuses that at publish, rather than letting
+// it through to match nothing for a reason no operator could see.
+func (p Policy) inScope(facts CallFacts) bool {
+	if p.ScopeName == "" {
+		return true
+	}
+	fact, ok := scopeFact(p.Scope)
+	if !ok {
+		return false
+	}
+	values := facts.values(fact)
+	return len(values) == 1 && values[0] == p.ScopeName
 }

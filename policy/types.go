@@ -47,6 +47,32 @@ func (s Scope) Specificity() int {
 
 func (s Scope) Valid() bool { return s.Specificity() >= 0 }
 
+// scopeFact names the fact a scope's ScopeName is compared against.
+//
+// Only the scopes whose fact the Runtime actually populates are here. Tool,
+// principal and agent facts are filled on every governed call — the Gateway
+// fills the first two and the tool loop the third — while DefinitionName,
+// ModelName and MemoryNamespace are declared on CallFacts and never set by any
+// live path. A ScopeName on one of those could only ever match nothing, so
+// Validate refuses it instead: a rule that publishes cleanly and silently never
+// applies is worse than one that will not publish.
+//
+// Adding a scope here is therefore not a policy change but a claim that
+// something now fills its fact, and TestEveryScopeWithANameHasAFactSomethingFills
+// is what checks the claim.
+func scopeFact(s Scope) (Fact, bool) {
+	switch s {
+	case ScopeTenant:
+		return FactPrincipalTenant, true
+	case ScopeAgent:
+		return FactAgentName, true
+	case ScopeTool:
+		return FactToolName, true
+	default:
+		return "", false
+	}
+}
+
 // Fact is the closed set of things a condition may test.
 //
 // Closed, because the alternative is an expression language, and an expression
@@ -183,6 +209,13 @@ func (p Policy) Validate() error {
 	if !p.Decision.Valid() {
 		return run.NewError("unknown_decision", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("decision %q", p.Decision))
+	}
+	if p.ScopeName != "" {
+		if _, ok := scopeFact(p.Scope); !ok {
+			return run.NewError("unevaluatable_scope_name", run.ErrorInvalid, run.RetryNever,
+				fmt.Errorf("scope %q carries no fact this Runtime fills, so scope_name %q "+
+					"could only ever match nothing", p.Scope, p.ScopeName))
+		}
 	}
 	for _, condition := range p.Conditions {
 		if !condition.Fact.Valid() {
