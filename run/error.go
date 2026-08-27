@@ -52,6 +52,23 @@ const (
 	// which evaluate.go treats as a pass-through.
 	CodeBudgetExhausted = "budget_exhausted"
 
+	// CodeResourceNotFound is what a resource read returns when the version it
+	// was asked for is genuinely absent — as opposed to unreadable, which is a
+	// different answer with a different remedy.
+	//
+	// Promoted because governance branches on it to decide whether a Run's pin
+	// is unresolvable or the store merely did not answer. That distinction
+	// cannot be made from the kind: a store wraps an unclassified transport
+	// failure as ErrorInternal/RetryNever, so "the database is down" and "this
+	// digest never existed" arrive with identical kinds and identical retry
+	// hints. The code is the only thing that separates them, and a Run must not
+	// be judged unresolvable because a connection dropped.
+	//
+	// It is part of the ResourceDigestReader contract rather than one store's
+	// private vocabulary: an implementation that reports absence some other way
+	// is not interchangeable with this one.
+	CodeResourceNotFound = "resource.not_found"
+
 	// ErrorInvalid: the definition, schema or command is not legal here. The
 	// same call will never succeed; something has to change first.
 	ErrorInvalid ErrorKind = "invalid"

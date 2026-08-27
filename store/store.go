@@ -133,6 +133,12 @@ type ResourceReader interface {
 // filed as, so a Run that outlives the process which started it holds a digest
 // and nothing else — and looking that up by (name, version) would need the one
 // thing a pin has never carried.
+// Absence must be reported as run.CodeResourceNotFound. Callers resolving a
+// pin have to tell "this digest was never published" from "the store did not
+// answer", and the kind cannot carry that: an unclassified transport failure
+// is wrapped as ErrorInternal/RetryNever, which is indistinguishable from a
+// permanent absence. Getting it wrong in one direction strands a Run forever;
+// in the other, a dropped connection condemns every Run in flight.
 type ResourceDigestReader interface {
 	GetByDigest(ctx context.Context, kind resource.Kind, name, digest string) (PublishedResource, error)
 }
