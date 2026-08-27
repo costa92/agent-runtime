@@ -220,7 +220,10 @@ func (c SealCommand) Validate() error {
 // Store, so that a crash in the window that follows leaves evidence rather than
 // silence.
 type InvocationBegin struct {
-	ID             run.ID
+	ID run.ID
+	// Tool is the tool key, empty for model and memory calls. Durable because a
+	// per-Run call ceiling has to survive the claim that observed the calls.
+	Tool           string
 	IdempotencyKey string
 	Reservation    BudgetReservation
 }

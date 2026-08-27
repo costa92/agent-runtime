@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
@@ -120,7 +121,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("model")
-	if err := s.begin(ctx, invocationID, "", reserve, false, p.node.ID); err != nil {
+	if err := s.begin(ctx, invocationID, "", "", reserve, false, p.node.ID); err != nil {
 		return llm.Response{}, err
 	}
 
@@ -185,6 +186,10 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 		return nil, run.NewError("no_tool_gateway", run.ErrorInternal, run.RetryNever)
 	}
 
+	if err := s.withinCallCeiling(name); err != nil {
+		return nil, err
+	}
+
 	invocationID := s.runtime.deps.IDs.NewID("tool")
 
 	// A denied hold reports the refusal on every request for that tool, rather
@@ -245,7 +250,7 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	if err := s.admitEffect(ctx, prepared.Reserve, name); err != nil {
 		return nil, err
 	}
-	if err := s.begin(ctx, invocationID, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted, p.node.ID); err != nil {
+	if err := s.begin(ctx, invocationID, name, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted, p.node.ID); err != nil {
 		return nil, err
 	}
 
@@ -327,7 +332,7 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	if err := s.admitEffect(ctx, prepared.Reserve, ""); err != nil {
 		return err
 	}
-	if err := s.begin(ctx, invocationID, idempotencyKey, prepared.Reserve, false, p.node.ID); err != nil {
+	if err := s.begin(ctx, invocationID, "", idempotencyKey, prepared.Reserve, false, p.node.ID); err != nil {
 		return err
 	}
 
@@ -431,6 +436,49 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 	return nil
 }
 
+// withinCallCeiling refuses a tool the Definition has already been allowed to
+// call as often as it declared.
+//
+// Counted from the Run's own invocation ledger rather than from anything the
+// session holds. A session is per claim: a Run that parks for approval, waits
+// on a resolution, or is recovered after a crash gets a fresh one, so a counter
+// living in memory would silently reset and the ceiling would bound a claim
+// rather than a Run. The ledger is append-only and reloaded whole on every
+// claim, which is what makes the count survive.
+//
+// Denied and permanent, like an approval that was refused: an agent that can
+// answer from what it already retrieved should do that, rather than treating
+// the refusal as something to retry.
+func (s *session) withinCallCeiling(name string) error {
+	var ceiling *int
+	for _, declared := range s.declared.Tools {
+		if declared.Key == name {
+			ceiling = declared.MaxCalls
+			break
+		}
+	}
+	if ceiling == nil {
+		return nil
+	}
+
+	used := 0
+	for _, invocation := range s.snapshot.Invocations {
+		if invocation.Tool == name {
+			used++
+		}
+	}
+	// Every recorded call counts, including the ones that failed or were parked
+	// unknown. A ceiling that only counted successes would make a broken
+	// backend an unlimited retry loop, which is the shape of the incident this
+	// bounds in the first place.
+	if used < *ceiling {
+		return nil
+	}
+	return run.NewError("tool_call_ceiling_exhausted", run.ErrorDenied, run.RetryNever,
+		fmt.Errorf("definition %s allows %d call(s) to %q per run; %d already recorded",
+			s.snapshot.Definition.ID, *ceiling, name, used))
+}
+
 // begin reserves and commits the invocation-begin fact before the effect.
 //
 // consumesGrant clears the approval hold in this same commit. A grant
@@ -442,14 +490,15 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 // because this is the last durable write before it — anything later leaves a
 // window where the effect has happened and the grant is still standing.
 func (s *session) begin(
-	ctx context.Context, id run.ID, idempotencyKey string, reserve run.Limits, consumesGrant bool, node string,
+	ctx context.Context, id run.ID, toolName, idempotencyKey string,
+	reserve run.Limits, consumesGrant bool, node string,
 ) error {
 	if err := s.detachedErr(); err != nil {
 		return err
 	}
 	command := run.Command{
 		Kind: run.CommandInvokeTool, Reserve: reserve,
-		InvocationID: id, IdempotencyKey: idempotencyKey,
+		InvocationID: id, Tool: toolName, IdempotencyKey: idempotencyKey,
 	}
 	transition, err := run.Reduce(s.snapshot, command)
 	if err != nil {
@@ -465,6 +514,7 @@ func (s *session) begin(
 		Invocation: store.InvocationBegin{
 			ID:             id,
 			IdempotencyKey: idempotencyKey,
+			Tool:           toolName,
 			Reservation:    store.BudgetReservation{ID: id, Amount: reserve},
 		},
 		Commit: store.CommitContext{Transition: transition, Events: transition.Events},

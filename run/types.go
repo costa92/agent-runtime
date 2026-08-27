@@ -272,6 +272,9 @@ type Command struct {
 	Outcome Outcome
 	// IdempotencyKey is recorded with a new Invocation.
 	IdempotencyKey string
+	// Tool is the tool key recorded with a new Invocation, empty for model and
+	// memory calls.
+	Tool string
 	// Checkpoint replaces the Run's checkpoint on resume. Used by the
 	// approval resolver to mark a refused hold as denied before the Run
 	// continues; Reduce is the only writer of state, so the marker travels

@@ -54,6 +54,13 @@ type ToolRef struct {
 	// Required means the Definition cannot run without it, so publish fails
 	// when it is unregistered rather than the Run failing halfway through.
 	Required bool `json:"required,omitempty"`
+	// MaxCalls bounds how many times one Run may call this tool. A pointer
+	// rather than a plain int because zero has to mean zero: an author who set
+	// a ceiling of none is disallowing the tool, and a plain int could not tell
+	// that apart from the far commoner "declared no ceiling". Nil is no
+	// ceiling; the Runtime counts against the Run's durable invocation ledger,
+	// so the count survives approval parks and crash recovery.
+	MaxCalls *int `json:"max_calls,omitempty"`
 }
 
 // MemoryRef names a memory provider by stable key, with the scope and budget

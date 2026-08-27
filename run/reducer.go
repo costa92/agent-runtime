@@ -133,6 +133,7 @@ func reserveEffect(snapshot Snapshot, command Command, kind EffectKind) (Transit
 	if command.InvocationID != "" {
 		next.Invocations = putInvocation(snapshot.Invocations, Invocation{
 			ID:             command.InvocationID,
+			Tool:           command.Tool,
 			IdempotencyKey: command.IdempotencyKey,
 			Outcome:        OutcomeInFlight,
 			Reserved:       command.Reserve,

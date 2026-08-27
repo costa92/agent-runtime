@@ -460,15 +460,18 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 
 		began, err := run.Reduce(claimed.Snapshot, run.Command{
 			Kind: run.CommandInvokeTool, Reserve: run.Limits{ToolCalls: 1},
-			InvocationID: "inv-1",
+			InvocationID: "inv-1", Tool: "search_evidence",
 		})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
 		snapshot, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
-			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: InvocationBegin{ID: "inv-1", Reservation: BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
-			Commit:     CommitContext{Transition: began, Events: began.Events},
+			Fence: fenceFor(claimed, claimed.Snapshot.Revision),
+			Invocation: InvocationBegin{
+				ID: "inv-1", Tool: "search_evidence",
+				Reservation: BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}},
+			},
+			Commit: CommitContext{Transition: began, Events: began.Events},
 		})
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -491,6 +494,15 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		}
 		if got := readBack.Invocations["inv-1"].Outcome; got != run.OutcomeUnknown {
 			t.Fatalf("outcome after the commit = %s, want unknown; the park was not durable", got)
+		}
+		// Read back from a Run that has since parked, which is the case an
+		// in-memory counter cannot serve: the session that observed this call is
+		// gone. A per-Run tool ceiling counts from here, so a Store that drops
+		// the tool key turns the ceiling back into a per-claim one without
+		// anything failing.
+		if got := readBack.Invocations["inv-1"].Tool; got != "search_evidence" {
+			t.Fatalf("tool after the commit = %q, want search_evidence; "+
+				"a per-Run call ceiling cannot count what the ledger forgot", got)
 		}
 
 		// The parked invocation must now be resolvable, which is the whole

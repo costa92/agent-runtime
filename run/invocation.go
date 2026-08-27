@@ -42,6 +42,12 @@ const OutcomeStillUnknown Outcome = "still_unknown"
 // silence.
 type Invocation struct {
 	ID ID `json:"id"`
+	// Tool is the tool key this Invocation called, empty for model and memory
+	// calls. It is what makes the ledger answerable to "how many times has this
+	// Run called X" — a question no in-memory counter can answer honestly,
+	// because a session is per claim and a Run that parks for approval or is
+	// recovered after a crash gets a fresh one.
+	Tool string `json:"tool,omitempty"`
 	// IdempotencyKey lets a tool that declares idempotency be replayed safely.
 	// Its absence is what forces an unknown result into reconciliation.
 	IdempotencyKey string  `json:"idempotency_key,omitempty"`
