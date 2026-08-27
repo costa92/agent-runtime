@@ -33,20 +33,30 @@ const (
 	// handler that reaches this ignored its context, and this event is the only
 	// thing that says so.
 	EventNodeAbandoned = "runtime.node.abandoned"
+	// EventRunUnrunnable is emitted when a Run is ended because its session
+	// could not be assembled and never will be — a pin resolving to nothing, a
+	// graph that moved, a stored payload disagreeing with its digest.
+	//
+	// It exists because the state change alone does not say why. A Run that
+	// ends this way never reached a node, so there is no node failure to read
+	// and no tool to blame; without this event an operator sees a Run that
+	// failed having done nothing, which is indistinguishable from a bug in the
+	// Runtime. AttrReason carries the assembly error's code.
+	EventRunUnrunnable = "runtime.run.unrunnable"
 )
 
 // The declared attribute keys. Named constants rather than string literals at
 // the call site so that a typo is a compile error instead of an attribute the
 // registry silently rejects at run time.
 const (
-	AttrAgent          = "agent"
-	AttrNode           = "node"
-	AttrPlan           = "plan"
-	AttrProfile        = "profile"
-	AttrCapability     = "capability"
-	AttrPolicyName     = "policy_name"
-	AttrPolicyDigest   = "policy_digest"
-	AttrDecision       = "decision"
+	AttrAgent        = "agent"
+	AttrNode         = "node"
+	AttrPlan         = "plan"
+	AttrProfile      = "profile"
+	AttrCapability   = "capability"
+	AttrPolicyName   = "policy_name"
+	AttrPolicyDigest = "policy_digest"
+	AttrDecision     = "decision"
 	// AttrReason names which refusal it was, for the refusals that happen
 	// before a policy Explanation exists. AttrDecision carries the kind, which
 	// is what a caller switches on; several distinct refusals share one kind,
@@ -124,6 +134,10 @@ func BuiltinEventSpecs() []EventSpec {
 		{
 			Name: EventInvocationReconciled, APIVersion: "v1", Stability: StableEvent,
 			Fields: []string{AttrInvocationID, AttrIdempotencyKey, AttrOutcome},
+		},
+		{
+			Name: EventRunUnrunnable, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrReason},
 		},
 		{
 			Name: EventNodeAbandoned, APIVersion: "v1", Stability: StableEvent,

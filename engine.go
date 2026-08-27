@@ -162,6 +162,7 @@ func (r *runtime) Advance(ctx context.Context, id run.ID) (AdvanceResult, error)
 func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) (AdvanceResult, error) {
 	current, err := r.newSession(ctx, claimed)
 	if err != nil {
+		r.endUnrunnable(ctx, claimed, err)
 		return AdvanceResult{}, err
 	}
 
@@ -204,6 +205,61 @@ func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) 
 			return AdvanceResult{Run: current.snapshot}, err
 		}
 	}
+}
+
+// endUnrunnable fails a Run whose session could not be assembled, when the
+// reason is one no later attempt can change.
+//
+// Without this, such a Run is immortal. advanceClaimed used to return the
+// assembly error and leave the state untouched, so the Run went back on the
+// queue, was claimed again, failed identically, and repeated on the lease
+// period forever. It was never terminal, so retention never reaped it — that
+// cleanup only deletes terminal trees — and the caller waiting on it never got
+// an answer, only silence. Six such Runs were found in the local database, one
+// of them having already spent six model calls before it stuck.
+//
+// Only run.RunIsUnrunnable qualifies, and its doc explains why the obvious
+// predicate (RetryNever) would have been a fleet-killer rather than a fix.
+//
+// A queued Run is started first, because the reducer refuses CommandFail from
+// queued and that refusal is a real invariant — a queued Run has produced
+// nothing. Two commits and two events (run.started, run.failed) is the honest
+// rendering of what happened. Cancelling instead would have been one commit and
+// a lie: cancelled means a human stopped it, which is exactly the distinction
+// the manual cleanup of those six Runs relied on.
+//
+// Best-effort by construction. Every failure here is swallowed, because the
+// caller is about to return the assembly error and that error is the diagnosis.
+// Losing the fence to another worker or to a takeover is the expected way this
+// gives up: whoever won will reach the same conclusion.
+func (r *runtime) endUnrunnable(ctx context.Context, claimed store.ClaimedRun, cause error) {
+	if !run.RunIsUnrunnable(cause) {
+		return
+	}
+	// A bare session: commitNode and start read only the Store, the lease token
+	// and the snapshot, all of which the claim already carries. Going through
+	// them rather than calling the Store directly is what keeps the terminal
+	// projection fact and the lease sealing attached to this path — commitNode
+	// documents itself as the one place a Run may settle.
+	current := &session{runtime: r, lease: claimed.Lease, snapshot: claimed.Snapshot}
+	if current.snapshot.State == run.StateQueued {
+		if err := current.start(ctx); err != nil {
+			return
+		}
+	}
+	transition, err := run.Reduce(current.snapshot, run.Command{Kind: run.CommandFail})
+	if err != nil {
+		return
+	}
+	if _, err := current.commitNode(ctx, transition, "", "", run.Limits{}, nil); err != nil {
+		return
+	}
+	r.record(observe.Decision{
+		Name: observe.EventRunUnrunnable, RunID: claimed.Snapshot.ID,
+		Attributes: []observe.Attribute{
+			observe.Attr(observe.AttrReason, run.CodeOf(cause)),
+		},
+	})
 }
 
 // newSession assembles everything the Run pinned. Every load is by the pinned

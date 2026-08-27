@@ -157,6 +157,38 @@ func KindOf(err error) ErrorKind {
 	return ""
 }
 
+// RunIsUnrunnable reports whether an error means this Run can never advance,
+// as opposed to this attempt not having worked.
+//
+// It is deliberately not RetryOf(err) == RetryNever, and the difference is the
+// whole point. RetryNever is what an unclassified failure gets — RetryOf
+// returns it for anything that is not a *Error, and a store wraps an
+// unrecognised transport fault as ErrorInternal/RetryNever. That default is
+// right for a caller asking "may I repeat this?", because an unknown error is
+// no evidence that repeating is safe. It is catastrophic for a caller asking
+// "may I destroy this?", because there the same default means "kill anything I
+// do not recognise": one database outage would end every Run in flight.
+//
+// So the test is a declared ErrorInvalid, which is the kind reserved for "the
+// definition, schema or command is not legal here" — a fact about the Run
+// itself. ErrorInternal is excluded even when permanent, because internal means
+// the deployment is at fault, and a deployment can be fixed; ending the Runs
+// would throw away work that a redeploy would have let finish. ErrorConflict is
+// excluded because it promises reloading resolves it. Anything that is not a
+// *Error at all is excluded, which is exactly the raw driver error a blip
+// produces.
+//
+// The cost of each direction is asymmetric and that is why the line sits here:
+// judging a doomed Run runnable leaves it stuck, which is visible and fixable;
+// judging a runnable Run doomed destroys it.
+func RunIsUnrunnable(err error) bool {
+	var target *Error
+	if !errors.As(err, &target) {
+		return false
+	}
+	return target.Kind == ErrorInvalid && target.Retry == RetryNever
+}
+
 // CodeOf reports the code of an error, or "" when it is not a Runtime error.
 //
 // Mostly for observability: codes are read by operators and the closed set
