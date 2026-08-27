@@ -190,6 +190,47 @@ func (d Decision) Precedence() int {
 
 func (d Decision) Valid() bool { return d.Precedence() >= 0 }
 
+// RetiredDecisions are the decisions that can still be read but can no longer
+// be written.
+//
+// Both were governance in name only. The gateway acts on deny and
+// require_approval; these two fell through to the allow path, so a rule using
+// one matched, was written into the audit explanation, and let the call
+// proceed — which reads as an enforced control to everyone who does not grep
+// the gateway. cap_budget cannot be implemented as written either: Explanation
+// carries no ceiling, so there is nothing for it to cap.
+//
+// They stay in Decisions() rather than being deleted, and that is the whole
+// point of the split. Deleting them would make Valid() false, and Valid() is
+// consulted by PolicyDocument.Snapshot(), which is the shared choke point for
+// reading a published document and admitting a new one. A document that fails
+// Snapshot() fails whole — so deleting these two would make every historical
+// version that used one permanently unreadable, taking its legitimate deny
+// rules down with it. Retiring costs one predicate; deleting costs history.
+//
+// Unknown values are unaffected and still fail closed: Decisions() remains a
+// closed list, an unrecognised string is still refused by Validate, and in
+// evaluation Precedence() returns -1, which sorts ahead of deny and lands on
+// enforce's denying default.
+func RetiredDecisions() []Decision {
+	return []Decision{DecisionCapBudget, DecisionRequireReconciler}
+}
+
+// Retired reports whether a decision may still be read but not published.
+func (d Decision) Retired() bool {
+	for _, retired := range RetiredDecisions() {
+		if d == retired {
+			return true
+		}
+	}
+	return false
+}
+
+// Publishable reports whether a new rule may use this decision. The host's
+// admission chain is what enforces it; this package owns the vocabulary, not
+// the publish gate.
+func (d Decision) Publishable() bool { return d.Valid() && !d.Retired() }
+
 // Condition is one side-effect-free comparison against one declared fact.
 type Condition struct {
 	Fact     Fact     `json:"fact"`
