@@ -121,6 +121,15 @@ type Request struct {
 	Model    ModelRef
 	Messages []Message
 	Tools    []ToolDef
+	// NoTools says "offer the model nothing", as distinct from Tools being
+	// empty because the caller had no opinion and wants the node's grant.
+	//
+	// The two are indistinguishable by length, and the Runtime fills the node's
+	// tools whenever Tools is empty — so without this there is no way to take
+	// tools away. A caller that has spent its tool budget needs exactly that:
+	// leaving the definitions in front of a model that may no longer call them
+	// teaches it to keep asking, and every ask costs a round.
+	NoTools bool
 	// Temperature and MaxTokens come from the published Definition.
 	Temperature float64
 	MaxTokens   int

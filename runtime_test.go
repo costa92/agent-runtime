@@ -422,6 +422,72 @@ func TestAModelCallSeesTheDefinitionTools(t *testing.T) {
 	}
 }
 
+// NoTools takes the grant away; an empty Tools slice does not.
+//
+// The two are indistinguishable by length, and the Runtime fills the node's
+// grant whenever Tools is empty — so without this distinction an agent that has
+// spent its tool budget has no way to stop the definitions being re-offered. A
+// model that can see a tool asks for it, and every ask is another round.
+func TestNoToolsWithholdsTheDefinitionToolsFromTheModel(t *testing.T) {
+	registry := tool.NewRegistry()
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "draw a book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, testkit.ToolSucceeding(`{"ok":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+
+	var offered [][]string
+	models := capturingModels{onRequest: func(request llm.Request) {
+		names := make([]string, 0, len(request.Tools))
+		for _, def := range request.Tools {
+			names = append(names, def.Name)
+		}
+		offered = append(offered, names)
+	}}
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		// No opinion, then a withdrawal. Both in one Run, so the test cannot
+		// pass by the grant being empty to begin with.
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "draw"}},
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		if _, err := request.Ports.Model(ctx, llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "answer"}}, NoTools: true,
+		}); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Prompt:         "be brief",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools:          []definition.ToolRef{{Key: "render_picture_book", Required: true}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		deps.Models = models
+	}))
+	started := start(t, h)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	if len(offered) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(offered))
+	}
+	if len(offered[0]) != 1 || offered[0][0] != "render_picture_book" {
+		t.Fatalf("first call saw %v, want the node grant", offered[0])
+	}
+	if len(offered[1]) != 0 {
+		t.Fatalf("NoTools call still saw %v; the withdrawal was ignored", offered[1])
+	}
+}
+
 type capturingModels struct {
 	onRequest func(llm.Request)
 }

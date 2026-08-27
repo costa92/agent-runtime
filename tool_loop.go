@@ -96,7 +96,9 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	if err != nil {
 		return llm.Response{}, err
 	}
-	if len(request.Tools) == 0 {
+	// NoTools is the caller saying "offer none"; empty is the caller saying
+	// nothing, which means the node's grant.
+	if !request.NoTools && len(request.Tools) == 0 {
 		request.Tools = nodeToolDefs(p.node.Tools, s.runtime.deps.Tools)
 	}
 	if len(request.Tools) > 0 && !capabilities.Tools {
