@@ -47,7 +47,6 @@ func registries() workflow.Registries {
 		Agents:   fakeKeys{keys: []string{"answer", "draft", "review", "publish"}, frozen: true},
 		Tools:    fakeTools{names: []string{"search"}, frozen: true},
 		Memories: fakeKeys{keys: []string{"notes"}, frozen: true},
-		Models:   fakeKeys{keys: []string{"fast"}, frozen: true},
 	}
 }
 
@@ -177,9 +176,6 @@ func TestUnknownKeysAreRefusedAtPublish(t *testing.T) {
 			definition.Definition{Memories: []definition.MemoryRef{
 				{Key: "nobody", Namespace: "n", MaxRecords: 1, MaxTokens: 1},
 			}}, "unknown_memory_key",
-		},
-		"model profile": {
-			definition.Definition{Model: definition.ModelPolicy{Profile: "nobody"}}, "unknown_model_profile",
 		},
 	}
 	for name, testCase := range cases {

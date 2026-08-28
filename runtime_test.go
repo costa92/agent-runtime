@@ -227,7 +227,6 @@ func newHarness(t *testing.T, implementation agent.Agent, options ...harnessOpti
 		Agents:   agents,
 		Tools:    frozenTools{},
 		Memories: frozenKeys{keys: []string{"notes"}},
-		Models:   frozenKeys{keys: []string{"fast"}},
 	}}.Compile(source.declared)
 	if err != nil {
 		t.Fatalf("compile: %v", err)

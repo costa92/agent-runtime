@@ -33,11 +33,30 @@ type Registries struct {
 	Agents   KeySet
 	Tools    ToolSet
 	Memories KeySet
-	// Models holds published ModelProfile keys. The host supplies it: profiles
-	// are published data, not registered code, so there is no Runtime registry
-	// to read them from.
-	Models KeySet
 }
+
+// There was a Models KeySet here, and a check that Definition.Model.Profile
+// appeared in it. Both are gone, because the check could not fail.
+//
+// Profiles are published data rather than registered code, so the host had to
+// supply the set — and no host could supply a real one: nothing publishes the
+// ModelProfile Kind, and this deployment's admission chain now refuses to. Each
+// host therefore handed the compiler a set built from the very key it was about
+// to verify (the API host appended the row's own profile before compiling it),
+// or a placeholder no Definition used. A check whose input is derived from its
+// own subject is not a check.
+//
+// What actually validates a model reference is the host asking whether the
+// provider and model exist and are enabled — in this repository
+// AgentDefinitionService.modelConfigIssues, which runs before compilation and
+// uses the same predicate the model port resolves with. That is strictly
+// stronger, so nothing lost coverage here.
+//
+// Restoring it needs a real published set first: implement the ModelProfile
+// Kind, then hand the compiler the keys that Kind publishes. Do not reintroduce
+// the field before that source exists — the frozen-registry contract above is a
+// real invariant, and a set assembled from a mutable table would break it to
+// buy back a check that still could not fail.
 
 // Compiler is the only final compiler in the Runtime.
 //
@@ -105,7 +124,6 @@ func (c Compiler) checkFrozen() error {
 		{"agents", c.Registries.Agents},
 		{"tools", c.Registries.Tools},
 		{"memories", c.Registries.Memories},
-		{"models", c.Registries.Models},
 	}
 	for _, entry := range sets {
 		name, set := entry.name, entry.set
@@ -177,13 +195,6 @@ func (c Compiler) checkReferences(declared definition.Definition) error {
 			return run.NewError("memory_exceeds_budget", run.ErrorInvalid, run.RetryNever,
 				fmt.Errorf("memory %q reads up to %d tokens against a %d-token budget",
 					declaredMemory.Key, declaredMemory.MaxTokens, declared.Budget.Tokens))
-		}
-	}
-
-	if profile := declared.Model.Profile; profile != "" {
-		if !keySet(c.Registries.Models.Keys())[profile] {
-			return run.NewError("unknown_model_profile", run.ErrorInvalid, run.RetryNever,
-				fmt.Errorf("model profile %q is not published", profile))
 		}
 	}
 
