@@ -96,6 +96,32 @@ func ResourceConformance(t *testing.T, newHarness func(t *testing.T) ResourceHar
 				}
 			})
 
+			// A caller holding a version number rarely holds its apiVersion:
+			// no read endpoint reports the apiVersion of a non-head version.
+			// Requiring it would make those versions unreadable, so the field
+			// is an optional assertion — absent reads whatever is stored, and
+			// the stored value comes back either way.
+			t.Run("APIVersionIsOptionalOnRead", func(t *testing.T) {
+				harness := newHarness(t)
+				ctx := context.Background()
+
+				published, err := harness.Publisher.Publish(ctx, samplePublish(kind, "unpinned", 0))
+				if err != nil {
+					t.Fatalf("publish: %v", err)
+				}
+
+				got, err := harness.Reader.GetPublished(ctx, resource.Ref{
+					Kind: kind, Name: "unpinned", Version: published.Ref.Version,
+				})
+				if err != nil {
+					t.Fatalf("get without apiVersion: %v", err)
+				}
+				if got.Ref.APIVersion != published.Ref.APIVersion {
+					t.Errorf("apiVersion = %q, want the stored %q",
+						got.Ref.APIVersion, published.Ref.APIVersion)
+				}
+			})
+
 			t.Run("DigestIsStableAndContentAddressed", func(t *testing.T) {
 				harness := newHarness(t)
 				ctx := context.Background()

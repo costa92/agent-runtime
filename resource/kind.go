@@ -61,21 +61,37 @@ type Ref struct {
 	Digest     string `json:"digest"`
 }
 
-// Validate checks the reference is well formed. Version zero is rejected:
-// "unversioned" is not a state a published resource can be in, and accepting
-// it would let a Run pin something that can still change underneath it.
-func (r Ref) Validate() error {
+// ValidateForRead checks the three fields that actually locate a version.
+//
+// APIVersion is not among them: the stored row is found by (kind, name,
+// version) alone, and its apiVersion is read out of that row rather than
+// matched against. A reader that has a version number but not its apiVersion —
+// which is every reader, since no endpoint reports the apiVersion of a
+// non-head version — must still be able to ask for it.
+//
+// Version zero is rejected: "unversioned" is not a state a published resource
+// can be in, and accepting it would let a Run pin something that can still
+// change underneath it.
+func (r Ref) ValidateForRead() error {
 	if !r.Kind.Valid() {
 		return run.NewError("unknown_kind", run.ErrorInvalid, run.RetryNever)
 	}
 	if r.Name == "" {
 		return run.NewError("missing_name", run.ErrorInvalid, run.RetryNever)
 	}
-	if err := ValidateAPIVersion(r.Kind, r.APIVersion); err != nil {
-		return err
-	}
 	if r.Version == 0 {
 		return run.NewError("mutable_version", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
+}
+
+// Validate additionally requires the apiVersion, which is what makes a Ref a
+// complete identity rather than a lookup key. Refs handed back by the store
+// carry it; refs assembled from a URL do not, and those go through
+// ValidateForRead.
+func (r Ref) Validate() error {
+	if err := r.ValidateForRead(); err != nil {
+		return err
+	}
+	return ValidateAPIVersion(r.Kind, r.APIVersion)
 }

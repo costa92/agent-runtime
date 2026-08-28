@@ -96,6 +96,13 @@ func (r *MemoryResources) GetPublished(_ context.Context, ref resource.Ref) (sto
 			// for.
 			return store.PublishedResource{}, run.NewError("pending_version", run.ErrorInvalid, run.RetryNever)
 		}
+		// The same assertion the Postgres store makes: an apiVersion supplied
+		// by the caller must match the stored one. A double that skipped it
+		// would let a conformance suite pass against memory and fail against
+		// the database, which is the one thing a double must not do.
+		if ref.APIVersion != "" && ref.APIVersion != version.Ref.APIVersion {
+			return store.PublishedResource{}, run.NewError("resource.api_version_mismatch", run.ErrorConflict, run.RetryNever)
+		}
 		return version, nil
 	}
 	return store.PublishedResource{}, run.NewError("unknown_resource", run.ErrorInvalid, run.RetryNever)
