@@ -27,14 +27,16 @@ func (g brokenGovernance) PolicySnapshot(context.Context, string, string) (polic
 	if g.broken.Load() {
 		return policy.Snapshot{}, g.err
 	}
-	return policy.Snapshot{}, nil
+	// Digested while healthy: an undigested set would fail at creation for a
+	// different reason than the one under test.
+	return policy.Snapshot{Digest: "policy-fake"}, nil
 }
 
 func (g brokenGovernance) QuotaSnapshot(context.Context, string, string) (quota.Snapshot, error) {
 	if g.broken.Load() {
 		return quota.Snapshot{}, g.err
 	}
-	return quota.Snapshot{}, nil
+	return quota.Snapshot{Digest: "quota-fake"}, nil
 }
 
 // A Run whose session can never be assembled is ended, not left on the queue.

@@ -50,6 +50,14 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if snapshot.Graph.Digest == "" || snapshot.Definition.Version == 0 {
 			t.Fatal("a Run was created without a pinned definition and graph")
 		}
+		// The rule set the Run agreed to, which is not the same thing as the
+		// definition and graph above. A Store that dropped these would leave
+		// the Run executing under whatever policy and quota happen to be
+		// current when it next advances — silently, because an absent digest
+		// reads as "give me the current set" rather than as an error.
+		if snapshot.Pins != sampleCreate("run-1").Pins {
+			t.Fatalf("pins = %+v, want the ones the Run was created with", snapshot.Pins)
+		}
 
 		if _, err := harness.Store.Create(ctx, sampleCreate("run-1")); run.KindOf(err) != run.ErrorConflict {
 			t.Fatalf("duplicate create error=%s want=conflict", run.KindOf(err))
@@ -76,6 +84,21 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		halfLinked.RootID = "root"
 		if _, err := harness.Store.Create(ctx, halfLinked); run.KindOf(err) != run.ErrorInvalid {
 			t.Errorf("a child with a root but no parent was accepted: %v", err)
+		}
+
+		// An absent rule-set digest is not "no rules" — the governance lookup
+		// reads it as "the current set", so accepting one here creates a Run
+		// that will execute under rules nobody pinned, and report nothing.
+		unpinnedPolicy := sampleCreate("run-unpinned-policy")
+		unpinnedPolicy.Pins.PolicyDigest = ""
+		if _, err := harness.Store.Create(ctx, unpinnedPolicy); run.KindOf(err) != run.ErrorInvalid {
+			t.Errorf("a Run with no pinned policy set was accepted: %v", err)
+		}
+
+		unpinnedQuota := sampleCreate("run-unpinned-quota")
+		unpinnedQuota.Pins.QuotaDigest = ""
+		if _, err := harness.Store.Create(ctx, unpinnedQuota); run.KindOf(err) != run.ErrorInvalid {
+			t.Errorf("a Run with no pinned quota set was accepted: %v", err)
 		}
 	})
 
@@ -1032,6 +1055,15 @@ func sampleCreate(id run.ID) CreateCommand {
 		Graph:      run.ExecutionGraphRef{ID: "writer", Version: 1, Protocol: 1, Digest: "sha-1"},
 		Principal:  samplePrincipal(),
 		Budget:     run.Budget{Envelope: run.Limits{LLMCalls: 100, Tokens: 100000, ToolCalls: 100}},
+		// Every sample Run carries Pins, for the same reason it carries an
+		// input: a Store that drops them should fail the whole suite, not one
+		// case. Until this was here the suite was blind to the field — four
+		// adapters carried it through correctly and nothing said they had to.
+		Pins: run.Pins{
+			PolicyDigest: "policy-sha-1",
+			QuotaDigest:  "quota-sha-1",
+			Trace:        run.TraceContext{TraceID: "trace-1", SpanID: "span-1", Sampled: true},
+		},
 		// Every sample Run carries an input, so a Store that drops it fails
 		// the whole suite rather than only the one case that looks for it.
 		Input: json.RawMessage(`{"task":"sample"}`),

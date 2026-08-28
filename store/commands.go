@@ -125,6 +125,19 @@ func (c CreateCommand) Validate() error {
 		// different shape than it started.
 		return run.NewError("missing_graph_digest", run.ErrorInvalid, run.RetryNever)
 	}
+	if c.Pins.PolicyDigest == "" || c.Pins.QuotaDigest == "" {
+		// The same argument as the graph digest above, for the rule set rather
+		// than the shape. An absent digest is not "no rules": the governance
+		// lookup reads it as "give me whatever is current", so a Run created
+		// without one executes under rules it never agreed to, and does it
+		// without an error anywhere. Refusing at creation is the only place the
+		// mistake is still attributable to the caller that made it.
+		//
+		// The Runtime's own Start always sets both. This guards the module
+		// boundary: CreateCommand is exported and agent-runtime is embeddable,
+		// so the next creation path is not necessarily one in this repository.
+		return run.NewError("unpinned_rule_set", run.ErrorInvalid, run.RetryNever)
+	}
 	if c.Principal.Zero() {
 		return run.NewError("missing_principal", run.ErrorInvalid, run.RetryNever)
 	}

@@ -83,11 +83,25 @@ type fakeGovernance struct {
 	quotas   quota.Snapshot
 }
 
+// Both snapshots come back digested even when a case did not set one.
+//
+// A real governance source cannot produce a set without a digest — the digest
+// is what a Run pins, and the whole point of pinning is that the set it agreed
+// to can be named later. A double that returned "" made every Run these tests
+// start an unpinned one, which CreateCommand.Validate now refuses. Filling it
+// here rather than at ~20 construction sites keeps the cases about what they
+// were about; a case that cares about a specific digest still sets it.
 func (g fakeGovernance) PolicySnapshot(context.Context, string, string) (policy.Snapshot, error) {
+	if g.policies.Digest == "" {
+		g.policies.Digest = "policy-fake"
+	}
 	return g.policies, nil
 }
 
 func (g fakeGovernance) QuotaSnapshot(context.Context, string, string) (quota.Snapshot, error) {
+	if g.quotas.Digest == "" {
+		g.quotas.Digest = "quota-fake"
+	}
 	return g.quotas, nil
 }
 
