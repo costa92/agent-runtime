@@ -430,7 +430,7 @@ func (g *Gateway) capResult(spec Spec, output json.RawMessage) (json.RawMessage,
 	if limit > 0 && len(output) > limit {
 		// Truncating JSON would produce something that parses as nothing.
 		// Refusing names the tool that overran, which truncation would not.
-		return nil, run.NewError("tool.result_too_large", run.ErrorInvalid, run.RetryNever,
+		return nil, run.NewError(run.CodeToolResultTooLarge, run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("tool %q returned %d bytes, limit %d", spec.Name, len(output), limit))
 	}
 	return output, nil

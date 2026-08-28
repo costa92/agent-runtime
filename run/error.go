@@ -52,6 +52,21 @@ const (
 	// which evaluate.go treats as a pass-through.
 	CodeBudgetExhausted = "budget_exhausted"
 
+	// CodeToolResultTooLarge is returned when a tool ran, its effect is
+	// applied, and only its result was too large to carry back.
+	//
+	// Promoted because it is the one ErrorInvalid a caller must not read as "it
+	// did not happen". The kind is right — the identical call will overflow
+	// again, so it must not be retried — but the invocation is settled as
+	// OutcomeApplied, and a loop that renders every ErrorInvalid as a plain
+	// failure tells the model a write it performed did not occur. The model then
+	// varies its arguments and writes a second time, which is the one outcome the
+	// size limit exists to be cheaper than.
+	//
+	// Anything acting on this must say "done, result undeliverable" and must not
+	// offer a retry.
+	CodeToolResultTooLarge = "tool.result_too_large"
+
 	// CodeResourceNotFound is what a resource read returns when the version it
 	// was asked for is genuinely absent — as opposed to unreadable, which is a
 	// different answer with a different remedy.
