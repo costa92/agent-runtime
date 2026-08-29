@@ -196,4 +196,3 @@ func (e Explanation) ShadowWouldTighten() (Match, bool) {
 	}
 	return strictest, found
 }
-

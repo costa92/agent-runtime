@@ -20,7 +20,8 @@ import (
 // Definition was published with did nothing.
 func TestTheDefinitionsModelPolicyReachesTheProvider(t *testing.T) {
 	var seen llm.Request
-	h := newHarness(t,
+	h := newHarness(
+		t,
 		scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
 			// A bare request, the way the shared step builds one.
 			if _, err := request.Ports.Model(ctx, llm.Request{}); err != nil {
@@ -62,7 +63,8 @@ func TestTheDefinitionsModelPolicyReachesTheProvider(t *testing.T) {
 // call reserved zero tokens, so the token half of the budget refused nothing
 // and only the call count was holding.
 func TestAModelCallReservesTheDefinitionsTokenCeiling(t *testing.T) {
-	h := newHarness(t,
+	h := newHarness(
+		t,
 		scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
 			if _, err := request.Ports.Model(ctx, llm.Request{}); err != nil {
 				return agent.Response{}, err
@@ -99,7 +101,8 @@ func TestAModelCallReservesTheDefinitionsTokenCeiling(t *testing.T) {
 // for one particular call must not have it replaced by the default.
 func TestAnAgentsOwnModelSettingsSurviveTheDefinitionsDefaults(t *testing.T) {
 	var seen llm.Request
-	h := newHarness(t,
+	h := newHarness(
+		t,
 		scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
 			if _, err := request.Ports.Model(ctx, llm.Request{
 				Temperature: 0.9, MaxTokens: 64,

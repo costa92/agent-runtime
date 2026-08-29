@@ -315,7 +315,8 @@ func start(t *testing.T, h *harness) run.Snapshot {
 
 func TestStartRejectsInvalidDefinitionInputBeforeStoreCreate(t *testing.T) {
 	var tracked *createCountingStore
-	h := newHarness(t, answering("done"),
+	h := newHarness(
+		t, answering("done"),
 		withDefinition(definition.Definition{
 			Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
 			Mode:           definition.ModeSpecialist,
@@ -344,7 +345,8 @@ func TestStartRejectsInvalidDefinitionInputBeforeStoreCreate(t *testing.T) {
 }
 
 func TestStartPersistsNormalizedDefinitionInput(t *testing.T) {
-	h := newHarness(t, answering("done"),
+	h := newHarness(
+		t, answering("done"),
 		withDefinition(definition.Definition{
 			Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
 			Mode:           definition.ModeSpecialist,
