@@ -140,6 +140,11 @@ type Definition struct {
 
 	Graph GraphSpec `json:"graph,omitzero"`
 
+	// RouteSpecialists, when true, tells the host to classify each turn against
+	// the caller's catalog and start a specialist Pin when the intent is clear.
+	// Absent (false) is a specialist session: the published version runs as-is.
+	RouteSpecialists bool `json:"route_specialists,omitempty"`
+
 	// RunLabels is the closed vocabulary of labels a caller may set on a Run of
 	// this Definition. Empty means a Run of it carries no labels at all.
 	//
