@@ -113,6 +113,11 @@ type UserTurnPayload struct {
 	// host's per-user data scope — the projection context has no user claims.
 	UserID int64  `json:"user_id,omitempty"`
 	Text   string `json:"text"`
+	// ConsumePending is set by the host when this turn answers a parked
+	// confirmation. The host's Store adapter CAS-clears that park inside the
+	// same Create transaction; the projector does not write it. A crash then
+	// cannot leave a Run without the park, or a park without a Run.
+	ConsumePending bool `json:"consume_pending,omitempty"`
 }
 
 // AssistantMessagePayload is one agent output.
