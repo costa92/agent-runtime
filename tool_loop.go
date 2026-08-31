@@ -132,6 +132,14 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 		// visible decision instead of a confusing provider error.
 		request.Tools = nil
 	}
+	if carriesImages(request) && !capabilities.Vision {
+		// Refused rather than degraded, unlike tools above. Dropping the tools
+		// leaves a question the model can still answer; dropping the images
+		// leaves "describe this picture" with no picture, and the model answers
+		// confidently about nothing. The Run has not been charged at this
+		// point — the reservation happens below.
+		return llm.Response{}, llm.ErrCapabilityUnsupported
+	}
 	s.runtime.record(observe.Decision{
 		Name: observe.EventModelSelected, RunID: s.snapshot.ID,
 		Attributes: []observe.Attribute{
@@ -156,7 +164,26 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	// sees every provider, and a per-client measurement would miss the ones
 	// that never got one.
 	callStarted := s.runtime.deps.Clock.Now()
-	response, callErr := client.Complete(ctx, request)
+	var response llm.Response
+	var callErr error
+	if capabilities.Streaming && streamable(request) {
+		// Forwarded verbatim, in the provider's own chunking. A Runtime that
+		// re-cut the stream would be inventing a cadence, and the only honest
+		// cadence is the one the engine produced.
+		//
+		// The sink never fails: an observer is a bystander, and letting one
+		// abort a call the Run has already paid for would make observation a
+		// failure mode. A host that stops caring stops reading, it does not
+		// stop the Run.
+		response, callErr = client.Stream(ctx, request, func(chunk llm.Chunk) error {
+			if chunk.Content != "" {
+				s.runtime.recorder.Chunk(s.snapshot.ID, chunk.Content)
+			}
+			return nil
+		})
+	} else {
+		response, callErr = client.Complete(ctx, request)
+	}
 	callElapsed := s.runtime.deps.Clock.Now().Sub(callStarted)
 
 	// Usage is settled from every attempt, including the failed ones. A
@@ -646,4 +673,41 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 	}
 	s.snapshot = committed
 	return nil
+}
+
+// streamable says whether this request can go down the streaming path without
+// losing anything.
+//
+// Tools and tool history used to disqualify a request, because the host client
+// folded a streamed conversation into a single system/user pair and every
+// tool_call_id in it was lost. That made the rule "has no turn structure" — and
+// it silently excluded the endpoint streaming exists for: an Agent that offers
+// a tool offers it on every round, so article review streamed nothing at all
+// and the reader watched a blank panel until the whole answer landed. The host
+// now streams a structured round through the tool-calling wire instead, so the
+// structure is no longer a reason to withhold chunks.
+//
+// Images remain one. They are a structured content part with nowhere to go in a
+// folded string, and unlike tools the consequence is not a lost id but a model
+// asked to describe a picture it was never sent. The vision path is also the
+// one place a different endpoint is dialled, so streaming it would buy a reader
+// nothing and risk the one call that cannot degrade.
+func streamable(request llm.Request) bool {
+	for _, message := range request.Messages {
+		if len(message.Images) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// carriesImages reports whether this request asks the model to look at
+// something.
+func carriesImages(request llm.Request) bool {
+	for _, message := range request.Messages {
+		if len(message.Images) > 0 {
+			return true
+		}
+	}
+	return false
 }

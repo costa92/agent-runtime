@@ -127,13 +127,18 @@ func (s *sequentialIDs) NewID(prefix string) run.ID {
 	return run.ID(fmt.Sprintf("%s-%d", prefix, s.n.Add(1)))
 }
 
-type recordingObserver struct{ decisions []observe.Decision }
+type recordingObserver struct {
+	decisions []observe.Decision
+	chunks    []string
+}
 
 func (o *recordingObserver) Decision(decision observe.Decision) {
 	o.decisions = append(o.decisions, decision)
 }
 
-func (o *recordingObserver) Chunk(run.ID, string) {}
+func (o *recordingObserver) Chunk(_ run.ID, text string) {
+	o.chunks = append(o.chunks, text)
+}
 
 func (o *recordingObserver) named(name string) []observe.Decision {
 	var found []observe.Decision
@@ -633,6 +638,14 @@ type scriptedModels struct {
 	response llm.Response
 	err      error
 	onCall   func()
+	// chunks is what Stream delivers before returning. Empty means the client
+	// produces its whole answer at once, which is what a non-streaming engine
+	// looks like from here.
+	chunks []string
+	// vision declares whether the scripted engine can see. Off by default: the
+	// engines these tests describe are text engines, and a default of "yes"
+	// would let an image request through every one of them.
+	vision bool
 	// onRequest sees the request as the provider receives it — after the
 	// governed port has filled whatever the Agent left unset. It is the only
 	// vantage point from which "the Definition's model policy reached the
@@ -647,7 +660,7 @@ func (m scriptedModels) Resolve(context.Context, llm.ModelRef) (llm.Client, erro
 type scriptedClient struct{ models scriptedModels }
 
 func (c scriptedClient) Capabilities(context.Context, llm.ModelRef) (llm.Capabilities, error) {
-	return llm.Capabilities{Tools: true, Streaming: true}, nil
+	return llm.Capabilities{Tools: true, Streaming: true, Vision: c.models.vision}, nil
 }
 
 func (c scriptedClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
@@ -667,7 +680,14 @@ func (c scriptedClient) Complete(_ context.Context, request llm.Request) (llm.Re
 	return response, nil
 }
 
-func (c scriptedClient) Stream(ctx context.Context, request llm.Request, _ func(llm.Chunk) error) (llm.Response, error) {
+func (c scriptedClient) Stream(
+	ctx context.Context, request llm.Request, onChunk func(llm.Chunk) error,
+) (llm.Response, error) {
+	for _, chunk := range c.models.chunks {
+		if err := onChunk(llm.Chunk{Content: chunk}); err != nil {
+			return llm.Response{}, err
+		}
+	}
 	return c.Complete(ctx, request)
 }
 

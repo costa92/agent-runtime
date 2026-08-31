@@ -31,6 +31,11 @@ type ModelRef struct {
 type Capabilities struct {
 	Tools     bool `json:"tools"`
 	Streaming bool `json:"streaming"`
+	// Vision reports whether the engine accepts Message.Images. Declared per
+	// engine like the rest: an engine that cannot see answers an image request
+	// with an ordinary-looking error about the payload, which is not something
+	// a caller can act on.
+	Vision bool `json:"vision"`
 	// MaxInputTokens is the engine's context ceiling, zero when unknown.
 	MaxInputTokens int `json:"max_input_tokens,omitempty"`
 }
@@ -57,6 +62,25 @@ type Message struct {
 	// pair of RoleTool's ToolCallID: a result without its call in the request
 	// is rejected by providers, so the call must survive into the next round.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// Images are what the model should look at, alongside Content.
+	//
+	// A separate field rather than markup inside Content: the wire format for
+	// an image is a structured content part, and a client that had to find
+	// image references by parsing prose would be guessing. An engine that
+	// cannot see them says so through Capabilities.Vision, and a request
+	// carrying images never takes the streaming path — that path folds the
+	// conversation into two strings and images do not survive it.
+	Images []ImageRef `json:"images,omitempty"`
+}
+
+// ImageRef points at one image the model should look at.
+//
+// A URL, not bytes: the host already stores the image somewhere the provider
+// can fetch, and carrying megabytes through the Runtime's budget accounting
+// would mean charging a Run for transport it does not control. A data: URI is
+// a URL, so a host that must inline small images still can.
+type ImageRef struct {
+	URL string `json:"url"`
 }
 
 // ToolDef is a tool as the model sees it: a name, a description and a JSON
