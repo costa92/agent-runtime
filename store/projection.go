@@ -118,6 +118,10 @@ type UserTurnPayload struct {
 	// same Create transaction; the projector does not write it. A crash then
 	// cannot leave a Run without the park, or a park without a Run.
 	ConsumePending bool `json:"consume_pending,omitempty"`
+	// RouteDisclosure is the host's account of how this turn was routed. The
+	// Runtime does not read it — it travels with the turn because the turn is
+	// what it describes, and because the host has no other write on this row.
+	RouteDisclosure json.RawMessage `json:"route_disclosure,omitempty"`
 }
 
 // AssistantMessagePayload is one agent output.
