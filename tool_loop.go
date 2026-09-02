@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
 	"github.com/kart-io/wechat-account/agent-runtime/llm"
@@ -624,7 +623,7 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 		return err
 	}
 	if outcome != run.OutcomeApplied {
-		slog.Warn("session: invocation settled non-applied",
+		s.runtime.deps.Logger.Warn(ctx, "session: invocation settled non-applied",
 			"run_id", string(s.snapshot.ID), "invocation", string(id), "outcome", string(outcome))
 	}
 	reserved := s.snapshot.Invocations[id].Reserved

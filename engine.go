@@ -3,7 +3,6 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -477,7 +476,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	result := workflow.NodeResult{NodeID: node.ID, Output: response.Output}
 	if executeErr != nil {
 		result.Failed = true
-		slog.Error("agent node failed",
+		s.runtime.deps.Logger.Error(ctx, "agent node failed",
 			"run_id", string(s.snapshot.ID),
 			"node_id", node.ID,
 			"agent", node.Implementation,

@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
+	"github.com/kart-io/wechat-account/agent-runtime/observe"
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
@@ -89,6 +89,7 @@ type Gateway struct {
 	strategies []policy.Strategy
 	observers  []Observer
 	recorder   Recorder
+	logger     observe.Logger
 
 	// defaultMaxResultBytes caps a result that declares no cap of its own.
 	defaultMaxResultBytes int
@@ -108,6 +109,15 @@ type Gateway struct {
 type Option func(*Gateway)
 
 func WithQuota(checker QuotaChecker) Option { return func(g *Gateway) { g.quota = checker } }
+
+// WithLogger routes the gateway's diagnostics through the host's logger.
+func WithLogger(logger observe.Logger) Option {
+	return func(g *Gateway) {
+		if logger != nil {
+			g.logger = logger
+		}
+	}
+}
 func WithSchema(processor definition.SchemaProcessor) Option {
 	return func(g *Gateway) { g.schema = processor }
 }
@@ -160,6 +170,7 @@ func NewGateway(registry *Registry, authorizer Authorizer, options ...Option) *G
 		defaultMaxResultBytes: 64 * 1024,
 		defaultToolTimeout:    DefaultToolCallTimeout,
 		toolTimeoutCeiling:    DefaultToolCallTimeoutCeiling,
+		logger:                observe.StdLogger{},
 	}
 	for _, option := range options {
 		option(gateway)
@@ -363,7 +374,7 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 			// Never retried, whatever the handler suggests: the effect may have
 			// happened and nothing here can tell.
 			mutation.Outcome = run.OutcomeUnknown
-			slog.Error("gateway: handler failed with unknown outcome",
+			g.logger.Error(ctx, "gateway: handler failed with unknown outcome",
 				"tool", prepared.Spec.Name, "kind", string(run.KindOf(err)), "err", err)
 		case !prepared.Spec.Idempotent && prepared.Spec.SideEffect == policy.SideEffectWrite && !prepared.Spec.FailSafe:
 			// An undeclared-idempotency write that failed is indistinguishable
@@ -372,11 +383,11 @@ func (g *Gateway) Execute(ctx context.Context, committed CommittedInvocation) (R
 			// nothing behind, so the handler's own Kind decides the outcome.
 			mutation.Outcome = run.OutcomeUnknown
 			err = run.NewError("tool.unknown_outcome", run.ErrorUnknown, run.RetryReconcile, err)
-			slog.Error("gateway: non-idempotent write failed, parking for resolution",
+			g.logger.Error(ctx, "gateway: non-idempotent write failed, parking for resolution",
 				"tool", prepared.Spec.Name, "err", err)
 		default:
 			mutation.Outcome = run.OutcomeNotApplied
-			slog.Warn("gateway: tool call failed (not applied)",
+			g.logger.Warn(ctx, "gateway: tool call failed (not applied)",
 				"tool", prepared.Spec.Name, "kind", string(run.KindOf(err)), "err", err)
 		}
 		finish(mutation.Outcome, nil, err)

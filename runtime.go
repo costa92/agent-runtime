@@ -62,6 +62,10 @@ type Dependencies struct {
 	Events   *observe.EventSpecRegistry
 	Tracer   observe.Tracer
 	Observer observe.Observer
+	// Logger is where the Runtime writes diagnostics. Optional: the default
+	// writes through log/slog. A host supplies its own so a Runtime line
+	// carries the same trace id as the host's lines around it.
+	Logger observe.Logger
 
 	// LeaseFor is how long a claim holds. The renew loop refreshes well inside
 	// it; the value only has to outlast a single effect's start.
@@ -229,6 +233,9 @@ func New(deps Dependencies) (Runtime, error) {
 	}
 	if deps.Tracer == nil {
 		deps.Tracer = observe.NopTracer{}
+	}
+	if deps.Logger == nil {
+		deps.Logger = observe.StdLogger{}
 	}
 
 	return &runtime{
