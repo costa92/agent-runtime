@@ -154,6 +154,11 @@ type Request struct {
 	// leaving the definitions in front of a model that may no longer call them
 	// teaches it to keep asking, and every ask costs a round.
 	NoTools bool
+	// NoReasoning asks a hybrid reasoning model to answer without a thinking
+	// pass. For a call whose answer is a few tokens of JSON the thinking is
+	// all of the latency and most of the cost; a host whose dialect has no
+	// such switch ignores it.
+	NoReasoning bool
 	// Temperature and MaxTokens come from the published Definition.
 	Temperature float64
 	MaxTokens   int
