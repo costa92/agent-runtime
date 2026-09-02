@@ -451,3 +451,78 @@ func TestALimitWithNoTenantIsRefusedAtPublication(t *testing.T) {
 		t.Fatalf("code = %q, want unscoped_quota (%v)", run.CodeOf(err), err)
 	}
 }
+
+// PerPrincipal is the third reading: one published row, one allowance each.
+//
+// The distinction that matters is against TestATenantCapIsMeasuredAcrossTheTenant
+// above — same tenant scope on the row, opposite measurement — because the two
+// differ by exactly the number of principals, and getting it wrong silently
+// either removes the tenant's ceiling or charges one user for everybody.
+func TestAPerPrincipalCapIsMeasuredForTheCallerNotTheTenant(t *testing.T) {
+	alice := quota.Scope{Tenant: "acme", Principal: "alice"}
+	meter := &fakeMeter{perScope: map[quota.Scope]map[quota.Unit]int{
+		// Alice has room; the tenant as a whole is far past this number.
+		alice:    {quota.UnitTokens: 10},
+		tenant(): {quota.UnitTokens: 9_000},
+	}}
+	subject := enforcer(t, meter, quota.Limit{
+		Name: "user-tokens", Scope: tenant(), PerPrincipal: true,
+		Unit: quota.UnitTokens, Max: 100, Window: time.Hour,
+	})
+
+	decision, err := subject.AdmitEffect(t.Context(), alice, run.Limits{Tokens: 1})
+	if err != nil {
+		t.Fatalf("admit effect: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("alice was refused on the tenant's spend rather than her own: %+v", decision)
+	}
+	if len(meter.scopes) != 1 || meter.scopes[0] != alice {
+		t.Fatalf("measured %v, want the caller's scope %v", meter.scopes, alice)
+	}
+}
+
+// And it still refuses: the allowance is per caller, not absent.
+func TestAPerPrincipalCapRefusesTheCallerWhoSpentIt(t *testing.T) {
+	alice := quota.Scope{Tenant: "acme", Principal: "alice"}
+	meter := &fakeMeter{perScope: map[quota.Scope]map[quota.Unit]int{
+		alice: {quota.UnitTokens: 100},
+	}}
+	subject := enforcer(t, meter, quota.Limit{
+		Name: "user-tokens", Scope: tenant(), PerPrincipal: true,
+		Unit: quota.UnitTokens, Max: 100, Window: time.Hour,
+	})
+
+	decision, err := subject.AdmitEffect(t.Context(), alice, run.Limits{Tokens: 1})
+	if err != nil {
+		t.Fatalf("admit effect: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("alice was admitted after spending her whole allowance: %+v", decision)
+	}
+}
+
+// A row that already names one principal cannot also be per-principal: the two
+// readings differ and publication is the last moment anybody is reading.
+func TestAPerPrincipalCapMayNotAlsoNameAPrincipal(t *testing.T) {
+	invalid := quota.Snapshot{Limits: []quota.Limit{{
+		Name:  "confused",
+		Scope: quota.Scope{Tenant: "acme", Principal: "alice"}, PerPrincipal: true,
+		Unit: quota.UnitTokens, Max: 100, Window: time.Hour,
+	}}}
+	if err := invalid.Validate(); run.CodeOf(err) != "overscoped_quota" {
+		t.Fatalf("Validate() = %v, want overscoped_quota", err)
+	}
+}
+
+// Admission units are counted live off the Run table, not summed per principal.
+// Publishing one would measure the tenant while claiming to measure the caller.
+func TestAnAdmissionUnitCannotBePerPrincipal(t *testing.T) {
+	invalid := quota.Snapshot{Limits: []quota.Limit{{
+		Name: "per-user-runs", Scope: tenant(), PerPrincipal: true,
+		Unit: quota.UnitConcurrentRuns, Max: 4,
+	}}}
+	if err := invalid.Validate(); run.CodeOf(err) != "undividable_unit" {
+		t.Fatalf("Validate() = %v, want undividable_unit", err)
+	}
+}

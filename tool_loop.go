@@ -150,7 +150,21 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	})
 
 	reserve := run.Limits{LLMCalls: 1, Tokens: request.MaxTokens}
-	if err := s.admitEffect(ctx, reserve, ""); err != nil {
+	// The quota asks for one token, not for the reservation. The two are
+	// different questions and were the same expression until this line split
+	// them: request.MaxTokens is what this call may return, and no published
+	// Definition sets it, so the quota was asking for zero tokens — and
+	// Enforcer.check skips any unit the caller wants none of. Every token
+	// limit was therefore unreachable however full the ledger was (TD-056).
+	//
+	// One, rather than an estimate of the call's cost. That cost is unknowable
+	// before the model answers, and an estimate is wrong in both directions:
+	// too high refuses calls that would have fit, too low is the overshoot the
+	// cap was for — with an authoritative-looking number in the logs either
+	// way. Asking for 1 means "is this window already over"; the real spend is
+	// charged when the invocation settles. The worst case is overshooting by
+	// one call, once per window. This is the same trade LearningCeiling makes.
+	if err := s.admitEffect(ctx, quotaWant(reserve), reserve, ""); err != nil {
 		return llm.Response{}, err
 	}
 
@@ -300,7 +314,7 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 		})
 	}
 
-	if err := s.admitEffect(ctx, prepared.Reserve, name); err != nil {
+	if err := s.admitEffect(ctx, prepared.Reserve, prepared.Reserve, name); err != nil {
 		return nil, err
 	}
 	if err := s.begin(ctx, invocationID, name, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted, p.node.ID); err != nil {
@@ -382,7 +396,7 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	if err != nil {
 		return err
 	}
-	if err := s.admitEffect(ctx, prepared.Reserve, ""); err != nil {
+	if err := s.admitEffect(ctx, prepared.Reserve, prepared.Reserve, ""); err != nil {
 		return err
 	}
 	if err := s.begin(ctx, invocationID, "", idempotencyKey, prepared.Reserve, false, p.node.ID); err != nil {
@@ -478,12 +492,31 @@ func exhaustedUnit(budget run.Budget, want run.Limits) string {
 	return ""
 }
 
+// quotaWant is what a model effect asks the quota for.
+//
+// Separate from the budget reservation because the budget is this Run's own
+// envelope, where reserving more than a call can spend is the point, while the
+// quota is a window that only needs to be asked whether it is already full.
+func quotaWant(reserve run.Limits) run.Limits {
+	want := reserve
+	if want.Tokens < 1 {
+		want.Tokens = 1
+	}
+	return want
+}
+
 // admitEffect applies the windowed quota at the gateway, then the budget.
 //
 // Both, in that order. Quota is the tenant's ceiling and budget is this Run's;
 // a Run can be well inside its own envelope and still be the one that exhausts
 // the tenant, and only the first check catches that.
-func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName string) error {
+//
+// They are asked for separately declared amounts. A model call reserves what it
+// may return against its own envelope but asks the window only whether it is
+// already full (see quotaWant); passing one number to both would either inflate
+// the Run's reservation by the quota's probe or hand the quota an estimate it
+// has no use for.
+func (s *session) admitEffect(ctx context.Context, want, reserve run.Limits, toolName string) error {
 	decision, err := s.quotas.AdmitEffect(ctx, s.scope, want)
 	if err != nil {
 		return err
@@ -502,11 +535,11 @@ func (s *session) admitEffect(ctx context.Context, want run.Limits, toolName str
 		})
 	}
 
-	if !s.snapshot.Budget.Affords(want) {
+	if !s.snapshot.Budget.Affords(reserve) {
 		s.runtime.record(observe.Decision{
 			Name: observe.EventBudgetRefused, RunID: s.snapshot.ID,
 			Attributes: []observe.Attribute{
-				observe.Attr(observe.AttrUnit, exhaustedUnit(s.snapshot.Budget, want)),
+				observe.Attr(observe.AttrUnit, exhaustedUnit(s.snapshot.Budget, reserve)),
 				observe.Attr(observe.AttrTool, toolName),
 			},
 		})

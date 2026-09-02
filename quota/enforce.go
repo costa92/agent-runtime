@@ -91,6 +91,33 @@ type Limit struct {
 	// drops the tool loop, so this limit does not currently bound anything. It
 	// is an observation signal, not a ceiling.
 	Degrade bool `json:"degrade,omitempty"`
+	// PerPrincipal turns one published row into one allowance per caller: the
+	// cap covers every principal in the tenant, and each one is measured on its
+	// own spend.
+	//
+	// It exists because "each user gets N tokens an hour" is otherwise
+	// inexpressible. A limit is measured across its own scope, so a per-user
+	// cap would need one published row per user — a set that grows with
+	// signups and that nobody can publish ahead of time.
+	//
+	// This is not the old caller-scope reading returning. That one applied to
+	// every limit silently, so a row an operator wrote as a tenant total was
+	// enforced as a per-principal allowance and the tenant had no ceiling at
+	// all. Here the two readings are different rows: a tenant total is still
+	// the default and still measured across the tenant, and asking for the
+	// other one is a visible field on the published document.
+	PerPrincipal bool `json:"per_principal,omitempty"`
+}
+
+// observedScope is the set this limit's usage is summed over for one caller.
+//
+// The limit's own scope, except for PerPrincipal, which narrows to the caller's
+// principal inside the limit's tenant.
+func (l Limit) observedScope(caller Scope) Scope {
+	if !l.PerPrincipal {
+		return l.Scope
+	}
+	return Scope{Tenant: l.Scope.Tenant, Principal: caller.Principal}
 }
 
 func (l Limit) validate() error {
@@ -124,6 +151,24 @@ func (l Limit) validate() error {
 		// publication is the only moment anybody is still reading.
 		return run.NewError("undegradable_unit", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("quota %q counts %q, which has no degraded form", l.Name, l.Unit))
+	}
+	if l.PerPrincipal && l.Scope.Principal != "" {
+		// A row that already names one principal is that principal's
+		// allowance. Asking for per-principal on top of it would be either a
+		// no-op or a claim that this row also covers everybody else, and the
+		// two readings differ. Refusing at publication keeps the ambiguity out
+		// of the enforcement path.
+		return run.NewError("overscoped_quota", run.ErrorInvalid, run.RetryNever,
+			fmt.Errorf("quota %q is per-principal and also names principal %q",
+				l.Name, l.Scope.Principal))
+	}
+	if l.PerPrincipal && l.Unit.Admission() {
+		// Admission units are counted live off the Run table for a scope, not
+		// summed from the ledger. Per-principal admission would be a different
+		// query nothing implements, and publishing it would silently measure
+		// the tenant instead.
+		return run.NewError("undividable_unit", run.ErrorInvalid, run.RetryNever,
+			fmt.Errorf("quota %q counts %q, which is not measured per principal", l.Name, l.Unit))
 	}
 	if !l.Unit.Admission() && l.Window <= 0 {
 		// A consumption cap with no window is a lifetime cap that nothing ever
@@ -254,8 +299,10 @@ func (e *Enforcer) check(ctx context.Context, scope Scope, wantFor func(Unit) in
 		// The limit's scope, not the caller's. A cap declared for a tenant is a
 		// cap on that tenant's total; measuring it at the caller's narrower
 		// scope hands the whole allowance to every principal separately, which
-		// is not a smaller version of the rule but a different one.
-		observed, err := e.meter.Observe(ctx, limit.Scope, limit.Unit, limit.Window)
+		// is not a smaller version of the rule but a different one. A limit
+		// that wants the narrower reading says so with PerPrincipal, and
+		// observedScope is where the two part.
+		observed, err := e.meter.Observe(ctx, limit.observedScope(scope), limit.Unit, limit.Window)
 		if err != nil {
 			// A meter that cannot answer fails closed. Treating an unreachable
 			// meter as "no usage" removes every cap at exactly the moment the
