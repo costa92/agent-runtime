@@ -118,6 +118,7 @@ func WithLogger(logger observe.Logger) Option {
 		}
 	}
 }
+
 func WithSchema(processor definition.SchemaProcessor) Option {
 	return func(g *Gateway) { g.schema = processor }
 }
