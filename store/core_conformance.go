@@ -1070,13 +1070,6 @@ func sampleCreate(id run.ID) CreateCommand {
 	}
 }
 
-func childCreate(id, root run.ID) CreateCommand {
-	command := sampleCreate(id)
-	command.RootID = root
-	command.ParentID = root
-	return command
-}
-
 func samplePrincipal() authorization.PrincipalRef {
 	return authorization.PrincipalRef{Subject: "u-1", Tenant: "t-1", Kind: authorization.PrincipalUser}
 }
