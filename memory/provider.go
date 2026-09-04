@@ -23,3 +23,9 @@ type Provider interface {
 	Retrieve(ctx context.Context, query Query) ([]Record, error)
 	Write(ctx context.Context, scope Scope, ref, text string) (Mutation, error)
 }
+
+// RecallObserver is optional bookkeeping after the Gateway has applied both
+// ceilings. A failure here must not change the retrieval result.
+type RecallObserver interface {
+	Recalled(ctx context.Context, refs []string) error
+}

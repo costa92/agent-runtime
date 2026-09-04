@@ -38,6 +38,14 @@ func (s Scope) Validate() error {
 	return nil
 }
 
+// RetrievalContext is governance the Runtime already owns and forwards.
+//
+// Providers must not invent it. Gateway does not filter on it: Lesson tool
+// intersection belongs in the host Search, and Knowledge ignores it.
+type RetrievalContext struct {
+	Tools []string
+}
+
 // Query is a bounded retrieval. Both ceilings are required: an unbounded
 // retrieval is an unbounded prompt, and it fails as a model error far from the
 // read that caused it.
@@ -46,6 +54,7 @@ type Query struct {
 	Text       string
 	MaxRecords int
 	MaxTokens  int
+	Context    RetrievalContext
 }
 
 // Validate rejects a query that is not bounded or not scoped.

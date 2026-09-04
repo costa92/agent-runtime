@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
 	"github.com/kart-io/wechat-account/agent-runtime/llm"
@@ -356,12 +357,19 @@ func (p *governedPorts) Recall(ctx context.Context, key, text string) ([]memory.
 			Text:       text,
 			MaxRecords: declared.MaxRecords,
 			MaxTokens:  declared.MaxTokens,
+			Context:    memory.RetrievalContext{Tools: recallTools(s.snapshot.Restrictions, p.node.Tools)},
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
 	return result.Records, nil
+}
+
+func recallTools(restrictions run.Restrictions, declared []string) []string {
+	tools := append([]string(nil), restrictions.Narrow(declared)...)
+	slices.Sort(tools)
+	return slices.Compact(tools)
 }
 
 // Remember writes memory through the same reserve-commit-settle path as any

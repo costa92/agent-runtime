@@ -108,14 +108,10 @@ func (g *Gateway) Retrieve(ctx context.Context, principal authorization.Principa
 		return Result{}, err
 	}
 
-	// Ordering is the gateway's, not the provider's: two providers ordering
-	// ties differently would make the same Definition produce different prompts
-	// on different deployments.
+	// Score descending, stable so equal scores keep the provider/SQL order
+	// (created_at, id) instead of comparing "lesson:11" against "lesson:2".
 	sort.SliceStable(records, func(i, j int) bool {
-		if records[i].Score != records[j].Score {
-			return records[i].Score > records[j].Score
-		}
-		return records[i].Ref < records[j].Ref
+		return records[i].Score > records[j].Score
 	})
 
 	result := Result{Records: records}
@@ -132,6 +128,13 @@ func (g *Gateway) Retrieve(ctx context.Context, principal authorization.Principa
 			result.Truncated = true
 			break
 		}
+	}
+	if observer, ok := provider.(RecallObserver); ok {
+		refs := make([]string, len(result.Records))
+		for i, record := range result.Records {
+			refs[i] = record.Ref
+		}
+		_ = observer.Recalled(ctx, refs)
 	}
 	return result, nil
 }

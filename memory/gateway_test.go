@@ -80,10 +80,79 @@ func TestRetrieveOrdersDeterministically(t *testing.T) {
 	if len(result.Records) != 3 {
 		t.Fatalf("records=%d want=3", len(result.Records))
 	}
-	if result.Records[0].Ref != "m" || result.Records[1].Ref != "a" || result.Records[2].Ref != "z" {
-		t.Fatalf("order is not score-then-ref: %s %s %s",
+	if result.Records[0].Ref != "m" || result.Records[1].Ref != "z" || result.Records[2].Ref != "a" {
+		t.Fatalf("order is not score-then-provider: %s %s %s",
 			result.Records[0].Ref, result.Records[1].Ref, result.Records[2].Ref)
 	}
+}
+
+type recordingProvider struct {
+	records []memory.Record
+	noted   []string
+	fail    error
+}
+
+func (p *recordingProvider) Retrieve(context.Context, memory.Query) ([]memory.Record, error) {
+	return append([]memory.Record(nil), p.records...), nil
+}
+
+func (p *recordingProvider) Write(context.Context, memory.Scope, string, string) (memory.Mutation, error) {
+	return memory.Mutation{}, memory.ErrReadOnly
+}
+
+func (p *recordingProvider) Recalled(_ context.Context, refs []string) error {
+	p.noted = append([]string(nil), refs...)
+	return p.fail
+}
+
+func TestRetrieveNotifiesAfterBothCeilings(t *testing.T) {
+	provider := &recordingProvider{records: []memory.Record{
+		{Ref: "a", Source: "s", Score: 3, Text: "one two three four five"},
+		{Ref: "b", Source: "s", Score: 2, Text: "one two three four five"},
+		{Ref: "c", Source: "s", Score: 1, Text: "one two three four five"},
+	}}
+	gateway := gatewayWith(t, provider, testkit.AllowAllMemoryAuthorizer())
+
+	result, err := gateway.Retrieve(context.Background(), principal(), memory.RetrieveRequest{
+		Key:   "notes",
+		Query: memory.Query{Scope: scope(), MaxRecords: 3, MaxTokens: 6},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(result.Records) != 1 || result.Records[0].Ref != "a" {
+		t.Fatalf("records=%v, want token ceiling to leave only a", refsOf(result.Records))
+	}
+	if len(provider.noted) != 1 || provider.noted[0] != "a" {
+		t.Fatalf("noted=%v, want only the records that survived both ceilings", provider.noted)
+	}
+}
+
+func TestAFailedObserverDoesNotChangeRetrieval(t *testing.T) {
+	provider := &recordingProvider{
+		records: []memory.Record{{Ref: "a", Source: "s", Score: 1, Text: "one"}},
+		fail:    run.NewError("observer.boom", run.ErrorInternal, run.RetryNever),
+	}
+	gateway := gatewayWith(t, provider, testkit.AllowAllMemoryAuthorizer())
+
+	result, err := gateway.Retrieve(context.Background(), principal(), memory.RetrieveRequest{
+		Key:   "notes",
+		Query: memory.Query{Scope: scope(), MaxRecords: 10, MaxTokens: 1000},
+	})
+	if err != nil {
+		t.Fatalf("retrieve failed because the observer failed: %v", err)
+	}
+	if len(result.Records) != 1 || result.Records[0].Ref != "a" {
+		t.Fatalf("records=%v", refsOf(result.Records))
+	}
+}
+
+func refsOf(records []memory.Record) []string {
+	out := make([]string, len(records))
+	for i, record := range records {
+		out[i] = record.Ref
+	}
+	return out
 }
 
 // A caller passing someone else's scope with its own principal would read
