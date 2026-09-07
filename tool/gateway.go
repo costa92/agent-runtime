@@ -78,7 +78,16 @@ const DefaultToolCallTimeout = 60 * time.Second
 
 // DefaultToolCallTimeoutCeiling is the hard cap no Spec's MaxDurationMS may
 // exceed, whatever the registration table asks for.
-const DefaultToolCallTimeoutCeiling = 180 * time.Second
+//
+// Clamping is silent — no log, no error, no failed publish — so a Spec sitting
+// at or above this number is indistinguishable from one that declared nothing.
+// 300s rather than the earlier 180s because the highest band a host actually
+// registers (synchronous media generation, aligned with the provider's own
+// timeout) declares 240s: at 180 that declaration never took effect, and the
+// gateway, not the provider, was the one expiring first. Hosts that fill the
+// value from configuration pass their own; this is what an embedder gets for
+// free, and it must stay above every band such an embedder would declare.
+const DefaultToolCallTimeoutCeiling = 300 * time.Second
 
 // Gateway is the one path to a tool handler.
 type Gateway struct {
