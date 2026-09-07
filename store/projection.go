@@ -169,6 +169,15 @@ type ProgressPayload struct {
 	NodeID   string `json:"node_id"`
 	AgentKey string `json:"agent_key"`
 	Failed   bool   `json:"failed,omitempty"`
+	// FailureCode is the run.Error code of what stopped the node, empty when
+	// the failure carried none. It is the stable identifier, never the error's
+	// free text: a host renders it as a sentence of its own, and a code that
+	// reaches a reader unmapped is a missing translation rather than a leak.
+	//
+	// Only this payload carries it. TerminalResultPayload deliberately does
+	// not — the Run's state is the settled verdict and a second copy of the
+	// reason there would go stale against the node that actually failed.
+	FailureCode string `json:"failure_code,omitempty"`
 }
 
 // TerminalResultPayload is the settled outcome of a Run.

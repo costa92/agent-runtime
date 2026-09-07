@@ -506,7 +506,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 		return err
 	}
 
-	fact, err := s.nodeFact(node, result)
+	fact, err := s.nodeFact(node, result, executeErr)
 	if err != nil {
 		return err
 	}
@@ -527,10 +527,18 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 // distinction is what the host is reading for — an output fact for a node that
 // produced nothing would render as an empty assistant message rather than as a
 // step that failed.
-func (s *session) nodeFact(node workflow.Node, result workflow.NodeResult) (store.ProjectionFact, error) {
+func (s *session) nodeFact(
+	node workflow.Node, result workflow.NodeResult, executeErr error,
+) (store.ProjectionFact, error) {
 	if result.Failed {
+		// The code travels; the error text does not. It is what lets the host
+		// say why the turn stopped instead of only that it did — the failure
+		// used to exist solely in this process's log, so a reader saw nothing
+		// at all. run.CodeOf yields "" for anything that is not a run.Error,
+		// which the host renders as its unattributed fallback.
 		return store.NewProjectionFact(store.ProgressPayload{
 			NodeID: node.ID, AgentKey: node.Implementation, Failed: true,
+			FailureCode: run.CodeOf(executeErr),
 		})
 	}
 	return store.NewProjectionFact(store.AssistantMessagePayload{
