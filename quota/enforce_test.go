@@ -526,3 +526,75 @@ func TestAnAdmissionUnitCannotBePerPrincipal(t *testing.T) {
 		t.Fatalf("Validate() = %v, want undividable_unit", err)
 	}
 }
+
+func TestAMediaOpsCapRefusesTheEffectThatWouldCrossIt(t *testing.T) {
+	scope := tenant()
+	meter := &fakeMeter{perScope: map[quota.Scope]map[quota.Unit]int{
+		scope: {quota.UnitMediaOps: 7},
+	}}
+	enforcer, err := quota.NewEnforcer(quota.Snapshot{Limits: []quota.Limit{{
+		Name:   "media-ops-per-hour",
+		Scope:  scope,
+		Unit:   quota.UnitMediaOps,
+		Max:    10,
+		Window: time.Hour,
+	}}}, meter)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Three more fits exactly; four does not. The want is the real image
+	// count, not a probe — unlike tokens, the number is known before the call.
+	allowed, err := enforcer.AdmitEffect(context.Background(),
+		scope, run.Limits{MediaOps: 3})
+	if err != nil {
+		t.Fatalf("AdmitEffect: %v", err)
+	}
+	if !allowed.Allowed {
+		t.Fatal("refused an effect that fits exactly inside the cap")
+	}
+
+	refused, err := enforcer.AdmitEffect(context.Background(),
+		scope, run.Limits{MediaOps: 4})
+	if err != nil {
+		t.Fatalf("AdmitEffect: %v", err)
+	}
+	if refused.Allowed {
+		t.Fatal("allowed an effect that crosses the cap")
+	}
+	if refused.Limit.Name != "media-ops-per-hour" {
+		t.Fatalf("wrong limit reported: %q", refused.Limit.Name)
+	}
+}
+
+func TestAMediaOpsCapMayNotAskToDegrade(t *testing.T) {
+	// Degrading means dropping the tool loop, which is the only reduced form
+	// there is. Half an image is not a picture book.
+	err := quota.Snapshot{Limits: []quota.Limit{{
+		Name:    "media-ops-per-hour",
+		Scope:   tenant(),
+		Unit:    quota.UnitMediaOps,
+		Max:     10,
+		Window:  time.Hour,
+		Degrade: true,
+	}}}.Validate()
+	if err == nil {
+		t.Fatal("published a degrading media_ops cap")
+	}
+	if run.KindOf(err) != run.ErrorInvalid {
+		t.Fatalf("wrong kind: %v", run.KindOf(err))
+	}
+}
+
+func TestAMediaOpsCapNeedsAWindow(t *testing.T) {
+	// A consumption cap with no window is a lifetime cap nothing resets.
+	err := quota.Snapshot{Limits: []quota.Limit{{
+		Name:  "media-ops-forever",
+		Scope: tenant(),
+		Unit:  quota.UnitMediaOps,
+		Max:   10,
+	}}}.Validate()
+	if err == nil {
+		t.Fatal("published an unwindowed media_ops cap")
+	}
+}

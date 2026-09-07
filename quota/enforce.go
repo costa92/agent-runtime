@@ -31,6 +31,10 @@ const (
 	// re-checked, or a single Run outlives every cap in the system.
 	UnitTokens    Unit = "tokens"
 	UnitToolCalls Unit = "tool_calls"
+	// UnitMediaOps counts billable media generations in a window. It is a
+	// consumption unit like tokens: an image generated an hour into a Run is
+	// spent in this hour's window, not the one the Run was admitted in.
+	UnitMediaOps Unit = "media_ops"
 )
 
 // Admission reports whether a unit is checked at Run creation.
@@ -138,7 +142,7 @@ func (l Limit) validate() error {
 			fmt.Errorf("quota %q", l.Name))
 	}
 	switch l.Unit {
-	case UnitConcurrentRuns, UnitQueuedRuns, UnitTokens, UnitToolCalls:
+	case UnitConcurrentRuns, UnitQueuedRuns, UnitTokens, UnitToolCalls, UnitMediaOps:
 	default:
 		return run.NewError("unknown_quota_unit", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("quota %q counts %q", l.Name, l.Unit))
@@ -279,6 +283,8 @@ func (e *Enforcer) AdmitEffect(ctx context.Context, scope Scope, want run.Limits
 			return want.Tokens
 		case UnitToolCalls:
 			return want.ToolCalls
+		case UnitMediaOps:
+			return want.MediaOps
 		default:
 			return 0
 		}
