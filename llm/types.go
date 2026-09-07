@@ -159,6 +159,11 @@ type Request struct {
 	// all of the latency and most of the cost; a host whose dialect has no
 	// such switch ignores it.
 	NoReasoning bool
+	// Deterministic asks for sampling to be switched off, for a call whose
+	// answer is a classification rather than prose. It is a flag rather than
+	// `Temperature: 0` because zero already means "unset" on that field —
+	// tool_loop fills it from the Definition when it sees one.
+	Deterministic bool
 	// Temperature and MaxTokens come from the published Definition.
 	Temperature float64
 	MaxTokens   int
