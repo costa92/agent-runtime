@@ -34,3 +34,30 @@ func TestAConfiguredTokenCeilingStillBinds(t *testing.T) {
 		t.Fatal("an in-budget LLM reservation was refused")
 	}
 }
+
+func TestMediaOpsIsCarriedThroughEveryLimitsOperation(t *testing.T) {
+	// A unit the arithmetic forgets is a unit that silently never binds: the
+	// envelope would afford any number of images because the component it
+	// compares is always zero.
+	a := Limits{MediaOps: 3}
+	b := Limits{MediaOps: 4}
+	if got := a.Add(b).MediaOps; got != 7 {
+		t.Fatalf("Add lost MediaOps: got %d, want 7", got)
+	}
+	if (Limits{MediaOps: 1}).Zero() {
+		t.Fatal("Zero reported true for a non-zero MediaOps")
+	}
+	if !(Limits{MediaOps: 2}).ExceededBy(Limits{MediaOps: 3}) {
+		t.Fatal("ExceededBy ignored MediaOps")
+	}
+	envelope := Budget{Envelope: Limits{MediaOps: 5}, Used: Limits{MediaOps: 4}}
+	if envelope.Affords(Limits{MediaOps: 2}) {
+		t.Fatal("Affords let a Run exceed its MediaOps envelope")
+	}
+	settled := Budget{Reserved: Limits{MediaOps: 3}}.
+		Settle(Limits{MediaOps: 3}, Limits{MediaOps: 2}, true)
+	if settled.Used.MediaOps != 2 || settled.Reserved.MediaOps != 0 {
+		t.Fatalf("Settle mishandled MediaOps: used=%d reserved=%d",
+			settled.Used.MediaOps, settled.Reserved.MediaOps)
+	}
+}

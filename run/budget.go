@@ -1,6 +1,6 @@
 package run
 
-// Limits is a spend in the three units the Runtime meters. It is used for the
+// Limits is a spend in the four units the Runtime meters. It is used for the
 // envelope, for what has been spent and for what is reserved — one type,
 // because a limit and a usage that are shaped differently cannot be compared
 // without a conversion nobody will keep correct.
@@ -8,6 +8,11 @@ type Limits struct {
 	LLMCalls  int `json:"llm_calls"`
 	Tokens    int `json:"tokens"`
 	ToolCalls int `json:"tool_calls"`
+	// MediaOps counts billable media generations — one per image, video or
+	// audio clip actually produced. It is separate from ToolCalls because one
+	// tool call may produce nine images, and a cap that cannot tell those
+	// apart is off by that factor.
+	MediaOps int `json:"media_ops"`
 }
 
 // Add returns the componentwise sum.
@@ -16,6 +21,7 @@ func (l Limits) Add(other Limits) Limits {
 		LLMCalls:  l.LLMCalls + other.LLMCalls,
 		Tokens:    l.Tokens + other.Tokens,
 		ToolCalls: l.ToolCalls + other.ToolCalls,
+		MediaOps:  l.MediaOps + other.MediaOps,
 	}
 }
 
@@ -26,7 +32,8 @@ func (l Limits) Zero() bool { return l == Limits{} }
 // component over the line is over the line: a Run that stayed inside its token
 // budget by making a thousand tool calls has not stayed inside its budget.
 func (l Limits) ExceededBy(other Limits) bool {
-	return other.LLMCalls > l.LLMCalls || other.Tokens > l.Tokens || other.ToolCalls > l.ToolCalls
+	return other.LLMCalls > l.LLMCalls || other.Tokens > l.Tokens ||
+		other.ToolCalls > l.ToolCalls || other.MediaOps > l.MediaOps
 }
 
 // Budget is the root envelope and everything charged against it.
@@ -64,7 +71,8 @@ func (b Budget) Affords(want Limits) bool {
 	committed := b.Committed().Add(want)
 	return !exceedsCapped(b.Envelope.LLMCalls, committed.LLMCalls) &&
 		!exceedsCapped(b.Envelope.Tokens, committed.Tokens) &&
-		!exceedsCapped(b.Envelope.ToolCalls, committed.ToolCalls)
+		!exceedsCapped(b.Envelope.ToolCalls, committed.ToolCalls) &&
+		!exceedsCapped(b.Envelope.MediaOps, committed.MediaOps)
 }
 
 func exceedsCapped(ceiling, used int) bool {
@@ -87,6 +95,7 @@ func (b Budget) Settle(reserved, charged Limits, release bool) Budget {
 		LLMCalls:  max(0, b.Reserved.LLMCalls-reserved.LLMCalls),
 		Tokens:    max(0, b.Reserved.Tokens-reserved.Tokens),
 		ToolCalls: max(0, b.Reserved.ToolCalls-reserved.ToolCalls),
+		MediaOps:  max(0, b.Reserved.MediaOps-reserved.MediaOps),
 	}
 	return next
 }
