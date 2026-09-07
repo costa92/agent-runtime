@@ -270,7 +270,10 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 		return PreparedInvocation{}, err
 	}
 
-	reserve := run.Limits{ToolCalls: 1}
+	// MediaOps is asked for here, before the call, because the quota that
+	// governs it can only refuse an effect it was told about. Settlement later
+	// records what was actually produced.
+	reserve := run.Limits{ToolCalls: 1, MediaOps: spec.mediaOps(arguments)}
 	stage(StageBudget, spec, nil)
 
 	if explanation.Decision == policy.DecisionRequireApproval && !request.Granted {

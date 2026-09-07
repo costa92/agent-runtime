@@ -52,7 +52,58 @@ type Spec struct {
 	// outlive.
 	MaxDurationMS int `json:"max_duration_ms,omitempty"`
 
+	// MediaOpsBase and MediaOpsPerArg declare how many billable media items one
+	// call will produce, so the quota can be asked before the call instead of
+	// being told after it. Without them the gateway reserves zero of the unit,
+	// and a zero want is skipped outright — the cap is then filled in by the
+	// ledger and read by nobody.
+	//
+	// Declarative rather than a function because a Spec is serializable
+	// registration data that governance reviews; a closure could not be
+	// reviewed, stored or compared across builds.
+	MediaOpsBase int `json:"media_ops_base,omitempty"`
+	// MediaOpsPerArg names an integer argument whose value adds to the count,
+	// for a tool whose output size the caller chooses.
+	MediaOpsPerArg string `json:"media_ops_per_arg,omitempty"`
+
 	Labels []string `json:"labels,omitempty"`
+}
+
+// mediaOps is what one call declares it will produce, read from the arguments
+// the caller actually sent.
+//
+// Missing, non-numeric or negative argument counts as zero rather than
+// refusing: an argument the schema already validates is not this function's to
+// re-judge, and a reservation is not the place to invent a failure. The count
+// is therefore a floor, never a negative number.
+//
+// Known and accepted: a tool that continues earlier work names it by handle
+// instead of by size — render_picture_book's book_id resume path sends no
+// "pages" — so the reservation degrades to MediaOpsBase and understates what
+// the call will render. Understating is strictly better than the constant zero
+// it replaces, and settlement still meters the real count, so the ledger stays
+// exact even when the reservation does not.
+func (s Spec) mediaOps(arguments json.RawMessage) int {
+	ops := s.MediaOpsBase
+	if ops < 0 {
+		ops = 0
+	}
+	if s.MediaOpsPerArg == "" || len(arguments) == 0 {
+		return ops
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(arguments, &fields); err != nil {
+		return ops
+	}
+	raw, ok := fields[s.MediaOpsPerArg]
+	if !ok {
+		return ops
+	}
+	var count int
+	if err := json.Unmarshal(raw, &count); err != nil || count <= 0 {
+		return ops
+	}
+	return ops + count
 }
 
 // Invocation is what a handler receives. It carries no store, no lease and no

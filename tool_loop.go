@@ -493,10 +493,12 @@ func exhaustedUnit(budget run.Budget, want run.Limits) string {
 		return "tokens"
 	case budget.Envelope.ToolCalls > 0 && committed.ToolCalls > budget.Envelope.ToolCalls:
 		return "tool_calls"
+	case budget.Envelope.MediaOps > 0 && committed.MediaOps > budget.Envelope.MediaOps:
+		return "media_ops"
 	}
-	// Affords said no, so one of the three should have matched. Reporting an
-	// empty unit rather than guessing keeps a future fourth dimension from
-	// being silently filed under one of these three.
+	// Affords said no, so one of the four should have matched. Reporting an
+	// empty unit rather than guessing keeps a future fifth dimension from
+	// being silently filed under one of these four.
 	return ""
 }
 
