@@ -170,7 +170,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("model")
-	if err := s.begin(ctx, invocationID, "", "", reserve, false, p.node.ID); err != nil {
+	if err := s.begin(ctx, run.CommandInvokeModel, invocationID, "", "", reserve, false, p.node.ID); err != nil {
 		return llm.Response{}, err
 	}
 
@@ -407,7 +407,7 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	if err := s.admitEffect(ctx, prepared.Reserve, prepared.Reserve, ""); err != nil {
 		return err
 	}
-	if err := s.begin(ctx, invocationID, "", idempotencyKey, prepared.Reserve, false, p.node.ID); err != nil {
+	if err := s.begin(ctx, run.CommandWriteMemory, invocationID, "", idempotencyKey, prepared.Reserve, false, p.node.ID); err != nil {
 		return err
 	}
 
@@ -620,18 +620,26 @@ func (s *session) callCeiling(name string) (ceiling, used int, exhausted bool) {
 // non-idempotent write. The boundary is here rather than after the effect
 // because this is the last durable write before it — anything later leaves a
 // window where the effect has happened and the grant is still standing.
+//
+// kind names which of the three governed effects is about to be issued. All
+// three reserve identically, so this changes no budget arithmetic and no stored
+// row; what it changes is that the Transition carries EffectModelCall or
+// EffectMemoryWrite where it used to say EffectToolCall for everything. Before
+// this, the only thing distinguishing a model call from a memory write in the
+// invocation ledger was that both left `tool` empty, which distinguishes them
+// from a tool call and not from each other.
 func (s *session) begin(
-	ctx context.Context, id run.ID, toolName, idempotencyKey string,
+	ctx context.Context, kind run.CommandKind, id run.ID, toolName, idempotencyKey string,
 	reserve run.Limits, consumesGrant bool, node string,
 ) error {
 	if err := s.detachedErr(); err != nil {
 		return err
 	}
 	command := run.Command{
-		Kind: run.CommandInvokeTool, Reserve: reserve,
+		Kind: kind, Reserve: reserve,
 		InvocationID: id, Tool: toolName, IdempotencyKey: idempotencyKey,
 	}
-	transition, err := run.Reduce(s.snapshot, command)
+	transition, err := run.Reduce(s.state(), command)
 	if err != nil {
 		return err
 	}
