@@ -59,16 +59,8 @@ func Reduce(snapshot Snapshot, command Command) (Transition, error) {
 		}
 		return emit(advance(snapshot, next), snapshot, stateEvent(snapshot, StateRunning)), nil
 
-	case CommandRetry:
-		if snapshot.State != StateWaitingRetry {
-			return refuse(NewError("not_waiting_retry", ErrorInvalid, RetryNever))
-		}
-		return transition(snapshot, StateRunning), nil
-
 	case CommandWaitApproval:
 		return parkFromRunning(snapshot, StateWaitingApproval)
-	case CommandWaitRetry:
-		return parkFromRunning(snapshot, StateWaitingRetry)
 
 	case CommandInvokeModel:
 		return reserveEffect(snapshot, command, EffectModelCall)

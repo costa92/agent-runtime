@@ -27,8 +27,6 @@ func TestReduceStateTransitions(t *testing.T) {
 		{StateQueued, CommandStart, StateRunning, ""},
 		{StateRunning, CommandWaitApproval, StateWaitingApproval, ""},
 		{StateWaitingApproval, CommandResume, StateRunning, ""},
-		{StateRunning, CommandWaitRetry, StateWaitingRetry, ""},
-		{StateWaitingRetry, CommandRetry, StateRunning, ""},
 		{StateRunning, CommandSucceed, StateSucceeded, ""},
 		{StateRunning, CommandFail, StateFailed, ""},
 		{StateRunning, CommandCancel, StateCancelled, ""},
@@ -39,7 +37,7 @@ func TestReduceStateTransitions(t *testing.T) {
 		{StateSucceeded, CommandResume, StateSucceeded, ErrorInvalid},
 		{StateQueued, CommandResume, StateQueued, ErrorInvalid},
 		{StateRunning, CommandStart, StateRunning, ErrorInvalid},
-		{StateWaitingApproval, CommandRetry, StateWaitingApproval, ErrorInvalid},
+		{StateWaitingApproval, CommandStart, StateWaitingApproval, ErrorInvalid},
 	}
 
 	for _, tc := range cases {
@@ -77,7 +75,7 @@ func TestResumeClearsPendingApproval(t *testing.T) {
 func TestTerminalStatesAreIrreversible(t *testing.T) {
 	terminal := []State{StateSucceeded, StatePartial, StateFailed, StateCancelled}
 	commands := []CommandKind{
-		CommandStart, CommandResume, CommandRetry, CommandCancel,
+		CommandStart, CommandResume, CommandCancel,
 		CommandSucceed, CommandFail, CommandWaitApproval,
 		CommandInvokeModel, CommandInvokeTool, CommandWriteMemory,
 		CommandRecordUnknown, CommandResolveInvocation,
@@ -161,7 +159,7 @@ func TestWaitingResolutionRefusesEverythingButResolution(t *testing.T) {
 	snapshot.State = StateWaitingResolution
 	snapshot.Invocations = map[ID]Invocation{"inv-1": {ID: "inv-1", Outcome: OutcomeUnknown}}
 
-	for _, kind := range []CommandKind{CommandRetry, CommandResume, CommandStart, CommandInvokeTool} {
+	for _, kind := range []CommandKind{CommandResume, CommandStart, CommandInvokeTool} {
 		got, err := Reduce(snapshot, Command{Kind: kind})
 		if KindOf(err) != ErrorInvalid {
 			t.Errorf("%s error=%s want=invalid", kind, KindOf(err))

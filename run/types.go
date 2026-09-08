@@ -232,10 +232,8 @@ const (
 	// CommandResume returns a parked Run to running. It does not apply to
 	// waiting_resolution, which only a resolution may leave.
 	CommandResume CommandKind = "resume"
-	CommandRetry  CommandKind = "retry"
 
 	CommandWaitApproval CommandKind = "wait_approval"
-	CommandWaitRetry    CommandKind = "wait_retry"
 
 	// The three governed effects. Each reserves budget before the effect is
 	// issued, which is what makes the envelope a limit rather than a report.

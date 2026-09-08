@@ -5,7 +5,7 @@ package run
 // second set of invariants, and the two drift.
 //
 //	queued  → running
-//	running → waiting_approval | waiting_retry | waiting_resolution
+//	running → waiting_approval | waiting_resolution
 //	waiting_* → running
 //	queued | running | waiting_* → succeeded | partial | failed | cancelled
 //
@@ -18,12 +18,11 @@ const (
 
 	// StateWaitingApproval: a governed effect needs a human decision.
 	StateWaitingApproval State = "waiting_approval"
-	// StateWaitingRetry: a failure the Runtime established is safe to repeat.
-	StateWaitingRetry State = "waiting_retry"
 	// StateWaitingResolution: an Invocation's outcome is unknown — the side
-	// effect may have happened. Only a resolution leaves this state; a retry
-	// from here could duplicate the effect, which is why it is a state of its
-	// own rather than a flavour of waiting_retry.
+	// effect may have happened. Only a resolution leaves this state, because a
+	// retry from here could duplicate the effect. That is also why the Runtime
+	// has no waiting_retry: a failure it can establish is safe to repeat is
+	// retried within the node, and one it cannot establish is this state.
 	StateWaitingResolution State = "waiting_resolution"
 
 	StateSucceeded State = "succeeded"
@@ -43,7 +42,7 @@ const (
 func States() []State {
 	return []State{
 		StateQueued, StateRunning,
-		StateWaitingApproval, StateWaitingRetry, StateWaitingResolution,
+		StateWaitingApproval, StateWaitingResolution,
 		StateSucceeded, StatePartial, StateFailed, StateCancelled,
 	}
 }
@@ -62,7 +61,7 @@ func (s State) Terminal() bool {
 // Waiting reports whether the Run is parked on something outside itself.
 func (s State) Waiting() bool {
 	switch s {
-	case StateWaitingApproval, StateWaitingRetry, StateWaitingResolution:
+	case StateWaitingApproval, StateWaitingResolution:
 		return true
 	default:
 		return false
