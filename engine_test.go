@@ -9,6 +9,7 @@ import (
 
 	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
+	"github.com/kart-io/wechat-account/agent-runtime/llm"
 	"github.com/kart-io/wechat-account/agent-runtime/observe"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
@@ -329,5 +330,73 @@ func TestAnAbandonedEffectLeavesTheRunWaitingResolutionNotFailed(t *testing.T) {
 	}
 	if node == "" {
 		t.Fatal("the abandonment does not say which node leaked")
+	}
+}
+
+// The cap hands the Run back while the handler it gave up on is still holding
+// ports, so for as long as that handler runs there are two goroutines on this
+// session: the abandonment parking the Run, and the handler still spending
+// against it. detached tells the handler to stop, but the check and the write
+// that follows it are not one step — between them sits a Store round trip — so
+// a handler already past the check writes the session's snapshot while the
+// abandonment reads it.
+//
+// slowBeginStore is what makes that window observable rather than a matter of
+// scheduling luck: it holds the invocation-begin commit open past the cap, so
+// the handler is guaranteed to be inside begin when the abandonment starts.
+//
+// Which of the two writers wins is settled by the execution fence and is not
+// what this test is about. It is about the reads and writes themselves: they
+// were unsynchronised, and the field they race on carries the maps every
+// recovery scan walks. -race is the assertion — the test's own checks pass
+// either way, and the failure this pins arrives in production as a Go runtime
+// fatal rather than as a wrong answer.
+type slowBeginStore struct {
+	store.Execution
+	delay time.Duration
+}
+
+func (s slowBeginStore) BeginInvocation(
+	ctx context.Context, command store.BeginInvocationCommand,
+) (run.Snapshot, error) {
+	snapshot, err := s.Execution.BeginInvocation(ctx, command)
+	time.Sleep(s.delay)
+	return snapshot, err
+}
+
+func TestAnAbandonedHandlerStillUsingItsPortsDoesNotRaceTheAbandonment(t *testing.T) {
+	handlerDone := make(chan struct{})
+	h := newHarness(t, scriptedAgent{execute: func(_ context.Context, request agent.Request) (agent.Response, error) {
+		defer close(handlerDone)
+		// context.Background, deliberately: this is the handler the cap exists
+		// for, the one that never notices it was cancelled.
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			//nolint:errcheck // the refusals are the point; the calls are what race.
+			_, _ = request.Ports.Model(context.Background(), llm.Request{MaxTokens: 1})
+		}
+		return agent.Response{Output: json.RawMessage(`"too late"`)}, nil
+	}}, withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Models = scriptedModels{}
+		deps.Store = slowBeginStore{Execution: deps.Store, delay: 80 * time.Millisecond}
+		deps.LeaseFor = 2 * time.Second
+		deps.MaxNodeDuration = 20 * time.Millisecond
+	}))
+	started := start(t, h)
+
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if result.Run.State != run.StateWaitingResolution {
+		t.Fatalf("state=%s, want waiting_resolution", result.Run.State)
+	}
+
+	// Wait for the handler before returning: a test that leaves it running
+	// hands its race to whichever test runs next.
+	select {
+	case <-handlerDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the runaway handler never returned")
 	}
 }

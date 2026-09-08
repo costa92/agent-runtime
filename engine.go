@@ -29,9 +29,25 @@ type session struct {
 	// leaseMu guards lease. The renewal loop runs beside the node it keeps the
 	// Run alive for, and both sides touch the lease: the loop replaces it on
 	// every tick, and the node reads its token on every command it fences.
-	leaseMu  sync.Mutex
-	lease    store.Lease
+	leaseMu sync.Mutex
+	lease   store.Lease
+
+	// snapMu guards snapshot, which two goroutines reach at once on exactly one
+	// path: a node abandoned at its wall-clock cap parks the Run while the
+	// handler it gave up on is still running and still holding ports. detached
+	// tells that handler to stop, but the check and the write around it are not
+	// one step, so a handler already past the check still writes here while the
+	// abandonment reads.
+	//
+	// Only the field needs guarding. What it points at is immutable: every
+	// reducer case is copy-on-write, and the settle path — the last write that
+	// was not — now copies too, so no goroutine can be reading a map another is
+	// writing. Which of two writers wins is not this lock's problem either: both
+	// commit under the execution fence, the Store admits one, and abandonNode
+	// answers the loser's conflict by re-reading and parking again.
+	snapMu   sync.RWMutex
 	snapshot run.Snapshot
+
 	declared definition.Definition
 	graph    *workflow.ExecutionGraph
 	policies policy.Snapshot
@@ -165,7 +181,7 @@ func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) 
 		return AdvanceResult{}, err
 	}
 
-	if current.snapshot.State == run.StateQueued {
+	if current.state().State == run.StateQueued {
 		if err := current.start(ctx); err != nil {
 			return AdvanceResult{}, err
 		}
@@ -181,18 +197,18 @@ func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) 
 	// reserve-before-effect order exists to prevent — and it is invisible,
 	// because the second attempt succeeds and looks like the only one.
 	if err := current.parkUnclassifiedEffects(ctx); err != nil {
-		return AdvanceResult{Run: current.snapshot}, err
+		return AdvanceResult{Run: current.state()}, err
 	}
 
 	for {
-		if current.snapshot.State.Terminal() {
-			return AdvanceResult{Run: current.snapshot}, nil
+		if current.state().State.Terminal() {
+			return AdvanceResult{Run: current.state()}, nil
 		}
-		if current.snapshot.State.Waiting() {
-			return AdvanceResult{Run: current.snapshot, Waiting: true}, nil
+		if current.state().State.Waiting() {
+			return AdvanceResult{Run: current.state(), Waiting: true}, nil
 		}
 
-		ready := workflow.ReadyNodes(current.graph, current.snapshot)
+		ready := workflow.ReadyNodes(current.graph, current.state())
 		if len(ready) == 0 {
 			// Nothing schedulable and nothing waiting: either the budget is
 			// gone or every remaining node is blocked behind a failure. Either
@@ -201,7 +217,7 @@ func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) 
 			return current.finish(ctx)
 		}
 		if err := current.runNode(ctx, ready[0]); err != nil {
-			return AdvanceResult{Run: current.snapshot}, err
+			return AdvanceResult{Run: current.state()}, err
 		}
 	}
 }
@@ -241,12 +257,12 @@ func (r *runtime) endUnrunnable(ctx context.Context, claimed store.ClaimedRun, c
 	// projection fact and the lease sealing attached to this path — commitNode
 	// documents itself as the one place a Run may settle.
 	current := &session{runtime: r, lease: claimed.Lease, snapshot: claimed.Snapshot}
-	if current.snapshot.State == run.StateQueued {
+	if current.state().State == run.StateQueued {
 		if err := current.start(ctx); err != nil {
 			return
 		}
 	}
-	transition, err := run.Reduce(current.snapshot, run.Command{Kind: run.CommandFail})
+	transition, err := run.Reduce(current.state(), run.Command{Kind: run.CommandFail})
 	if err != nil {
 		return
 	}
@@ -313,16 +329,16 @@ func (r *runtime) newSession(ctx context.Context, claimed store.ClaimedRun) (*se
 // fence is the execution fence for the session's current view.
 func (s *session) fence() store.ExecutionFence {
 	return store.ExecutionFence{
-		RunID:                         s.snapshot.ID,
-		ExpectedRevision:              s.snapshot.Revision,
+		RunID:                         s.state().ID,
+		ExpectedRevision:              s.state().Revision,
 		LeaseToken:                    s.leaseToken(),
-		ExpectedRootCancellationEpoch: s.snapshot.RootCancellationEpoch,
+		ExpectedRootCancellationEpoch: s.state().RootCancellationEpoch,
 	}
 }
 
 // start moves a queued Run to running.
 func (s *session) start(ctx context.Context) error {
-	transition, err := run.Reduce(s.snapshot, run.Command{Kind: run.CommandStart})
+	transition, err := run.Reduce(s.state(), run.Command{Kind: run.CommandStart})
 	if err != nil {
 		return err
 	}
@@ -330,7 +346,7 @@ func (s *session) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	return nil
 }
 
@@ -351,7 +367,7 @@ func stampNode(events []run.Event, node string) {
 }
 
 func (s *session) parkForApproval(ctx context.Context, node string) error {
-	transition, err := run.Reduce(s.snapshot, run.Command{Kind: run.CommandWaitApproval})
+	transition, err := run.Reduce(s.state(), run.Command{Kind: run.CommandWaitApproval})
 	if err != nil {
 		return err
 	}
@@ -368,7 +384,7 @@ func (s *session) parkForApproval(ctx context.Context, node string) error {
 	}
 	s.runtime.record(observe.Decision{
 		Name:  observe.EventApprovalRequested,
-		RunID: s.snapshot.ID,
+		RunID: s.state().ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrApprovalID, string(approvalID)),
 			observe.Attr(observe.AttrTool, holdToolName(s.approvalHold)),
@@ -385,7 +401,7 @@ func (s *session) parkForApproval(ctx context.Context, node string) error {
 	if err != nil {
 		return err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	return nil
 }
 
@@ -401,7 +417,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	}
 
 	s.runtime.record(observe.Decision{
-		Name: observe.EventRouterPlanSelected, RunID: s.snapshot.ID,
+		Name: observe.EventRouterPlanSelected, RunID: s.state().ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrPlan, s.graph.Ref.Digest),
 			observe.Attr(observe.AttrAgent, node.Implementation),
@@ -477,7 +493,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	if executeErr != nil {
 		result.Failed = true
 		s.runtime.deps.Logger.Error(ctx, "agent node failed",
-			"run_id", string(s.snapshot.ID),
+			"run_id", string(s.state().ID),
 			"node_id", node.ID,
 			"agent", node.Implementation,
 			"kind", string(run.KindOf(executeErr)),
@@ -486,7 +502,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 		result.OutputRef = string(s.runtime.deps.IDs.NewID("output"))
 	}
 
-	progress, err := workflow.ApplyNodeResult(s.graph, s.snapshot, result, s.runtime.deps.Schemas)
+	progress, err := workflow.ApplyNodeResult(s.graph, s.state(), result, s.runtime.deps.Schemas)
 	if err != nil {
 		return err
 	}
@@ -516,7 +532,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 	if err != nil {
 		return err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	return nil
 }
 
@@ -556,12 +572,12 @@ func (s *session) transitionFor(progress workflow.Progress, command run.Command)
 	if progress.Command == nil {
 		// The graph advanced but the Run's state did not. There is no reducer
 		// command for "keep running", so the transition is the node map alone.
-		next := s.snapshot
-		next.Revision = s.snapshot.Revision + 1
+		next := s.state()
+		next.Revision = s.state().Revision + 1
 		next.Nodes = progress.Nodes
 		return run.Transition{Next: next}, nil
 	}
-	transition, err := run.Reduce(s.snapshot, command)
+	transition, err := run.Reduce(s.state(), command)
 	if err != nil {
 		return run.Transition{}, err
 	}
@@ -572,27 +588,27 @@ func (s *session) transitionFor(progress workflow.Progress, command run.Command)
 // finish terminates a Run that has nothing left to schedule.
 func (s *session) finish(ctx context.Context) (AdvanceResult, error) {
 	command := run.Command{Kind: run.CommandPartial}
-	if !s.snapshot.Budget.Affords(run.Limits{LLMCalls: 1}) {
+	if !s.state().Budget.Affords(run.Limits{LLMCalls: 1}) {
 		// Out of budget with work outstanding is a partial result, not a
 		// failure: what did complete is still the honest answer.
 		s.runtime.record(observe.Decision{
-			Name: observe.EventBudgetRefused, RunID: s.snapshot.ID,
+			Name: observe.EventBudgetRefused, RunID: s.state().ID,
 			Attributes: []observe.Attribute{observe.Attr(observe.AttrUnit, "llm_calls")},
 		})
 	}
-	if len(s.snapshot.Nodes) == 0 {
+	if len(s.state().Nodes) == 0 {
 		command = run.Command{Kind: run.CommandFail}
 	}
 
-	transition, err := run.Reduce(s.snapshot, command)
+	transition, err := run.Reduce(s.state(), command)
 	if err != nil {
-		return AdvanceResult{Run: s.snapshot}, err
+		return AdvanceResult{Run: s.state()}, err
 	}
 	committed, err := s.commitNode(ctx, transition, "", "", run.Limits{}, nil)
 	if err != nil {
-		return AdvanceResult{Run: s.snapshot}, err
+		return AdvanceResult{Run: s.state()}, err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	return AdvanceResult{Run: committed}, nil
 }
 
@@ -605,14 +621,14 @@ func (s *session) finish(ctx context.Context) (AdvanceResult, error) {
 // thing that releases the reservation, which is what stops the budget being
 // spent twice on one call.
 func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
-	if s.snapshot.State != run.StateRunning {
+	if s.state().State != run.StateRunning {
 		return nil
 	}
-	for id, invocation := range s.snapshot.Invocations {
+	for id, invocation := range s.state().Invocations {
 		if invocation.Outcome != run.OutcomeInFlight {
 			continue
 		}
-		transition, err := run.Reduce(s.snapshot, run.Command{
+		transition, err := run.Reduce(s.state(), run.Command{
 			Kind: run.CommandRecordUnknown, InvocationID: id,
 		})
 		if err != nil {
@@ -622,7 +638,7 @@ func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		s.snapshot = committed
+		s.setSnapshot(committed)
 		return nil
 	}
 	return nil
@@ -655,7 +671,7 @@ func (s *session) abandonNode(ctx context.Context, node workflow.Node) error {
 
 	const attempts = 3
 	for attempt := 0; ; attempt++ {
-		if s.snapshot.State != run.StateRunning {
+		if s.state().State != run.StateRunning {
 			// The detached handler parked or settled the Run itself. Nothing to
 			// park, and nothing another worker can claim.
 			return nil
@@ -664,11 +680,11 @@ func (s *session) abandonNode(ctx context.Context, node workflow.Node) error {
 		if err == nil || attempt == attempts-1 || run.KindOf(err) != run.ErrorConflict {
 			return err
 		}
-		refreshed, getErr := s.runtime.deps.Store.Get(ctx, s.snapshot.ID)
+		refreshed, getErr := s.runtime.deps.Store.Get(ctx, s.state().ID)
 		if getErr != nil {
 			return getErr
 		}
-		s.snapshot = refreshed
+		s.setSnapshot(refreshed)
 	}
 }
 
@@ -677,7 +693,7 @@ func (s *session) abandonNode(ctx context.Context, node workflow.Node) error {
 // operator counting them would be counting fence conflicts.
 func (s *session) parkAbandoned(ctx context.Context, node workflow.Node, announce bool) error {
 	invocationID := run.ID("")
-	for id, invocation := range s.snapshot.Invocations {
+	for id, invocation := range s.state().Invocations {
 		if invocation.Outcome == run.OutcomeInFlight {
 			invocationID = id
 			break
@@ -687,7 +703,7 @@ func (s *session) parkAbandoned(ctx context.Context, node workflow.Node, announc
 		invocationID = s.runtime.deps.IDs.NewID("abandoned")
 	}
 
-	transition, err := run.Reduce(s.snapshot, run.Command{
+	transition, err := run.Reduce(s.state(), run.Command{
 		Kind: run.CommandRecordUnknown, InvocationID: invocationID,
 	})
 	if err != nil {
@@ -701,7 +717,7 @@ func (s *session) parkAbandoned(ctx context.Context, node workflow.Node, announc
 	// never releasing the lease, and this event alone does not tell them apart.
 	if announce {
 		s.runtime.record(observe.Decision{
-			Name: observe.EventNodeAbandoned, RunID: s.snapshot.ID,
+			Name: observe.EventNodeAbandoned, RunID: s.state().ID,
 			Attributes: []observe.Attribute{
 				observe.Attr(observe.AttrNode, node.ID),
 				observe.Attr(observe.AttrAgent, node.Implementation),
@@ -713,16 +729,18 @@ func (s *session) parkAbandoned(ctx context.Context, node workflow.Node, announc
 	if err != nil {
 		return err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	return nil
 }
 
 // commitNode seals the lease and submits one typed command.
 //
 // Sealing first is what keeps a commit and a takeover from both believing they
-// own the Run. Seal uses Store-authoritative time and refuses an expired lease
-// even when the token and revision still match — a worker judging expiry by its
-// own clock hands ownership away whenever the two disagree.
+// own the Run. The protection is the check, not a state change: Seal uses
+// Store-authoritative time and refuses an expired lease even when the token and
+// revision still match — a worker judging expiry by its own clock hands
+// ownership away whenever the two disagree. The lease itself comes back
+// unchanged, so the commit below fences on the same token.
 // Terminal facts are derived here rather than passed in, so no terminal path
 // can forget one: every commit that settles a Run goes through this function,
 // and a caller that had to remember would eventually be a caller that did not.
@@ -731,7 +749,7 @@ func (s *session) commitNode(
 	used run.Limits, modelUsage []run.ModelUsage, facts ...store.ProjectionFact,
 ) (run.Snapshot, error) {
 	if _, err := s.runtime.deps.Store.SealForCommit(ctx, store.SealCommand{
-		RunID: s.snapshot.ID, LeaseToken: s.leaseToken(),
+		RunID: s.state().ID, LeaseToken: s.leaseToken(),
 	}); err != nil {
 		return run.Snapshot{}, err
 	}
@@ -742,7 +760,7 @@ func (s *session) commitNode(
 		name = "run"
 	}
 	if transition.Next.State.Terminal() {
-		userID, _ := strconv.ParseInt(s.snapshot.Principal.Subject, 10, 64)
+		userID, _ := strconv.ParseInt(s.state().Principal.Subject, 10, 64)
 		terminal, err := store.NewProjectionFact(store.TerminalResultPayload{
 			State:        string(transition.Next.State),
 			UserID:       userID,
@@ -769,43 +787,34 @@ func (s *session) commitNode(
 		return run.Snapshot{}, err
 	}
 
-	// The seal closed the lease to renewal, so a further effect in this
-	// Advance needs a fresh claim. Re-claiming here keeps the loop honest about
-	// ownership rather than reusing a token the Store has already retired.
-	lease, _, err := s.runtime.deps.Store.Claim(ctx, store.ClaimCommand{
-		RunID: s.snapshot.ID, Owner: s.runtime.deps.Owner, LeaseFor: s.runtime.deps.LeaseFor,
-	})
-	if err == nil {
-		s.setLease(lease)
-	}
+	// No re-claim here. There used to be one, on the belief that sealing
+	// retired the token and a further effect in this Advance needed a fresh
+	// one. Sealing does neither: it keeps the same token, and a Store grants a
+	// claim only over a lease that is absent or lapsed, so this Run — holding
+	// one it just renewed — could never be granted anything. Every commit made
+	// a round trip that was certain to fail and then dropped the error, which
+	// is why nothing said so. The token stays valid, renewal keeps working, and
+	// the next command fences on the same lease.
 	return committed, nil
 }
 
 // request builds what the agent implementation sees.
 func (s *session) request(ctx context.Context, node workflow.Node, ports *governedPorts) (agent.Request, error) {
-	remaining := s.snapshot.Budget.Envelope
-	if !remaining.Zero() {
-		committed := s.snapshot.Budget.Committed()
-		remaining = run.Limits{
-			LLMCalls:  remaining.LLMCalls - committed.LLMCalls,
-			Tokens:    remaining.Tokens - committed.Tokens,
-			ToolCalls: remaining.ToolCalls - committed.ToolCalls,
-		}
-	}
+	remaining := s.state().Budget.Remaining()
 	nodeInput, err := s.input(ctx, node)
 	if err != nil {
 		return agent.Request{}, err
 	}
 	req := agent.Request{
-		RunID:     s.snapshot.ID,
-		Principal: s.snapshot.Principal,
+		RunID:     s.state().ID,
+		Principal: s.state().Principal,
 		Prompt:    s.declared.Prompt,
 		Input:     nodeInput,
-		Upstreams: s.snapshot.Upstreams,
+		Upstreams: s.state().Upstreams,
 		Remaining: remaining,
 		Ports:     ports,
 	}
-	if s.approvalHold != nil && !s.approvalHold.Denied && s.snapshot.PendingApprovalID == "" && s.snapshot.State == run.StateRunning {
+	if s.approvalHold != nil && !s.approvalHold.Denied && s.state().PendingApprovalID == "" && s.state().State == run.StateRunning {
 		// Granted only ever carries a confirmed write. A denied hold resumes
 		// the Run so the agent can answer, but the refused effect must not be
 		// performed — not even silently, as a granted write.
@@ -841,7 +850,7 @@ func (s *session) input(ctx context.Context, node workflow.Node) (json.RawMessag
 			// one has already failed the Run — and dropping the whole step
 			// because an optional predecessor was skipped would make declaring
 			// a second upstream riskier than working without it.
-			if state, ok := s.snapshot.Nodes[from]; !ok || state.OutputRef == "" {
+			if state, ok := s.state().Nodes[from]; !ok || state.OutputRef == "" {
 				continue
 			}
 			output, err := s.upstreamOutput(ctx, from)
@@ -857,7 +866,7 @@ func (s *session) input(ctx context.Context, node workflow.Node) (json.RawMessag
 			// Added after the emptiness check, so declaring the flag cannot turn a
 			// step whose every upstream was skipped into one that runs on the Run
 			// input alone and reports success.
-			merged[workflow.RunInputKey] = s.snapshot.Input
+			merged[workflow.RunInputKey] = s.state().Input
 		}
 		encoded, err := json.Marshal(merged)
 		if err != nil {
@@ -865,12 +874,12 @@ func (s *session) input(ctx context.Context, node workflow.Node) (json.RawMessag
 		}
 		return encoded, nil
 	default:
-		return s.snapshot.Input, nil
+		return s.state().Input, nil
 	}
 }
 
 func (s *session) upstreamOutput(ctx context.Context, from string) (json.RawMessage, error) {
-	state, ok := s.snapshot.Nodes[from]
+	state, ok := s.state().Nodes[from]
 	if !ok || state.OutputRef == "" {
 		// The binding names an upstream that produced no ref. Falling back to
 		// the Run's input here would hand the node something it did not ask
@@ -884,7 +893,7 @@ func (s *session) upstreamOutput(ctx context.Context, from string) (json.RawMess
 	// the writer answered that it could not see the research, and the assembler
 	// failed for want of a body. Nothing on the agent side can follow a ref;
 	// Ports has no read for it, by design.
-	return s.runtime.deps.Store.NodeOutput(ctx, s.snapshot.ID, state.OutputRef)
+	return s.runtime.deps.Store.NodeOutput(ctx, s.state().ID, state.OutputRef)
 }
 
 func (s *session) leaseToken() string {
@@ -897,6 +906,21 @@ func (s *session) setLease(lease store.Lease) {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
 	s.lease = lease
+}
+
+// state is the session's current view of the Run. See snapMu for who else reads
+// it. The Snapshot is copied out, so a caller that holds one across a commit is
+// looking at the Run as it was — which is what every fence built from it means.
+func (s *session) state() run.Snapshot {
+	s.snapMu.RLock()
+	defer s.snapMu.RUnlock()
+	return s.snapshot
+}
+
+func (s *session) setSnapshot(snapshot run.Snapshot) {
+	s.snapMu.Lock()
+	defer s.snapMu.Unlock()
+	s.snapshot = snapshot
 }
 
 // windDown is why the renew loop stopped.
@@ -959,7 +983,7 @@ func (s *session) renewing(ctx context.Context) (context.Context, <-chan struct{
 	// Captured before the goroutine starts. The ID never changes, but the
 	// Snapshot around it is replaced on every commit, so reading it from here
 	// would race the node that is committing.
-	runID := s.snapshot.ID
+	runID := s.state().ID
 	go func() {
 		defer close(done)
 		// Renew once up front rather than only on a tick. One Advance walks the

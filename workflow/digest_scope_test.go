@@ -12,7 +12,7 @@ import (
 //
 // It used to hash the compiled nodes alone. Prompt, model policy and memory
 // scopes are not in a node — they are read live off the Definition on every
-// resume (engine.go's system message, tool_loop.go's model policy,
+// resume (engine.go's system message, governed_ports.go's model policy,
 // memory_loop.go's scopes) — so a Definition whose prompt changed kept the same
 // digest and an in-flight Run adopted the new one at its next step with nothing
 // to notice.

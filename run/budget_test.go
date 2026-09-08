@@ -61,3 +61,43 @@ func TestMediaOpsIsCarriedThroughEveryLimitsOperation(t *testing.T) {
 			settled.Used.MediaOps, settled.Reserved.MediaOps)
 	}
 }
+
+func TestRemainingReportsEveryCappedUnit(t *testing.T) {
+	budget := Budget{
+		Envelope: Limits{LLMCalls: 10, Tokens: 10000, ToolCalls: 5, MediaOps: 7},
+		Used:     Limits{LLMCalls: 3, Tokens: 2500, ToolCalls: 1, MediaOps: 2},
+	}
+
+	got := budget.Remaining()
+
+	want := Limits{LLMCalls: 7, Tokens: 7500, ToolCalls: 4, MediaOps: 5}
+	if got != want {
+		t.Fatalf("remaining=%+v want=%+v", got, want)
+	}
+}
+
+// Zero is "uncapped" everywhere else in this file — Affords skips a zero
+// ceiling — so a remainder computed against one is not a small number, it is
+// not a number. Subtracting from it reports a negative allowance to an agent
+// that asked how much room it had.
+func TestRemainingIsZeroForAnUncappedUnitRatherThanNegative(t *testing.T) {
+	budget := Budget{
+		Envelope: Limits{LLMCalls: 10},
+		Used:     Limits{LLMCalls: 1, Tokens: 3500},
+	}
+
+	if got := budget.Remaining().Tokens; got != 0 {
+		t.Fatalf("tokens=%d want=0 for an uncapped unit", got)
+	}
+}
+
+func TestRemainingIsClampedWhenSettlementOverranTheCeiling(t *testing.T) {
+	budget := Budget{
+		Envelope: Limits{Tokens: 100},
+		Used:     Limits{Tokens: 250},
+	}
+
+	if got := budget.Remaining().Tokens; got != 0 {
+		t.Fatalf("tokens=%d want=0", got)
+	}
+}

@@ -131,7 +131,7 @@ func TestAConditionOnADeletedFactIsRefused(t *testing.T) {
 //
 // The list is the contract: a fact here is a promise that a policy condition on
 // it compares against a real value. Adding one without a matching assignment in
-// tool_loop.go or the Gateway recreates exactly what the three deleted facts
+// governed_ports.go or the Gateway recreates exactly what the three deleted facts
 // were.
 func TestEveryDeclaredFactIsOneSomethingFills(t *testing.T) {
 	filledBy := map[Fact]string{

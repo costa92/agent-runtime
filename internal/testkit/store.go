@@ -344,6 +344,8 @@ func (s *MemoryStore) SealForCommit(_ context.Context, command store.SealCommand
 	if s.cancelledLocked(record) {
 		return store.Lease{}, run.NewError("root_cancelled", run.ErrorInterrupted, run.RetryNever)
 	}
+	// Recorded to mirror the postgres column, and read by nothing here either:
+	// the check above is what seal does. See TD-073.
 	record.sealed = true
 	return *record.lease, nil
 }
@@ -388,10 +390,11 @@ func (s *MemoryStore) CompleteInvocation(_ context.Context, command store.Comple
 	// engine now carries it too, but a transition that forgets must not make a
 	// completed call read as in_flight — that is exactly what an approval-resumed
 	// Run mistakes for a crashed effect and parks itself over.
-	if existing, ok := commit.Transition.Next.Invocations[command.Result.ID]; ok {
-		existing.Outcome = command.Result.Outcome
-		commit.Transition.Next.Invocations[command.Result.ID] = existing
-	}
+	// Copy-on-write, not an assignment through the map: the caller's transition
+	// may share Invocations with the snapshot this store handed it, and a Store
+	// must not reach back into the caller's state to record its own decision.
+	commit.Transition.Next = commit.Transition.Next.WithInvocationOutcome(
+		command.Result.ID, command.Result.Outcome)
 	return s.commitLocked(record, commit)
 }
 

@@ -162,7 +162,7 @@ type Request struct {
 	// Deterministic asks for sampling to be switched off, for a call whose
 	// answer is a classification rather than prose. It is a flag rather than
 	// `Temperature: 0` because zero already means "unset" on that field —
-	// tool_loop fills it from the Definition when it sees one.
+	// governed_ports fills it from the Definition when it sees one.
 	Deterministic bool
 	// Temperature and MaxTokens come from the published Definition.
 	Temperature float64

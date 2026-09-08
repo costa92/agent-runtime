@@ -20,11 +20,11 @@ import (
 // provider isolates on.
 func (s *session) memoryScope(declared definition.MemoryRef, node workflow.Node) memory.Scope {
 	return memory.Scope{
-		Tenant:    s.snapshot.Principal.Tenant,
+		Tenant:    s.state().Principal.Tenant,
 		Namespace: declared.Namespace,
-		Principal: s.snapshot.Principal,
+		Principal: s.state().Principal,
 		AgentKey:  node.Implementation,
-		RunID:     s.snapshot.ID,
+		RunID:     s.state().ID,
 	}
 }
 
@@ -40,7 +40,7 @@ func declaredMemory(s *session, key string) (definition.MemoryRef, error) {
 		}
 	}
 	return definition.MemoryRef{}, run.NewError(run.CodeUndeclaredMemoryKey, run.ErrorDenied, run.RetryNever,
-		fmt.Errorf("definition %s does not declare memory %q", s.snapshot.Definition.ID, key))
+		fmt.Errorf("definition %s does not declare memory %q", s.state().Definition.ID, key))
 }
 
 // commitMemory records a committed write atomically with its settlement.
@@ -49,12 +49,12 @@ func declaredMemory(s *session, key string) (definition.MemoryRef, error) {
 // be a second writer of Run-adjacent state, outside the fence — and the write
 // and its budget settlement could then land separately.
 func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace string, fact memory.ResultFact, node string) error {
-	reserved := s.snapshot.Invocations[id].Reserved
+	reserved := s.state().Invocations[id].Reserved
 	charged := run.Limits{ToolCalls: 1}
 
-	transition := run.Transition{Next: s.snapshot}
-	transition.Next.Revision = s.snapshot.Revision + 1
-	transition.Next.Budget = s.snapshot.Budget.Settle(reserved, charged, fact.Outcome != run.OutcomeUnknown)
+	transition := run.Transition{Next: s.state()}
+	transition.Next.Revision = s.state().Revision + 1
+	transition.Next.Budget = s.state().Budget.Settle(reserved, charged, fact.Outcome != run.OutcomeUnknown)
 	// Same rule as complete(): the settled outcome must reach the snapshot.
 	// Left in_flight it reads to parkUnclassifiedEffects as a worker that died
 	// mid-effect, and an approval-resumed Run parks itself in waiting_resolution
@@ -68,7 +68,7 @@ func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace st
 	}
 	if fact.Outcome == run.OutcomeUnknown {
 		settlement.Release = false
-		parked, err := run.Reduce(s.snapshot, run.Command{
+		parked, err := run.Reduce(s.state(), run.Command{
 			Kind: run.CommandRecordUnknown, InvocationID: id,
 		})
 		if err != nil {
@@ -92,7 +92,7 @@ func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace st
 	if err != nil {
 		return err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	return nil
 }
 

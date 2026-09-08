@@ -363,3 +363,38 @@ func TestMultiEventTransitionsNumberEveryEvent(t *testing.T) {
 		t.Fatalf("last sequence=%d want=6", got.Next.LastEventSequence)
 	}
 }
+
+// The settle path builds its own Transition, so this is the one outcome write
+// that Reduce does not perform and cannot protect. Writing it through the map
+// would settle the invocation in the caller's snapshot — the record the Store
+// returned from the previous commit — before the Store has accepted anything,
+// so a settlement the fence rejects would still read as applied and the
+// recovery scans would skip the effect nobody established.
+func TestWithInvocationOutcomeLeavesTheReceiverUntouched(t *testing.T) {
+	snapshot := runningSnapshot()
+	begun, err := Reduce(snapshot, Command{
+		Kind: CommandInvokeTool, InvocationID: "inv-1", Tool: "publish",
+		Reserve: Limits{ToolCalls: 1},
+	})
+	if err != nil {
+		t.Fatalf("reduce: %v", err)
+	}
+	durable := begun.Next
+
+	settled := durable.WithInvocationOutcome("inv-1", OutcomeApplied)
+
+	if got := durable.Invocations["inv-1"].Outcome; got != OutcomeInFlight {
+		t.Fatalf("receiver outcome=%s want=in_flight: the settlement wrote through the shared map", got)
+	}
+	if got := settled.Invocations["inv-1"].Outcome; got != OutcomeApplied {
+		t.Fatalf("copy outcome=%s want=applied", got)
+	}
+}
+
+func TestWithInvocationOutcomeIgnoresAnUnknownInvocation(t *testing.T) {
+	snapshot := runningSnapshot()
+
+	if got := snapshot.WithInvocationOutcome("absent", OutcomeApplied); len(got.Invocations) != 0 {
+		t.Fatalf("invocations=%+v want none", got.Invocations)
+	}
+}

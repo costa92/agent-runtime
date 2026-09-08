@@ -106,3 +106,35 @@ func (b Budget) reserve(want Limits) Budget {
 	next.Reserved = b.Reserved.Add(want)
 	return next
 }
+
+// Remaining is what is left of the envelope, in the same terms Affords reads it.
+//
+// Per unit, not per Budget: a zero ceiling means that unit is uncapped, and
+// Affords already skips it, so Remaining reports zero for it too — an uncapped
+// unit has no remainder to state. Anything else would have to invent a number.
+//
+// Clamped at zero. The subtraction can go negative wherever settlement charged
+// more than was reserved, and a negative remainder read as a quantity says the
+// implementation may make minus three calls.
+//
+// This exists because the caller that needed it wrote the subtraction inline,
+// guarded the whole struct on Zero rather than each unit, and left MediaOps out.
+// An agent asking how many images it could still generate was told none,
+// whatever the envelope said, and one asking for tokens under an envelope that
+// capped only calls was told a negative number.
+func (b Budget) Remaining() Limits {
+	committed := b.Committed()
+	return Limits{
+		LLMCalls:  remainingUnit(b.Envelope.LLMCalls, committed.LLMCalls),
+		Tokens:    remainingUnit(b.Envelope.Tokens, committed.Tokens),
+		ToolCalls: remainingUnit(b.Envelope.ToolCalls, committed.ToolCalls),
+		MediaOps:  remainingUnit(b.Envelope.MediaOps, committed.MediaOps),
+	}
+}
+
+func remainingUnit(ceiling, used int) int {
+	if ceiling <= 0 {
+		return 0
+	}
+	return max(0, ceiling-used)
+}

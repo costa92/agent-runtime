@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,20 +128,31 @@ func (s *sequentialIDs) NewID(prefix string) run.ID {
 	return run.ID(fmt.Sprintf("%s-%d", prefix, s.n.Add(1)))
 }
 
+// Observer implementations must be safe for concurrent use, and this one is a
+// test double for the port: an abandoned node is reported while the handler it
+// gave up on is still emitting, so the unguarded version raced exactly where a
+// host's own naive implementation would.
 type recordingObserver struct {
+	mu        sync.Mutex
 	decisions []observe.Decision
 	chunks    []string
 }
 
 func (o *recordingObserver) Decision(decision observe.Decision) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.decisions = append(o.decisions, decision)
 }
 
 func (o *recordingObserver) Chunk(_ run.ID, text string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.chunks = append(o.chunks, text)
 }
 
 func (o *recordingObserver) named(name string) []observe.Decision {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	var found []observe.Decision
 	for _, decision := range o.decisions {
 		if decision.Name == name {

@@ -29,6 +29,14 @@ type IDGenerator interface {
 // would be a governance component pretending to be a listener. Errors from it
 // are ignored by design — observability that can fail a Run is worse than no
 // observability.
+//
+// Implementations must be safe for concurrent use. Both methods are called from
+// whichever goroutine reached them: an agent may call the model from several at
+// once, and a node abandoned at its wall-clock cap is reported while the handler
+// it gave up on is still running and still emitting. The obvious implementation
+// — append to a slice — is the one that breaks, and it breaks as a corrupted
+// buffer or a runtime fatal rather than as a missing event, so nothing points
+// back here. NopObserver is safe because it holds nothing.
 type Observer interface {
 	// Decision reports a governance decision that has been committed.
 	Decision(decision Decision)

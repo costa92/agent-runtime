@@ -167,7 +167,7 @@ type Restrictions struct {
 	// Named for what it does rather than for what it holds, because
 	// workflow.Node.Tools is a list of the same shape, with the same json name,
 	// whose empty case means the exact opposite — a node grants nothing unless
-	// it says so. Both are read in tool_loop.go, one line apart. While this was
+	// it says so. Both are read in governed_ports.go, one line apart. While this was
 	// also called Tools, an eval trial passed its "tools we expect to be called"
 	// assertion straight into it and granted the whole allowlist to every case
 	// that expected none.

@@ -52,7 +52,7 @@ func (s *session) nodeToolDefs(keys []string) []llm.ToolDef {
 		return nil
 	}
 	out := make([]llm.ToolDef, 0, len(keys))
-	for _, key := range s.snapshot.Restrictions.Narrow(keys) {
+	for _, key := range s.state().Restrictions.Narrow(keys) {
 		spec, ok := gateway.LookupSpec(key)
 		if !ok {
 			continue
@@ -141,7 +141,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 		return llm.Response{}, llm.ErrCapabilityUnsupported
 	}
 	s.runtime.record(observe.Decision{
-		Name: observe.EventModelSelected, RunID: s.snapshot.ID,
+		Name: observe.EventModelSelected, RunID: s.state().ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrProfile, request.Model.Profile),
 			observe.Attr(observe.AttrAgent, p.node.Implementation),
@@ -191,7 +191,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 		// stop the Run.
 		response, callErr = client.Stream(ctx, request, func(chunk llm.Chunk) error {
 			if chunk.Content != "" {
-				s.runtime.recorder.Chunk(s.snapshot.ID, chunk.Content)
+				s.runtime.recorder.Chunk(s.state().ID, chunk.Content)
 			}
 			return nil
 		})
@@ -266,32 +266,32 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	// plain denial — not approval_required — so an agent that can answer
 	// without the tool does, instead of parking a second time.
 	if s.approvalHold != nil && s.approvalHold.Denied && s.approvalHold.Tool == name &&
-		s.snapshot.PendingApprovalID == "" && s.snapshot.State == run.StateRunning {
+		s.state().PendingApprovalID == "" && s.state().State == run.StateRunning {
 		return nil, run.NewError("approval_denied", run.ErrorDenied, run.RetryNever)
 	}
 
 	granted := s.approvalHold != nil && !s.approvalHold.Denied && s.approvalHold.Tool == name &&
-		s.snapshot.PendingApprovalID == "" && s.snapshot.State == run.StateRunning
+		s.state().PendingApprovalID == "" && s.state().State == run.StateRunning
 	prepared, err := s.runtime.deps.Tools.Prepare(ctx, tool.InvocationRequest{
-		RunID:          s.snapshot.ID,
+		RunID:          s.state().ID,
 		InvocationID:   invocationID,
 		Tool:           name,
 		Arguments:      arguments,
-		Principal:      s.snapshot.Principal,
+		Principal:      s.state().Principal,
 		IdempotencyKey: string(invocationID),
 		Facts: policy.CallFacts{
 			AgentName: p.node.Implementation,
 			// The Run's own declared labels. The gateway adds the tool's on top,
 			// so a policy condition on "label" sees both what this Run is and
 			// what it is about to call.
-			Labels:             s.snapshot.Restrictions.Labels,
-			BudgetRemainingPct: remainingPercent(s.snapshot.Budget),
+			Labels:             s.state().Restrictions.Labels,
+			BudgetRemainingPct: remainingPercent(s.state().Budget),
 		},
 		Policies: s.policies,
 		// Narrowed, never widened: the Run's own restriction can only remove
 		// keys this node was granted.
-		Allowlist:       s.snapshot.Restrictions.Narrow(p.node.Tools),
-		DenySideEffects: s.snapshot.Restrictions.DenySideEffects,
+		Allowlist:       s.state().Restrictions.Narrow(p.node.Tools),
+		DenySideEffects: s.state().Restrictions.DenySideEffects,
 		Granted:         granted,
 	})
 	if err != nil {
@@ -307,7 +307,7 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 		// they judged: "which hosts did this Run reach" is asked long after the
 		// allowlist that permitted them has been edited.
 		s.runtime.record(observe.Decision{
-			Name: observe.EventEgressHostResolved, RunID: s.snapshot.ID,
+			Name: observe.EventEgressHostResolved, RunID: s.state().ID,
 			Attributes: []observe.Attribute{
 				observe.Attr(observe.AttrHost, host),
 				observe.Attr(observe.AttrTool, name),
@@ -318,7 +318,7 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	if err := s.admitEffect(ctx, prepared.Reserve, prepared.Reserve, name); err != nil {
 		return nil, err
 	}
-	if err := s.begin(ctx, invocationID, name, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted, p.node.ID); err != nil {
+	if err := s.begin(ctx, run.CommandInvokeTool, invocationID, name, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted, p.node.ID); err != nil {
 		return nil, err
 	}
 
@@ -350,14 +350,14 @@ func (p *governedPorts) Recall(ctx context.Context, key, text string) ([]memory.
 		return nil, run.NewError("no_memory_gateway", run.ErrorInternal, run.RetryNever)
 	}
 
-	result, err := s.runtime.deps.Memories.Retrieve(ctx, s.snapshot.Principal, memory.RetrieveRequest{
+	result, err := s.runtime.deps.Memories.Retrieve(ctx, s.state().Principal, memory.RetrieveRequest{
 		Key: key,
 		Query: memory.Query{
 			Scope:      s.memoryScope(declared, p.node),
 			Text:       text,
 			MaxRecords: declared.MaxRecords,
 			MaxTokens:  declared.MaxTokens,
-			Context:    memory.RetrievalContext{Tools: recallTools(s.snapshot.Restrictions, p.node.Tools)},
+			Context:    memory.RetrievalContext{Tools: recallTools(s.state().Restrictions, p.node.Tools)},
 		},
 	})
 	if err != nil {
@@ -393,7 +393,7 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("memory")
-	prepared, err := s.runtime.deps.Memories.PrepareWrite(ctx, s.snapshot.Principal, memory.WriteRequest{
+	prepared, err := s.runtime.deps.Memories.PrepareWrite(ctx, s.state().Principal, memory.WriteRequest{
 		InvocationID:   invocationID,
 		Key:            key,
 		Scope:          s.memoryScope(declared, p.node),
@@ -420,7 +420,7 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 
 func (p *governedPorts) recordExplanation(name string, explanation policy.Explanation) {
 	decision := observe.Decision{
-		Name: observe.EventPolicyEvaluated, RunID: p.session.snapshot.ID,
+		Name: observe.EventPolicyEvaluated, RunID: p.session.state().ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrTool, name),
 			observe.Attr(observe.AttrDecision, string(explanation.Decision)),
@@ -447,7 +447,7 @@ func (p *governedPorts) recordExplanation(name string, explanation policy.Explan
 // an unknown tool, a schema mismatch, an allowlist miss. The refusal is still a
 // governance decision and still has to be visible.
 func (p *governedPorts) recordPolicy(name string, err error) {
-	p.session.runtime.record(prePolicyDecision(p.session.snapshot.ID, name, err))
+	p.session.runtime.record(prePolicyDecision(p.session.state().ID, name, err))
 }
 
 // prePolicyDecision builds the record for a refusal that no Explanation
@@ -533,23 +533,23 @@ func (s *session) admitEffect(ctx context.Context, want, reserve run.Limits, too
 	}
 	if !decision.Allowed {
 		s.runtime.record(observe.Decision{
-			Name: observe.EventQuotaRejected, RunID: s.snapshot.ID,
+			Name: observe.EventQuotaRejected, RunID: s.state().ID,
 			Attributes: quotaAttributes(decision, s.scope),
 		})
 		return run.NewError("quota_exhausted", run.ErrorDenied, run.RetryBackoff)
 	}
 	if decision.Degraded {
 		s.runtime.record(observe.Decision{
-			Name: observe.EventQuotaDegraded, RunID: s.snapshot.ID,
+			Name: observe.EventQuotaDegraded, RunID: s.state().ID,
 			Attributes: quotaAttributes(decision, s.scope),
 		})
 	}
 
-	if !s.snapshot.Budget.Affords(reserve) {
+	if !s.state().Budget.Affords(reserve) {
 		s.runtime.record(observe.Decision{
-			Name: observe.EventBudgetRefused, RunID: s.snapshot.ID,
+			Name: observe.EventBudgetRefused, RunID: s.state().ID,
 			Attributes: []observe.Attribute{
-				observe.Attr(observe.AttrUnit, exhaustedUnit(s.snapshot.Budget, reserve)),
+				observe.Attr(observe.AttrUnit, exhaustedUnit(s.state().Budget, reserve)),
 				observe.Attr(observe.AttrTool, toolName),
 			},
 		})
@@ -578,7 +578,7 @@ func (s *session) withinCallCeiling(name string) error {
 	}
 	return run.NewError("tool_call_ceiling_exhausted", run.ErrorDenied, run.RetryNever,
 		fmt.Errorf("definition %s allows %d call(s) to %q per run; %d already recorded",
-			s.snapshot.Definition.ID, ceiling, name, used))
+			s.state().Definition.ID, ceiling, name, used))
 }
 
 // callCeiling answers how much of a tool's declared per-Run allowance is left.
@@ -598,7 +598,7 @@ func (s *session) callCeiling(name string) (ceiling, used int, exhausted bool) {
 		return 0, 0, false
 	}
 
-	for _, invocation := range s.snapshot.Invocations {
+	for _, invocation := range s.state().Invocations {
 		if invocation.Tool == name {
 			used++
 		}
@@ -653,7 +653,7 @@ func (s *session) begin(
 	if err != nil {
 		return err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	if consumesGrant {
 		s.approvalHold = nil
 	}
@@ -667,13 +667,10 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 	}
 	if outcome != run.OutcomeApplied {
 		s.runtime.deps.Logger.Warn(ctx, "session: invocation settled non-applied",
-			"run_id", string(s.snapshot.ID), "invocation", string(id), "outcome", string(outcome))
+			"run_id", string(s.state().ID), "invocation", string(id), "outcome", string(outcome))
 	}
-	reserved := s.snapshot.Invocations[id].Reserved
+	reserved := s.state().Invocations[id].Reserved
 
-	transition := run.Transition{Next: s.snapshot}
-	transition.Next.Revision = s.snapshot.Revision + 1
-	transition.Next.Budget = s.snapshot.Budget.Settle(reserved, used, outcome != run.OutcomeUnknown)
 	// The outcome is part of the transition, not a side effect of the store's
 	// UPDATE. The snapshot is what every later decision reads — most
 	// importantly parkUnclassifiedEffects, which parks a Run the moment it
@@ -681,9 +678,13 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 	// call left as in_flight here reads exactly like a worker that died
 	// mid-effect, and the Run pays for that confusion with a second,
 	// unresolvable parking.
-	existing := transition.Next.Invocations[id]
-	existing.Outcome = outcome
-	transition.Next.Invocations[id] = existing
+	//
+	// WithInvocationOutcome copies. Writing through the map instead would put
+	// the outcome into the snapshot the Store handed back, before the Store has
+	// agreed to it — see the note on that method.
+	transition := run.Transition{Next: s.state().WithInvocationOutcome(id, outcome)}
+	transition.Next.Revision = s.state().Revision + 1
+	transition.Next.Budget = s.state().Budget.Settle(reserved, used, outcome != run.OutcomeUnknown)
 
 	settlement := store.BudgetSettlement{ReservationID: id, Charged: used, Release: true}
 	if outcome == run.OutcomeUnknown {
@@ -692,7 +693,7 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 		// out to have happened.
 		settlement.Release = false
 
-		parked, err := run.Reduce(s.snapshot, run.Command{
+		parked, err := run.Reduce(s.state(), run.Command{
 			Kind: run.CommandRecordUnknown, InvocationID: id,
 		})
 		if err != nil {
@@ -713,7 +714,7 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 	if err != nil {
 		return err
 	}
-	s.snapshot = committed
+	s.setSnapshot(committed)
 	return nil
 }
 

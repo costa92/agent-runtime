@@ -285,3 +285,27 @@ func copyInvocations(invocations map[ID]Invocation) map[ID]Invocation {
 	maps.Copy(out, invocations)
 	return out
 }
+
+// WithInvocationOutcome returns a copy of the snapshot with one invocation's
+// outcome replaced, leaving the receiver untouched.
+//
+// The settle path builds its Transition by hand rather than through Reduce,
+// because the budget arithmetic it commits is not expressible as a Command. It
+// still has to obey the same rule every reducer case obeys: a Snapshot is
+// copy-on-write, and Invocations is a map, so assigning through
+// snapshot.Invocations[id] writes the map the caller handed in. That map is the
+// one the Store returned from the previous commit, which in an in-process Store
+// is the durable record itself — so an outcome written that way lands whether or
+// not the commit that was supposed to carry it is accepted. A settlement
+// rejected by the fence would still leave the invocation reading applied, which
+// is exactly the state parkUnclassifiedEffects and abandonNode scan for, and
+// they would skip the effect nobody established.
+func (s Snapshot) WithInvocationOutcome(id ID, outcome Outcome) Snapshot {
+	existing, ok := s.Invocations[id]
+	if !ok {
+		return s
+	}
+	existing.Outcome = outcome
+	s.Invocations = putInvocation(s.Invocations, existing)
+	return s
+}
