@@ -14,6 +14,7 @@ package workflow
 import (
 	"encoding/json"
 
+	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
@@ -105,8 +106,9 @@ type Node struct {
 	Input Binding  `json:"input"`
 	// OutputSchema is set only on a leaf: a node with no dependents produces
 	// the Run's output, and that is the one output the Definition describes.
-	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
-	Failure      FailurePolicy   `json:"failure"`
+	OutputSchema json.RawMessage      `json:"output_schema,omitempty"`
+	Failure      FailurePolicy        `json:"failure"`
+	Loop         *definition.LoopSpec `json:"loop,omitempty"`
 }
 
 // ExecutionGraph is an immutable compiled Definition.

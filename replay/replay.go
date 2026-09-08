@@ -47,6 +47,35 @@ type Result struct {
 	Events int
 }
 
+// ReplayStepResult captures the deterministic state snapshot resulting from applying a single command.
+type ReplayStepResult struct {
+	StepIndex  int
+	Command    run.Command
+	Snapshot   run.Snapshot
+	Transition run.Transition
+}
+
+// ReplayCommands deterministically steps through a sequence of commands from an initial Snapshot.
+func ReplayCommands(initial run.Snapshot, commands []run.Command) ([]ReplayStepResult, error) {
+	current := initial
+	history := make([]ReplayStepResult, 0, len(commands))
+
+	for i, cmd := range commands {
+		transition, err := run.Reduce(current, cmd)
+		if err != nil {
+			return history, fmt.Errorf("replay error at step %d (%s): %w", i, cmd.Kind, err)
+		}
+		history = append(history, ReplayStepResult{
+			StepIndex:  i,
+			Command:    cmd,
+			Snapshot:   transition.Next,
+			Transition: transition,
+		})
+		current = transition.Next
+	}
+	return history, nil
+}
+
 // Verify walks one Run's events and reports the trajectory they describe.
 //
 // Events must be in sequence order. Two properties are checked: the sequence is

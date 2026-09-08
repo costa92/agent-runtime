@@ -235,6 +235,7 @@ func normalizeGraph(graph GraphSpec) GraphSpec {
 			Agent:        node.Agent,
 			Optional:     node.Optional,
 			WithRunInput: node.WithRunInput,
+			Loop:         node.Loop,
 		}
 		if len(node.Inputs) > 0 {
 			// Sorted, so that listing the same upstreams in another order is

@@ -113,6 +113,7 @@ const (
 	FactPrincipalTenant Fact = "principal.tenant"
 	FactLabel           Fact = "label"
 	FactBudgetRemaining Fact = "budget.remaining"
+	FactHandoffSource   Fact = "handoff.source"
 )
 
 // Facts returns every declared fact, in a stable order.
@@ -120,7 +121,7 @@ func Facts() []Fact {
 	return []Fact{
 		FactToolName, FactToolRiskLevel, FactToolSideEffect, FactToolTargetHost,
 		FactToolPermissions, FactAgentName, FactPrincipalKind, FactPrincipalTenant,
-		FactLabel, FactBudgetRemaining,
+		FactLabel, FactBudgetRemaining, FactHandoffSource,
 	}
 }
 

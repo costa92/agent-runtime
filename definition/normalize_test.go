@@ -230,6 +230,16 @@ func TestNormalizeKeepsEveryNodeSpecField(t *testing.T) {
 			field.SetInt(3)
 		case reflect.Slice:
 			field.Set(reflect.ValueOf([]string{"x"}))
+		case reflect.Ptr:
+			if field.Type() == reflect.TypeOf((*LoopSpec)(nil)) {
+				field.Set(reflect.ValueOf(&LoopSpec{
+					MaxIterations: 2,
+					Condition:     "node.quality_score < 80",
+					TargetNode:    "a",
+				}))
+			} else {
+				field.Set(reflect.New(field.Type().Elem()))
+			}
 		default:
 			// A kind this test cannot populate is a kind it cannot prove
 			// survives normalizeGraph's field-by-field rebuild. Failing is the

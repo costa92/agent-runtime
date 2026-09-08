@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -147,11 +148,48 @@ func ApplyNodeResult(graph *ExecutionGraph, snapshot run.Snapshot, result NodeRe
 	}
 	nodes[node.ID] = state
 
+	// If node has LoopSpec and succeeded, check if condition triggers a backward loop.
+	if !failed && node.Loop != nil && state.Attempts <= node.Loop.MaxIterations && len(result.Output) > 0 {
+		evaluator := NewConditionEvaluator()
+		matched, evalErr := evaluator.Evaluate(context.Background(), node.Loop.Condition, result.Output)
+		if evalErr == nil && matched {
+			// Trigger cascading reset back to TargetNode and all its downstream dependents
+			resetNodesInLoop(graph, nodes, node.Loop.TargetNode)
+			return Progress{Nodes: nodes, Command: nil, Output: output}, nil
+		}
+	}
+
 	command, err := commandFor(graph, nodes, node, failed)
 	if err != nil {
 		return Progress{}, err
 	}
 	return Progress{Nodes: nodes, Command: command, Output: output}, nil
+}
+
+// resetNodesInLoop removes target node and all its downstream dependents from the nodes map,
+// allowing the scheduler to mark them as ready for re-execution.
+func resetNodesInLoop(graph *ExecutionGraph, nodes map[string]run.NodeState, targetNodeID string) {
+	toReset := map[string]bool{targetNodeID: true}
+	// Find all downstream dependents recursively
+	changed := true
+	for changed {
+		changed = false
+		for _, node := range graph.Nodes {
+			if toReset[node.ID] {
+				continue
+			}
+			for _, dep := range node.DependsOn {
+				if toReset[dep] {
+					toReset[node.ID] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	for id := range toReset {
+		delete(nodes, id)
+	}
 }
 
 // commandFor decides what the node result means for the Run.

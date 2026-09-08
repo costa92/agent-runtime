@@ -119,6 +119,18 @@ type NodeSpec struct {
 	// a partial result a declared outcome instead of a judgement call made
 	// after something broke.
 	Optional bool `json:"optional,omitempty"`
+	// Loop declares an optional conditional backward loop for self-correction.
+	Loop *LoopSpec `json:"loop,omitempty"`
+}
+
+// LoopSpec defines a backward conditional loop for a step to self-correct.
+type LoopSpec struct {
+	// MaxIterations bounds how many times this node may loop back. Hard ceiling <= 3.
+	MaxIterations int `json:"max_iterations"`
+	// Condition is a boolean expression evaluated on the node's JSON output.
+	Condition string `json:"condition"`
+	// TargetNode is the upstream node to reset and re-execute when condition is true.
+	TargetNode string `json:"target_node"`
 }
 
 // Definition is the whole declaration.

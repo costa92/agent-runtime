@@ -340,3 +340,61 @@ func (valueSchemas) NormalizeValue(_, value json.RawMessage) (json.RawMessage, e
 	}
 	return json.RawMessage(`{"count":1}`), nil
 }
+
+func TestLoopCascadingResetInScheduler(t *testing.T) {
+	// a (plan) -> b (write) -> c (review with Loop back to a)
+	graph := compile(t, dag(
+		definition.NodeSpec{Name: "a", Agent: "draft"},
+		definition.NodeSpec{Name: "b", Agent: "draft", DependsOn: []string{"a"}, Inputs: []string{"a"}},
+		definition.NodeSpec{
+			Name: "c", Agent: "review", DependsOn: []string{"b"}, Inputs: []string{"b"},
+			Loop: &definition.LoopSpec{
+				MaxIterations: 2,
+				Condition:     "node.quality_score < 80",
+				TargetNode:    "a",
+			},
+		},
+	))
+
+	// Initial run: a succeeded, b succeeded
+	snapshot := running(succeeded("a", "b"))
+
+	// Node c succeeds with quality_score 70 (triggering loop back to a)
+	progress, err := workflow.ApplyNodeResult(graph, snapshot, workflow.NodeResult{
+		NodeID: "c",
+		Output: json.RawMessage(`{"quality_score": 70}`),
+	}, nil)
+	if err != nil {
+		t.Fatalf("ApplyNodeResult error: %v", err)
+	}
+
+	// Command should be nil (Run remains running)
+	if progress.Command != nil {
+		t.Fatalf("expected nil command for loop reset, got %+v", progress.Command)
+	}
+
+	// a, b, and c should all be reset (removed from nodes map) so a can re-run
+	if len(progress.Nodes) != 0 {
+		t.Fatalf("expected all nodes to be reset, got %+v", progress.Nodes)
+	}
+
+	// Scheduler should now mark 'a' as ready again
+	nextSnapshot := running(progress.Nodes)
+	ready := readyIDs(graph, nextSnapshot)
+	if len(ready) != 1 || ready[0] != "a" {
+		t.Fatalf("expected node 'a' to be ready after loop reset, got %v", ready)
+	}
+
+	// Now re-run 'a' and 'b', and 'c' outputs quality_score 90 (no loop)
+	snapshot2 := running(succeeded("a", "b"))
+	progress2, err := workflow.ApplyNodeResult(graph, snapshot2, workflow.NodeResult{
+		NodeID: "c",
+		Output: json.RawMessage(`{"quality_score": 90}`),
+	}, nil)
+	if err != nil {
+		t.Fatalf("ApplyNodeResult 2 error: %v", err)
+	}
+	if progress2.Command == nil || progress2.Command.Kind != run.CommandSucceed {
+		t.Fatalf("expected CommandSucceed when quality condition not met, got %+v", progress2.Command)
+	}
+}

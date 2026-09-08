@@ -145,6 +145,7 @@ func TestEveryDeclaredFactIsOneSomethingFills(t *testing.T) {
 		FactPrincipalTenant: "gateway, from the Run's principal",
 		FactLabel:           "tool loop and gateway, both contribute",
 		FactBudgetRemaining: "tool loop, from the Run's budget",
+		FactHandoffSource:   "tool loop, from the source agent of the handoff delegation",
 	}
 
 	for _, fact := range Facts() {

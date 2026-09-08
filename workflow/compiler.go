@@ -280,6 +280,21 @@ func (c Compiler) buildNodes(declared definition.Definition) ([]Node, error) {
 		if spec.Optional {
 			node.Failure = FailSoft
 		}
+		if spec.Loop != nil {
+			if spec.Loop.MaxIterations <= 0 || spec.Loop.MaxIterations > 3 {
+				return nil, run.NewError("invalid_loop_spec", run.ErrorInvalid, run.RetryNever,
+					fmt.Errorf("node %q loop max_iterations must be between 1 and 3", spec.Name))
+			}
+			if spec.Loop.TargetNode == "" {
+				return nil, run.NewError("invalid_loop_spec", run.ErrorInvalid, run.RetryNever,
+					fmt.Errorf("node %q loop target_node cannot be empty", spec.Name))
+			}
+			if !declaredNodes[spec.Loop.TargetNode] {
+				return nil, run.NewError("unknown_loop_target", run.ErrorInvalid, run.RetryNever,
+					fmt.Errorf("node %q loop target %q is undeclared", spec.Name, spec.Loop.TargetNode))
+			}
+			node.Loop = spec.Loop
+		}
 		if !hasDependents[spec.Name] {
 			// A leaf produces the Run's output, so it is the node whose result
 			// the declared OutputSchema describes.

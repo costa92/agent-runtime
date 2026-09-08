@@ -530,3 +530,61 @@ func TestEveryUpstreamMustBeADependency(t *testing.T) {
 		t.Fatalf("code = %q, want incompatible_binding", code)
 	}
 }
+
+func TestLoopValidationInCompiler(t *testing.T) {
+	t.Run("valid loop compiles successfully", func(t *testing.T) {
+		declared := dag(
+			definition.NodeSpec{Name: "plan", Agent: "draft"},
+			definition.NodeSpec{
+				Name: "review", Agent: "review", DependsOn: []string{"plan"}, Inputs: []string{"plan"},
+				Loop: &definition.LoopSpec{
+					MaxIterations: 2,
+					Condition:     "node.quality_score < 80",
+					TargetNode:    "plan",
+				},
+			},
+		)
+		graph := compile(t, declared)
+		reviewNode, err := graph.Lookup("review")
+		if err != nil {
+			t.Fatalf("Lookup review failed: %v", err)
+		}
+		if reviewNode.Loop == nil || reviewNode.Loop.MaxIterations != 2 {
+			t.Fatalf("unexpected loop on review node: %+v", reviewNode.Loop)
+		}
+	})
+
+	t.Run("invalid loop max iterations exceeds ceiling", func(t *testing.T) {
+		declared := dag(
+			definition.NodeSpec{Name: "plan", Agent: "draft"},
+			definition.NodeSpec{
+				Name: "review", Agent: "review", DependsOn: []string{"plan"}, Inputs: []string{"plan"},
+				Loop: &definition.LoopSpec{
+					MaxIterations: 5,
+					Condition:     "node.quality_score < 80",
+					TargetNode:    "plan",
+				},
+			},
+		)
+		if code := compileError(t, declared).Code; code != "invalid_loop_spec" {
+			t.Fatalf("code = %q, want invalid_loop_spec", code)
+		}
+	})
+
+	t.Run("unknown loop target node", func(t *testing.T) {
+		declared := dag(
+			definition.NodeSpec{Name: "plan", Agent: "draft"},
+			definition.NodeSpec{
+				Name: "review", Agent: "review", DependsOn: []string{"plan"}, Inputs: []string{"plan"},
+				Loop: &definition.LoopSpec{
+					MaxIterations: 2,
+					Condition:     "node.quality_score < 80",
+					TargetNode:    "non_existent",
+				},
+			},
+		)
+		if code := compileError(t, declared).Code; code != "unknown_loop_target" {
+			t.Fatalf("code = %q, want unknown_loop_target", code)
+		}
+	})
+}

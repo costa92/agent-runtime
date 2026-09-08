@@ -186,3 +186,43 @@ func TestVerifyRejectsARecordedSelfTransition(t *testing.T) {
 		t.Fatalf("err = %v, want running → running refused", err)
 	}
 }
+
+func TestReplayCommandsDeterminism(t *testing.T) {
+	initial := run.Snapshot{
+		ID:    "run-replay-1",
+		State: run.StateQueued,
+		Budget: run.Budget{
+			Envelope: run.Limits{LLMCalls: 10, ToolCalls: 10},
+		},
+	}
+
+	commands := []run.Command{
+		{Kind: run.CommandStart},
+		{Kind: run.CommandInvokeTool, InvocationID: "inv-1", Reserve: run.Limits{ToolCalls: 1}},
+		{Kind: run.CommandWaitApproval},
+		{Kind: run.CommandResume},
+		{Kind: run.CommandSucceed},
+	}
+
+	history, err := ReplayCommands(initial, commands)
+	if err != nil {
+		t.Fatalf("ReplayCommands failed: %v", err)
+	}
+
+	if len(history) != 5 {
+		t.Fatalf("expected 5 replay steps, got %d", len(history))
+	}
+
+	if history[0].Snapshot.State != run.StateRunning {
+		t.Errorf("step 0 state = %s, want running", history[0].Snapshot.State)
+	}
+	if history[2].Snapshot.State != run.StateWaitingApproval {
+		t.Errorf("step 2 state = %s, want waiting_approval", history[2].Snapshot.State)
+	}
+	if history[3].Snapshot.State != run.StateRunning {
+		t.Errorf("step 3 state = %s, want running", history[3].Snapshot.State)
+	}
+	if history[4].Snapshot.State != run.StateSucceeded {
+		t.Errorf("step 4 state = %s, want succeeded", history[4].Snapshot.State)
+	}
+}
