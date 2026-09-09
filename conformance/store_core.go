@@ -221,11 +221,18 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 			t.Fatalf("seal: %v", err)
 		}
 		// Sealing marks a commit window; it does not stop the owner holding
-		// the Run from extending the deadline. The engine seals on every node
-		// commit and re-claims before the next node, and that re-claim is not
-		// always granted, so a long-running node renews a lease that is
-		// already sealed. Refusing it would cancel a render that outlives the
-		// original lease.
+		// the Run from extending the deadline.
+		//
+		// The reason is the engine's shape: one Advance runs several nodes and
+		// seals before each commit, while the renewal ticker runs for the whole
+		// Advance. A seal that refused renewal would leave a multi-node graph
+		// unable to hold its lease after its first commit, and a long node
+		// would be taken over mid-flight.
+		//
+		// (This comment used to justify it by a re-claim between nodes. There
+		// is no such re-claim — it was built on the same misreading of seal
+		// that TD-073 records, and was deleted. The assertion stands for the
+		// reason above.)
 		harness.Advance(30 * time.Second)
 		renewed, err := harness.Store.Renew(ctx, store.RenewCommand{
 			RunID: "run-1", LeaseToken: claimed.Lease.Token, LeaseFor: time.Minute,

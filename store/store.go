@@ -66,8 +66,18 @@ type Execution interface {
 	Claim(ctx context.Context, command ClaimCommand) (Lease, run.Snapshot, error)
 	ClaimBatch(ctx context.Context, command ClaimBatchCommand) ([]ClaimedRun, error)
 	Renew(ctx context.Context, command RenewCommand) (Lease, error)
-	// SealForCommit closes the lease to further renewal so that a commit and a
-	// takeover cannot both believe they own the Run.
+	// SealForCommit re-checks ownership against the Store's own clock,
+	// immediately before a commit, so that a commit and a takeover cannot both
+	// believe they own the Run.
+	//
+	// The check is the whole mechanism. It does NOT close the lease to further
+	// renewal, and it must not: the engine seals once per node commit while one
+	// Advance spans several nodes, so a seal that stopped renewal would leave a
+	// multi-node graph unable to hold its lease after the first commit. The
+	// implementations do record a lease_sealed flag, but nothing reads it —
+	// see TD-073 — and this comment previously said the opposite, which is how
+	// an analysis of this path reached a wrong conclusion about token lifetime
+	// before the code was measured.
 	SealForCommit(ctx context.Context, command SealCommand) (Lease, error)
 
 	BeginInvocation(ctx context.Context, command BeginInvocationCommand) (run.Snapshot, error)
