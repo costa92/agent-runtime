@@ -3,6 +3,7 @@ package workflow_test
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
@@ -373,9 +374,17 @@ func TestLoopCascadingResetInScheduler(t *testing.T) {
 		t.Fatalf("expected nil command for loop reset, got %+v", progress.Command)
 	}
 
-	// a, b, and c should all be reset (removed from nodes map) so a can re-run
-	if len(progress.Nodes) != 0 {
-		t.Fatalf("expected all nodes to be reset, got %+v", progress.Nodes)
+	// a, b, and c are all reset so a can re-run. Their entries stay, holding
+	// the attempt counts the loop ceiling is measured against, but none of
+	// them is settled any more.
+	for _, id := range []string{"a", "b", "c"} {
+		state := progress.Nodes[id]
+		if state.Status.Terminal() {
+			t.Fatalf("expected node %q to be reset, got %+v", id, state)
+		}
+		if state.Attempts == 0 {
+			t.Fatalf("expected node %q to keep its attempt count, got %+v", id, state)
+		}
 	}
 
 	// Scheduler should now mark 'a' as ready again
@@ -397,4 +406,67 @@ func TestLoopCascadingResetInScheduler(t *testing.T) {
 	if progress2.Command == nil || progress2.Command.Kind != run.CommandSucceed {
 		t.Fatalf("expected CommandSucceed when quality condition not met, got %+v", progress2.Command)
 	}
+}
+
+// TestLoopStopsAtMaxIterations pins the number the compiler validates to the
+// number the scheduler enforces. The loop node's own attempt count has to
+// survive the cascading reset, or the ceiling is never reached and only the
+// Run budget ends the loop.
+func TestLoopStopsAtMaxIterations(t *testing.T) {
+	graph := compile(t, dag(
+		definition.NodeSpec{Name: "a", Agent: "draft"},
+		definition.NodeSpec{Name: "b", Agent: "draft", DependsOn: []string{"a"}, Inputs: []string{"a"}},
+		definition.NodeSpec{
+			Name: "c", Agent: "review", DependsOn: []string{"b"}, Inputs: []string{"b"},
+			Loop: &definition.LoopSpec{
+				MaxIterations: 2,
+				Condition:     "node.quality_score < 80",
+				TargetNode:    "a",
+			},
+		},
+	))
+
+	nodes := succeeded("a", "b")
+	// The condition matches every time, so only MaxIterations can stop this.
+	for iteration := 1; iteration <= 2; iteration++ {
+		progress, err := workflow.ApplyNodeResult(graph, running(nodes), workflow.NodeResult{
+			NodeID: "c",
+			Output: json.RawMessage(`{"quality_score": 70}`),
+		}, nil)
+		if err != nil {
+			t.Fatalf("iteration %d: ApplyNodeResult error: %v", iteration, err)
+		}
+		if progress.Command != nil {
+			t.Fatalf("iteration %d: expected the loop to be taken, got command %+v", iteration, progress.Command)
+		}
+		if got := progress.Nodes["c"].Attempts; got != iteration {
+			t.Fatalf("iteration %d: loop node attempts reset to %d", iteration, got)
+		}
+		nodes = rerun(progress.Nodes, "a", "b")
+	}
+
+	progress, err := workflow.ApplyNodeResult(graph, running(nodes), workflow.NodeResult{
+		NodeID: "c",
+		Output: json.RawMessage(`{"quality_score": 70}`),
+	}, nil)
+	if err != nil {
+		t.Fatalf("ApplyNodeResult error: %v", err)
+	}
+	if progress.Command == nil || progress.Command.Kind != run.CommandSucceed {
+		t.Fatalf("expected the Run to finish once max_iterations is spent, got %+v", progress.Command)
+	}
+}
+
+// rerun marks the named reset nodes as having succeeded again, which is what
+// the engine records once the re-dispatched nodes come back.
+func rerun(nodes map[string]run.NodeState, ids ...string) map[string]run.NodeState {
+	next := map[string]run.NodeState{}
+	maps.Copy(next, nodes)
+	for _, id := range ids {
+		state := next[id]
+		state.Status = run.StateSucceeded
+		state.Attempts++
+		next[id] = state
+	}
+	return next
 }

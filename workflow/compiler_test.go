@@ -26,17 +26,25 @@ func (f fakeKeys) Frozen() bool   { return f.frozen }
 func (f fakeKeys) Keys() []string { return f.keys }
 
 type fakeTools struct {
-	names  []string
+	names []string
+	// writes are non-idempotent write tools, which is what the loop gate cares
+	// about.
+	writes []string
 	frozen bool
 }
 
 func (f fakeTools) Frozen() bool { return f.frozen }
 
 func (f fakeTools) Specs() []tool.Spec {
-	specs := make([]tool.Spec, 0, len(f.names))
+	specs := make([]tool.Spec, 0, len(f.names)+len(f.writes))
 	for _, name := range f.names {
 		specs = append(specs, tool.Spec{
 			Name: name, RiskLevel: policy.RiskLow, SideEffect: policy.SideEffectRead,
+		})
+	}
+	for _, name := range f.writes {
+		specs = append(specs, tool.Spec{
+			Name: name, RiskLevel: policy.RiskHigh, SideEffect: policy.SideEffectWrite,
 		})
 	}
 	return specs
@@ -45,7 +53,7 @@ func (f fakeTools) Specs() []tool.Spec {
 func registries() workflow.Registries {
 	return workflow.Registries{
 		Agents:   fakeKeys{keys: []string{"answer", "draft", "review", "publish"}, frozen: true},
-		Tools:    fakeTools{names: []string{"search"}, frozen: true},
+		Tools:    fakeTools{names: []string{"search"}, writes: []string{"publish_post"}, frozen: true},
 		Memories: fakeKeys{keys: []string{"notes"}, frozen: true},
 	}
 }
@@ -569,6 +577,53 @@ func TestLoopValidationInCompiler(t *testing.T) {
 		if code := compileError(t, declared).Code; code != "invalid_loop_spec" {
 			t.Fatalf("code = %q, want invalid_loop_spec", code)
 		}
+	})
+
+	// A loop replays every node between its target and itself. The gateway's
+	// idempotency key scopes one call, not the same call issued again on the
+	// next iteration, so a non-idempotent write inside the loop is a repeated
+	// side effect with no ceiling below the Run budget.
+	t.Run("non-idempotent write tool inside the loop", func(t *testing.T) {
+		declared := dag(
+			definition.NodeSpec{Name: "plan", Agent: "draft"},
+			definition.NodeSpec{
+				Name: "write", Agent: "publish", DependsOn: []string{"plan"}, Inputs: []string{"plan"},
+				Tools: []string{"publish_post"},
+			},
+			definition.NodeSpec{
+				Name: "review", Agent: "review", DependsOn: []string{"write"}, Inputs: []string{"write"},
+				Loop: &definition.LoopSpec{
+					MaxIterations: 2,
+					Condition:     "node.quality_score < 80",
+					TargetNode:    "plan",
+				},
+			},
+		)
+		declared.Tools = []definition.ToolRef{{Key: "publish_post"}}
+		if code := compileError(t, declared).Code; code != "idempotent_tool_in_loop" {
+			t.Fatalf("code = %q, want idempotent_tool_in_loop", code)
+		}
+	})
+
+	// The same tool outside the replayed span is fine: it runs once.
+	t.Run("non-idempotent write tool outside the loop", func(t *testing.T) {
+		declared := dag(
+			definition.NodeSpec{Name: "plan", Agent: "draft"},
+			definition.NodeSpec{
+				Name: "review", Agent: "review", DependsOn: []string{"plan"}, Inputs: []string{"plan"},
+				Loop: &definition.LoopSpec{
+					MaxIterations: 2,
+					Condition:     "node.quality_score < 80",
+					TargetNode:    "plan",
+				},
+			},
+			definition.NodeSpec{
+				Name: "publish", Agent: "publish", DependsOn: []string{"review"}, Inputs: []string{"review"},
+				Tools: []string{"publish_post"},
+			},
+		)
+		declared.Tools = []definition.ToolRef{{Key: "publish_post"}}
+		compile(t, declared)
 	})
 
 	t.Run("unknown loop target node", func(t *testing.T) {

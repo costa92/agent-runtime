@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
+	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/resource"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/tool"
@@ -293,6 +294,9 @@ func (c Compiler) buildNodes(declared definition.Definition) ([]Node, error) {
 				return nil, run.NewError("unknown_loop_target", run.ErrorInvalid, run.RetryNever,
 					fmt.Errorf("node %q loop target %q is undeclared", spec.Name, spec.Loop.TargetNode))
 			}
+			if err := c.checkLoopIsReplayable(declared, spec); err != nil {
+				return nil, err
+			}
 			node.Loop = spec.Loop
 		}
 		if !hasDependents[spec.Name] {
@@ -307,6 +311,95 @@ func (c Compiler) buildNodes(declared definition.Definition) ([]Node, error) {
 	// the same digest regardless of how the nodes were listed.
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	return nodes, nil
+}
+
+// checkLoopIsReplayable refuses a loop that would replay a non-idempotent
+// write.
+//
+// The gateway's idempotency key scopes a single call: it makes one invocation
+// safe to retry, and says nothing about the same call being issued again on the
+// next iteration. So a write that cannot be repeated safely must not sit on the
+// span the loop replays — between the loop's target and the loop node itself.
+// A node after the loop node is not on that span: it only runs once the loop
+// is not taken.
+func (c Compiler) checkLoopIsReplayable(declared definition.Definition, loopNode definition.NodeSpec) error {
+	replayed := intersect(
+		downstreamOf(declared.Graph.Nodes, loopNode.Loop.TargetNode),
+		ancestorsOf(declared.Graph.Nodes, loopNode.Name),
+	)
+	unsafe := map[string]bool{}
+	for _, spec := range c.Registries.Tools.Specs() {
+		if spec.SideEffect == policy.SideEffectWrite && !spec.Idempotent {
+			unsafe[spec.Name] = true
+		}
+	}
+	for _, spec := range declared.Graph.Nodes {
+		if !replayed[spec.Name] {
+			continue
+		}
+		for _, key := range spec.Tools {
+			if unsafe[key] {
+				return run.NewError("idempotent_tool_in_loop", run.ErrorInvalid, run.RetryNever,
+					fmt.Errorf("node %q grants non-idempotent write tool %q inside the loop %q replays",
+						spec.Name, key, loopNode.Name))
+			}
+		}
+	}
+	return nil
+}
+
+// downstreamOf returns the node and everything that depends on it, directly or
+// transitively. It is the same closure the scheduler resets on a loop.
+func downstreamOf(nodes []definition.NodeSpec, id string) map[string]bool {
+	found := map[string]bool{id: true}
+	for changed := true; changed; {
+		changed = false
+		for _, spec := range nodes {
+			if found[spec.Name] {
+				continue
+			}
+			for _, dependency := range spec.DependsOn {
+				if found[dependency] {
+					found[spec.Name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return found
+}
+
+// ancestorsOf returns the node and everything it depends on, directly or
+// transitively.
+func ancestorsOf(nodes []definition.NodeSpec, id string) map[string]bool {
+	byName := make(map[string]definition.NodeSpec, len(nodes))
+	for _, spec := range nodes {
+		byName[spec.Name] = spec
+	}
+	found := map[string]bool{id: true}
+	for changed := true; changed; {
+		changed = false
+		for name := range found {
+			for _, dependency := range byName[name].DependsOn {
+				if !found[dependency] {
+					found[dependency] = true
+					changed = true
+				}
+			}
+		}
+	}
+	return found
+}
+
+func intersect(left, right map[string]bool) map[string]bool {
+	both := map[string]bool{}
+	for name := range left {
+		if right[name] {
+			both[name] = true
+		}
+	}
+	return both
 }
 
 func toolKeys(refs []definition.ToolRef) []string {

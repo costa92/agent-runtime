@@ -38,7 +38,10 @@ func ReadyNodes(graph *ExecutionGraph, snapshot run.Snapshot) []Node {
 
 	var ready []Node
 	for _, node := range graph.Nodes {
-		if _, started := snapshot.Nodes[node.ID]; started {
+		if state, started := snapshot.Nodes[node.ID]; started && state.Status.Terminal() {
+			// A node the graph has settled does not run again. A node reset by
+			// a loop keeps its entry — that is where its attempt count lives —
+			// but its status is no longer terminal, so it is ready once more.
 			continue
 		}
 		if !dependenciesMet(graph, node, snapshot) {
@@ -166,8 +169,13 @@ func ApplyNodeResult(graph *ExecutionGraph, snapshot run.Snapshot, result NodeRe
 	return Progress{Nodes: nodes, Command: command, Output: output}, nil
 }
 
-// resetNodesInLoop removes target node and all its downstream dependents from the nodes map,
-// allowing the scheduler to mark them as ready for re-execution.
+// resetNodesInLoop clears the settled status of the target node and all its
+// downstream dependents, allowing the scheduler to hand them out again.
+//
+// The entries stay in the map with their Attempts intact. The loop node is by
+// definition downstream of its own target, so deleting the entries would clear
+// the very counter LoopSpec.MaxIterations is compared against, and the loop
+// would only ever end when the Run's budget ran out.
 func resetNodesInLoop(graph *ExecutionGraph, nodes map[string]run.NodeState, targetNodeID string) {
 	toReset := map[string]bool{targetNodeID: true}
 	// Find all downstream dependents recursively
@@ -188,7 +196,7 @@ func resetNodesInLoop(graph *ExecutionGraph, nodes map[string]run.NodeState, tar
 		}
 	}
 	for id := range toReset {
-		delete(nodes, id)
+		nodes[id] = run.NodeState{Attempts: nodes[id].Attempts}
 	}
 }
 
