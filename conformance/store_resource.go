@@ -1,8 +1,9 @@
-package store
+package conformance
 
 import (
 	"context"
 	"encoding/json"
+	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
@@ -12,30 +13,19 @@ import (
 
 // ResourceHarness is what a resource-store adapter supplies.
 type ResourceHarness struct {
-	Reader     ResourceReader
-	Publisher  ResourcePublisher
-	Authorizer ResourceAuthorizer
+	Reader     store.ResourceReader
+	Publisher  store.ResourcePublisher
+	Authorizer store.ResourceAuthorizer
 	// Head returns the current head version of a Kind/name, for CAS tests.
 	Head func(kind resource.Kind, name string) uint64
 	// Audit returns the publish audit facts recorded so far.
-	Audit func() []PublishAudit
+	Audit func() []store.PublishAudit
 }
 
-// PublishAudit is the immutable record of one publish. Every publish writes
-// one, in the same transaction as the version it describes: publishing is the
-// action that can rewrite prompts, widen allowlists, raise budgets and relax
-// policy, so an unattributable one is not auditable at all.
-type PublishAudit struct {
-	Ref         resource.Ref
-	PreviousRef resource.Ref
-	PublishedBy authorization.PrincipalRef
-	Admission   []AdmissionResult
-}
-
-// ResourceConformance checks the whole Kind family with one suite, parameterized
+// Resource checks the whole Kind family with one suite, parameterized
 // by Kind. One suite because they are one family: a per-Kind suite is how a
 // Kind ends up with a publish path that skips a check.
-func ResourceConformance(t *testing.T, newHarness func(t *testing.T) ResourceHarness) {
+func Resource(t *testing.T, newHarness func(t *testing.T) ResourceHarness) {
 	t.Helper()
 
 	for _, kind := range resource.Kinds() {
@@ -172,7 +162,7 @@ func ResourceConformance(t *testing.T, newHarness func(t *testing.T) ResourceHar
 				if _, err := harness.Reader.GetPublished(ctx, pendingRef.Ref); err == nil {
 					t.Error("a pending version was readable")
 				}
-				active, err := harness.Reader.ListActive(ctx, ResourceQuery{Kind: kind})
+				active, err := harness.Reader.ListActive(ctx, store.ResourceQuery{Kind: kind})
 				if err != nil {
 					t.Fatalf("list active: %v", err)
 				}
@@ -204,7 +194,7 @@ func ResourceConformance(t *testing.T, newHarness func(t *testing.T) ResourceHar
 				}
 				// The right to run a definition must never imply the right to
 				// rewrite it: publishing can widen allowlists and relax policy.
-				if err := harness.Authorizer.AuthorizePublish(ctx, reader, PublishIntent{Kind: kind, Name: "a"}); err == nil {
+				if err := harness.Authorizer.AuthorizePublish(ctx, reader, store.PublishIntent{Kind: kind, Name: "a"}); err == nil {
 					t.Fatal("use authorization also granted publish")
 				}
 			})
@@ -259,8 +249,8 @@ func ResourceConformance(t *testing.T, newHarness func(t *testing.T) ResourceHar
 	}
 }
 
-func samplePublish(kind resource.Kind, name string, expectedHead uint64) PublishResourceCommand {
-	return PublishResourceCommand{
+func samplePublish(kind resource.Kind, name string, expectedHead uint64) store.PublishResourceCommand {
+	return store.PublishResourceCommand{
 		ExpectedHeadVersion: expectedHead,
 		Kind:                kind,
 		Name:                name,

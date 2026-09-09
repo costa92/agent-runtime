@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,36 @@ var deniedImportPrefixes = []struct {
 	{"github.com/sashabaranov/", "model providers are a host-supplied Model port"},
 	{"github.com/openai/", "model providers are a host-supplied Model port"},
 	{"google.golang.org/genai", "model providers are a host-supplied Model port"},
+	{"testing", "a test framework in the production graph links itself into every host binary that imports the package holding it"},
+}
+
+// conformancePackage holds the adapter suites a host runs against its own Store,
+// Model, Memory and Policy implementations. They cannot live in _test.go files —
+// a test file is not importable — so they are production-tagged code that
+// legitimately imports `testing`, and they are excluded from the scan below.
+// Nothing else may be: the whole point of the exclusion is that it is one
+// package, and that no host reaches it from a production import path.
+const conformancePackage = "github.com/kart-io/wechat-account/agent-runtime/conformance"
+
+// packagesExcept lists the module's packages minus the named ones.
+func packagesExcept(t *testing.T, dir string, excluded ...string) []string {
+	t.Helper()
+	cmd := exec.Command("go", "list", "./...")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list ./... in %s: %v", dir, err)
+	}
+	var kept []string
+	for _, line := range strings.Fields(string(out)) {
+		if !slices.Contains(excluded, line) {
+			kept = append(kept, line)
+		}
+	}
+	if len(kept) == 0 {
+		t.Fatal("no packages left to scan; the check would pass vacuously")
+	}
+	return kept
 }
 
 // listedPackage is the subset of `go list -json` this test reads.
@@ -57,7 +88,12 @@ type listedPackage struct {
 func productionDeps(t *testing.T, dir string) []listedPackage {
 	t.Helper()
 
-	cmd := exec.Command("go", "list", "-deps", "-json", "./...")
+	// The conformance package is listed away rather than filtered out of the
+	// results: `go list -deps` returns a flat set, so a dependency pulled in
+	// only by that package is indistinguishable from one pulled in by the
+	// Runtime itself once it is in the list.
+	roots := packagesExcept(t, dir, conformancePackage)
+	cmd := exec.Command("go", append([]string{"list", "-deps", "-json"}, roots...)...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

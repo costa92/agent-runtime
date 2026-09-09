@@ -1,24 +1,25 @@
-package llm
+package conformance
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kart-io/wechat-account/agent-runtime/llm"
 	"strings"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
-// Harness is what a model adapter supplies to be checked.
-type Harness struct {
-	Client Client
+// LLMHarness is what a model adapter supplies to be checked.
+type LLMHarness struct {
+	Client llm.Client
 	// ToolLess is a client for an engine without tool calling, so the suite can
 	// check the degradation path rather than assume it.
-	ToolLess Client
+	ToolLess llm.Client
 	// Failing is a client whose provider errors after consuming the prompt —
 	// the case where usage must still be reported.
-	Failing Client
+	Failing llm.Client
 }
 
 // Conformance is the reusable suite every model adapter must pass.
@@ -27,14 +28,14 @@ type Harness struct {
 // that capabilities are answered rather than discovered by failing, that
 // cancellation is not retried, that spend is reported even when the call
 // failed, and that a tool call survives the round trip intact.
-func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
+func LLM(t *testing.T, newHarness func(t *testing.T) LLMHarness) {
 	t.Helper()
 
 	t.Run("UnsupportedToolCallingIsAStableCode", func(t *testing.T) {
 		harness := newHarness(t)
 		ctx := context.Background()
 
-		capabilities, err := harness.ToolLess.Capabilities(ctx, ModelRef{Profile: "toolless"})
+		capabilities, err := harness.ToolLess.Capabilities(ctx, llm.ModelRef{Profile: "toolless"})
 		if err != nil {
 			t.Fatalf("capabilities: %v", err)
 		}
@@ -42,10 +43,10 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 			t.Fatal("the tool-less client claims tool support")
 		}
 
-		_, err = harness.ToolLess.Complete(ctx, Request{
-			Model:    ModelRef{Profile: "toolless"},
-			Messages: []Message{{Role: RoleUser, Content: "hello"}},
-			Tools:    []ToolDef{{Name: "search", Parameters: json.RawMessage(`{}`)}},
+		_, err = harness.ToolLess.Complete(ctx, llm.Request{
+			Model:    llm.ModelRef{Profile: "toolless"},
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
+			Tools:    []llm.ToolDef{{Name: "search", Parameters: json.RawMessage(`{}`)}},
 		})
 		var runtimeError *run.Error
 		if !errors.As(err, &runtimeError) {
@@ -53,8 +54,8 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 		}
 		// The Runtime degrades on this — drops the tool loop and asks again —
 		// so it cannot be decided by matching a message.
-		if runtimeError.Code != CodeCapabilityUnsupported {
-			t.Fatalf("code=%q want=%q", runtimeError.Code, CodeCapabilityUnsupported)
+		if runtimeError.Code != llm.CodeCapabilityUnsupported {
+			t.Fatalf("code=%q want=%q", runtimeError.Code, llm.CodeCapabilityUnsupported)
 		}
 	})
 
@@ -63,9 +64,9 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		_, err := harness.Client.Complete(ctx, Request{
-			Model:    ModelRef{Profile: "default"},
-			Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		_, err := harness.Client.Complete(ctx, llm.Request{
+			Model:    llm.ModelRef{Profile: "default"},
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
 		})
 		if err == nil {
 			t.Fatal("a cancelled call succeeded")
@@ -83,9 +84,9 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 		harness := newHarness(t)
 		ctx := context.Background()
 
-		response, err := harness.Failing.Complete(ctx, Request{
-			Model:    ModelRef{Profile: "failing"},
-			Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		response, err := harness.Failing.Complete(ctx, llm.Request{
+			Model:    llm.ModelRef{Profile: "failing"},
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
 		})
 		if err == nil {
 			t.Fatal("the failing client succeeded")
@@ -109,13 +110,13 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 	t.Run("StreamChunksPreserveOrderAndMatchComplete", func(t *testing.T) {
 		harness := newHarness(t)
 		ctx := context.Background()
-		request := Request{
-			Model:    ModelRef{Profile: "default"},
-			Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		request := llm.Request{
+			Model:    llm.ModelRef{Profile: "default"},
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
 		}
 
 		var streamed strings.Builder
-		response, err := harness.Client.Stream(ctx, request, func(chunk Chunk) error {
+		response, err := harness.Client.Stream(ctx, request, func(chunk llm.Chunk) error {
 			streamed.WriteString(chunk.Content)
 			return nil
 		})
@@ -143,10 +144,10 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 
 		stop := errors.New("enough")
 		var delivered int
-		_, err := harness.Client.Stream(ctx, Request{
-			Model:    ModelRef{Profile: "default"},
-			Messages: []Message{{Role: RoleUser, Content: "hello"}},
-		}, func(Chunk) error {
+		_, err := harness.Client.Stream(ctx, llm.Request{
+			Model:    llm.ModelRef{Profile: "default"},
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
+		}, func(llm.Chunk) error {
 			delivered++
 			return stop
 		})
@@ -162,10 +163,10 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 		harness := newHarness(t)
 		ctx := context.Background()
 
-		response, err := harness.Client.Complete(ctx, Request{
-			Model:    ModelRef{Profile: "tools"},
-			Messages: []Message{{Role: RoleUser, Content: "search"}},
-			Tools:    []ToolDef{{Name: "search", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		response, err := harness.Client.Complete(ctx, llm.Request{
+			Model:    llm.ModelRef{Profile: "tools"},
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "search"}},
+			Tools:    []llm.ToolDef{{Name: "search", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		})
 		if err != nil {
 			t.Fatalf("complete: %v", err)
@@ -196,9 +197,9 @@ func Conformance(t *testing.T, newHarness func(t *testing.T) Harness) {
 		// The Runtime owns attempt limits because attempts are budget. A client
 		// that retried internally would spend against an envelope it cannot see,
 		// and the overrun would look like a single expensive call.
-		response, err := harness.Failing.Complete(ctx, Request{
-			Model:    ModelRef{Profile: "failing"},
-			Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		response, err := harness.Failing.Complete(ctx, llm.Request{
+			Model:    llm.ModelRef{Profile: "failing"},
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
 		})
 		if err == nil {
 			t.Fatal("the failing client succeeded")

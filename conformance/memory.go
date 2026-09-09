@@ -1,29 +1,30 @@
-package memory
+package conformance
 
 import (
 	"context"
+	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
-// ProviderHarness is what a memory provider supplies to be checked.
-type ProviderHarness struct {
-	Provider Provider
+// MemoryHarness is what a memory provider supplies to be checked.
+type MemoryHarness struct {
+	Provider memory.Provider
 	// Seed stores a record visible only within the given scope.
-	Seed func(scope Scope, ref, text string, score float64)
+	Seed func(scope memory.Scope, ref, text string, score float64)
 	// Writes reports how many distinct writes landed, which is how a replay is
 	// told from a duplicate.
 	Writes func() int
 }
 
-// ProviderConformance is the reusable suite every memory provider must pass.
+// MemoryProvider is the reusable suite every memory provider must pass.
 //
 // The isolation cases are the reason it exists. A provider that ignores one
 // component of the scope works perfectly in every single-tenant test and leaks
 // across the boundary the first time there are two.
-func ProviderConformance(t *testing.T, newHarness func(t *testing.T) ProviderHarness) {
+func MemoryProvider(t *testing.T, newHarness func(t *testing.T) MemoryHarness) {
 	t.Helper()
 
 	tenantA := scopeFor("tenant-a", "notes", "user-a")
@@ -38,7 +39,7 @@ func ProviderConformance(t *testing.T, newHarness func(t *testing.T) ProviderHar
 		harness.Seed(scopeFor("tenant-a", "other-namespace", "user-a"), "a-2", "alpha", 1)
 		harness.Seed(scopeFor("tenant-a", "notes", "someone-else"), "a-3", "alpha", 1)
 
-		records, err := harness.Provider.Retrieve(ctx, Query{Scope: tenantA, MaxRecords: 10, MaxTokens: 1000})
+		records, err := harness.Provider.Retrieve(ctx, memory.Query{Scope: tenantA, MaxRecords: 10, MaxTokens: 1000})
 		if err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
@@ -54,7 +55,7 @@ func ProviderConformance(t *testing.T, newHarness func(t *testing.T) ProviderHar
 	t.Run("EmptyResultIsNotAnError", func(t *testing.T) {
 		harness := newHarness(t)
 
-		records, err := harness.Provider.Retrieve(context.Background(), Query{
+		records, err := harness.Provider.Retrieve(context.Background(), memory.Query{
 			Scope: tenantA, MaxRecords: 10, MaxTokens: 1000,
 		})
 		if err != nil {
@@ -69,7 +70,7 @@ func ProviderConformance(t *testing.T, newHarness func(t *testing.T) ProviderHar
 		harness := newHarness(t)
 		harness.Seed(tenantA, "a-1", "alpha", 0.5)
 
-		records, err := harness.Provider.Retrieve(context.Background(), Query{
+		records, err := harness.Provider.Retrieve(context.Background(), memory.Query{
 			Scope: tenantA, MaxRecords: 10, MaxTokens: 1000,
 		})
 		if err != nil {
@@ -90,7 +91,7 @@ func ProviderConformance(t *testing.T, newHarness func(t *testing.T) ProviderHar
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		if _, err := harness.Provider.Retrieve(ctx, Query{
+		if _, err := harness.Provider.Retrieve(ctx, memory.Query{
 			Scope: tenantA, MaxRecords: 10, MaxTokens: 1000,
 		}); err == nil {
 			t.Fatal("a cancelled retrieval succeeded")
@@ -127,7 +128,7 @@ func ProviderConformance(t *testing.T, newHarness func(t *testing.T) ProviderHar
 			t.Fatalf("write: %v", err)
 		}
 
-		records, err := harness.Provider.Retrieve(ctx, Query{Scope: tenantB, MaxRecords: 10, MaxTokens: 1000})
+		records, err := harness.Provider.Retrieve(ctx, memory.Query{Scope: tenantB, MaxRecords: 10, MaxTokens: 1000})
 		if err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
@@ -137,8 +138,8 @@ func ProviderConformance(t *testing.T, newHarness func(t *testing.T) ProviderHar
 	})
 }
 
-func scopeFor(tenant, namespace, subject string) Scope {
-	return Scope{
+func scopeFor(tenant, namespace, subject string) memory.Scope {
+	return memory.Scope{
 		Tenant:    tenant,
 		Namespace: namespace,
 		Principal: authorization.PrincipalRef{

@@ -1,18 +1,19 @@
-package policy
+package conformance
 
 import (
 	"fmt"
+	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"testing"
 )
 
-// Case is one expectation about a deployment's policy set.
-type Case struct {
+// PolicyCase is one expectation about a deployment's policy set.
+type PolicyCase struct {
 	Name  string
-	Facts CallFacts
-	Want  Decision
+	Facts policy.CallFacts
+	Want  policy.Decision
 }
 
-// SetConformance checks a deployment's own published policy set.
+// PolicySet checks a deployment's own published policy set.
 //
 // Governance is data, so it is tested like data. Without this, "what does our
 // policy set actually decide" is answerable only by running the system and
@@ -23,7 +24,7 @@ type Case struct {
 // two share a name. Duplicate names are worth failing on because the tie-break
 // falls back to the name, so two policies called the same thing resolve in an
 // order nothing defines.
-func SetConformance(t *testing.T, snapshot Snapshot, cases []Case) {
+func PolicySet(t *testing.T, snapshot policy.Snapshot, cases []PolicyCase) {
 	t.Helper()
 
 	t.Run("EveryPolicyValidates", func(t *testing.T) {
@@ -45,17 +46,17 @@ func SetConformance(t *testing.T, snapshot Snapshot, cases []Case) {
 	})
 
 	t.Run("DefaultIsDeclared", func(t *testing.T) {
-		// A zero DefaultRule is deny-for-high-risk and allow-for-read-only,
+		// A zero policy.DefaultRule is deny-for-high-risk and allow-for-read-only,
 		// which is a reasonable default but not one anyone chose. Saying so out
 		// loud is the point of the check.
-		if snapshot.Default == (DefaultRule{}) {
+		if snapshot.Default == (policy.DefaultRule{}) {
 			t.Log("the policy set relies on the implicit default: deny high-risk, allow read-only")
 		}
 	})
 
 	for _, testCase := range cases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			explanation, err := Evaluate(snapshot, testCase.Facts)
+			explanation, err := policy.Evaluate(snapshot, testCase.Facts)
 			if err != nil {
 				t.Fatalf("evaluate: %v", err)
 			}
@@ -66,7 +67,7 @@ func SetConformance(t *testing.T, snapshot Snapshot, cases []Case) {
 	}
 }
 
-func describe(explanation Explanation) string {
+func describe(explanation policy.Explanation) string {
 	if explanation.FromDefault {
 		return fmt.Sprintf("no policy matched; the default applied (snapshot %s)", explanation.SnapshotDigest)
 	}

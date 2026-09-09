@@ -1,15 +1,16 @@
-package policy_test
+package conformance_test
 
 import (
 	"testing"
 
+	"github.com/kart-io/wechat-account/agent-runtime/conformance"
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
 )
 
 // 一致性套件本身要被跑过，否则「写了套件」和「套件能用」是两件事。
 //
 // store/core_conformance_test.go 用内存 Store 把 store 的套件挂起来，这里对
-// policy.SetConformance 做同一件事：拿一个有代表性的策略集当被测数据，既覆盖
+// conformance.PolicySet 做同一件事：拿一个有代表性的策略集当被测数据，既覆盖
 // 套件自带的三项结构检查（每条策略可发布、名字不重复、默认规则是否显式声明），
 // 也覆盖用例驱动的决策断言。套件里任何一项检查退化成空转，这个测试会一起垮。
 func referencePolicySet() policy.Snapshot {
@@ -55,7 +56,7 @@ func referencePolicySet() policy.Snapshot {
 }
 
 func TestReferencePolicySetConformance(t *testing.T) {
-	policy.SetConformance(t, referencePolicySet(), []policy.Case{{
+	conformance.PolicySet(t, referencePolicySet(), []conformance.PolicyCase{{
 		Name: "ReadOnlySearchFallsToTheDefault",
 		Facts: policy.CallFacts{
 			ToolName:        "search",

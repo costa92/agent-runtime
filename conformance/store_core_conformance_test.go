@@ -1,10 +1,10 @@
-package store_test
+package conformance_test
 
 import (
 	"testing"
 
+	"github.com/kart-io/wechat-account/agent-runtime/conformance"
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
 )
 
 // The suite runs against the in-memory Store so that it is itself exercised. A
@@ -18,10 +18,10 @@ import (
 // a testing.TB shim through the whole suite, which is a lot of abstraction to
 // carry for one assertion.
 func TestMemoryStoreConformance(t *testing.T) {
-	store.CoreStoreConformance(t, func(t *testing.T) store.CoreHarness {
+	conformance.CoreStore(t, func(t *testing.T) conformance.CoreHarness {
 		clock := testkit.NewClock()
 		memory := testkit.NewMemoryStore(clock)
-		return store.CoreHarness{
+		return conformance.CoreHarness{
 			Store:       memory,
 			Advance:     clock.Advance,
 			Projections: memory.Projections,
@@ -31,9 +31,9 @@ func TestMemoryStoreConformance(t *testing.T) {
 }
 
 func TestMemoryResourceConformance(t *testing.T) {
-	store.ResourceConformance(t, func(t *testing.T) store.ResourceHarness {
+	conformance.Resource(t, func(t *testing.T) conformance.ResourceHarness {
 		resources := testkit.NewMemoryResources(testkit.NewClock(), "publisher")
-		return store.ResourceHarness{
+		return conformance.ResourceHarness{
 			Reader:     resources,
 			Publisher:  resources,
 			Authorizer: resources,
@@ -44,9 +44,9 @@ func TestMemoryResourceConformance(t *testing.T) {
 }
 
 func TestMemoryQuotaConformance(t *testing.T) {
-	store.QuotaConformance(t, func(t *testing.T) store.QuotaHarness {
+	conformance.Quota(t, func(t *testing.T) conformance.QuotaHarness {
 		quotas := testkit.NewMemoryQuota()
-		return store.QuotaHarness{
+		return conformance.QuotaHarness{
 			Enforcer:     quotas,
 			Publish:      quotas.Publish,
 			Metered:      quotas.Metered,

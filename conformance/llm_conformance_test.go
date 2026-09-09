@@ -1,15 +1,15 @@
-package llm_test
+package conformance_test
 
 import (
 	"testing"
 
+	"github.com/kart-io/wechat-account/agent-runtime/conformance"
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
-	"github.com/kart-io/wechat-account/agent-runtime/llm"
 )
 
 func TestScriptedModelConformance(t *testing.T) {
-	llm.Conformance(t, func(t *testing.T) llm.Harness {
-		return llm.Harness{
+	conformance.LLM(t, func(t *testing.T) conformance.LLMHarness {
+		return conformance.LLMHarness{
 			Client:   testkit.NewScriptedModel(),
 			ToolLess: testkit.NewToolLessModel(),
 			Failing:  testkit.NewFailingModel(),

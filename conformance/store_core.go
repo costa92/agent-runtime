@@ -1,8 +1,9 @@
-package store
+package conformance
 
 import (
 	"context"
 	"encoding/json"
+	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"slices"
 	"sync"
 	"testing"
@@ -14,26 +15,26 @@ import (
 
 // CoreHarness is what an adapter supplies to be checked.
 //
-// The suite needs more than the Execution port: lease expiry is
+// The suite needs more than the store.Execution port: lease expiry is
 // Store-authoritative, so it must be able to move the Store's clock rather than
 // sleep, and all-or-nothing child creation can only be observed by making one
 // child fail. Both are properties of the adapter, so the adapter provides them.
 type CoreHarness struct {
-	Store Execution
+	Store store.Execution
 	// Advance moves the Store's authoritative clock forward.
 	Advance func(time.Duration)
 	// Projections returns the durable outbox.
-	Projections func() []ProjectionFact
+	Projections func() []store.ProjectionFact
 	// Reservation reports whether a budget reservation is still outstanding.
-	Reservation func(id run.ID) (BudgetReservation, bool)
+	Reservation func(id run.ID) (store.BudgetReservation, bool)
 }
 
-// CoreStoreConformance is the reusable suite every Execution adapter must pass.
+// CoreStore is the reusable suite every store.Execution adapter must pass.
 //
 // It lives in the Runtime rather than in each adapter's tests so that "what the
 // Store must guarantee" has one definition. An adapter that passes a suite it
 // wrote itself has only proved it agrees with itself.
-func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
+func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 	t.Helper()
 
 	t.Run("CreateIsUniqueAndPinsImmutableRefs", func(t *testing.T) {
@@ -115,17 +116,17 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			if err != nil {
 				t.Fatalf("reduce: %v", err)
 			}
-			snapshot, err = harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+			snapshot, err = harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 				Fence:      fenceFor(claimed, snapshot.Revision),
-				Invocation: InvocationBegin{ID: run.ID("inv-" + snapshot.State), Reservation: BudgetReservation{ID: run.ID("res-" + itoa(int(snapshot.Revision)))}},
-				Commit:     CommitContext{Transition: transition, Events: transition.Events},
+				Invocation: store.InvocationBegin{ID: run.ID("inv-" + snapshot.State), Reservation: store.BudgetReservation{ID: run.ID("res-" + itoa(int(snapshot.Revision)))}},
+				Commit:     store.CommitContext{Transition: transition, Events: transition.Events},
 			})
 			if err != nil {
 				t.Fatalf("begin: %v", err)
 			}
 		}
 
-		page, err := harness.Store.Events(ctx, EventQuery{RunID: "run-1"})
+		page, err := harness.Store.Events(ctx, store.EventQuery{RunID: "run-1"})
 		if err != nil {
 			t.Fatalf("events: %v", err)
 		}
@@ -149,9 +150,9 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			t.Fatalf("reduce: %v", err)
 		}
 		stale := fenceFor(claimed, claimed.Snapshot.Revision-1)
-		_, err = harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		_, err = harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: stale, ApprovalID: "ap-1",
-			Commit: CommitContext{Transition: transition, Events: transition.Events},
+			Commit: store.CommitContext{Transition: transition, Events: transition.Events},
 		})
 		if run.KindOf(err) != run.ErrorConflict {
 			t.Fatalf("stale revision error=%s want=conflict", run.KindOf(err))
@@ -170,9 +171,9 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 
 		wrong := fenceFor(claimed, claimed.Snapshot.Revision)
 		wrong.LeaseToken = "not-my-token"
-		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		if _, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: wrong, ApprovalID: "ap-1",
-			Commit: CommitContext{Transition: transition, Events: transition.Events},
+			Commit: store.CommitContext{Transition: transition, Events: transition.Events},
 		}); run.KindOf(err) != run.ErrorConflict {
 			t.Errorf("a foreign lease token was accepted: %v", err)
 		}
@@ -180,9 +181,9 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		// The Store's clock, not the caller's: a worker that judged expiry
 		// itself would hand ownership over whenever the two disagreed.
 		harness.Advance(time.Hour)
-		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		if _, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
-			Commit: CommitContext{Transition: transition, Events: transition.Events},
+			Commit: store.CommitContext{Transition: transition, Events: transition.Events},
 		}); run.KindOf(err) != run.ErrorConflict {
 			t.Errorf("an expired lease was accepted: %v", err)
 		}
@@ -194,7 +195,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		first := mustStart(t, harness, "run-1")
 
 		harness.Advance(time.Hour)
-		second, _, err := harness.Store.Claim(ctx, ClaimCommand{RunID: "run-1", Owner: "worker-2", LeaseFor: time.Minute})
+		second, _, err := harness.Store.Claim(ctx, store.ClaimCommand{RunID: "run-1", Owner: "worker-2", LeaseFor: time.Minute})
 		if err != nil {
 			t.Fatalf("takeover: %v", err)
 		}
@@ -202,7 +203,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			t.Fatal("takeover reissued the same token")
 		}
 
-		if _, err := harness.Store.Renew(ctx, RenewCommand{
+		if _, err := harness.Store.Renew(ctx, store.RenewCommand{
 			RunID: "run-1", LeaseToken: first.Lease.Token, LeaseFor: time.Minute,
 		}); run.KindOf(err) != run.ErrorConflict {
 			t.Errorf("the superseded worker could still renew: %v", err)
@@ -214,7 +215,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		if _, err := harness.Store.SealForCommit(ctx, SealCommand{
+		if _, err := harness.Store.SealForCommit(ctx, store.SealCommand{
 			RunID: "run-1", LeaseToken: claimed.Lease.Token,
 		}); err != nil {
 			t.Fatalf("seal: %v", err)
@@ -226,7 +227,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		// already sealed. Refusing it would cancel a render that outlives the
 		// original lease.
 		harness.Advance(30 * time.Second)
-		renewed, err := harness.Store.Renew(ctx, RenewCommand{
+		renewed, err := harness.Store.Renew(ctx, store.RenewCommand{
 			RunID: "run-1", LeaseToken: claimed.Lease.Token, LeaseFor: time.Minute,
 		})
 		if err != nil {
@@ -240,7 +241,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		// sealed lease is claimable exactly like an expired unsealed one: a
 		// worker that stops renewing gives up ownership, sealed or not.
 		harness.Advance(time.Hour)
-		if _, _, err := harness.Store.Claim(ctx, ClaimCommand{RunID: "run-1", Owner: "worker-2", LeaseFor: time.Minute}); err != nil {
+		if _, _, err := harness.Store.Claim(ctx, store.ClaimCommand{RunID: "run-1", Owner: "worker-2", LeaseFor: time.Minute}); err != nil {
 			t.Fatalf("takeover of an expired sealed lease: %v", err)
 		}
 	})
@@ -267,7 +268,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			t.Fatalf("create other: %v", err)
 		}
 
-		claimed, err := harness.Store.ClaimBatch(ctx, ClaimBatchCommand{
+		claimed, err := harness.Store.ClaimBatch(ctx, store.ClaimBatchCommand{
 			Owner: "worker-1", Limit: 3, LeaseFor: time.Minute, RootQuantum: 2,
 		})
 		if err != nil {
@@ -305,7 +306,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		if _, err := harness.Store.CancelTree(ctx, CancelTreeCommand{
+		if _, err := harness.Store.CancelTree(ctx, store.CancelTreeCommand{
 			RootID: "run-1", RequestedBy: samplePrincipal(),
 		}); err != nil {
 			t.Fatalf("cancel: %v", err)
@@ -317,14 +318,14 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		if _, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
-			Commit: CommitContext{Transition: transition, Events: transition.Events},
+			Commit: store.CommitContext{Transition: transition, Events: transition.Events},
 		}); run.KindOf(err) == "" {
 			t.Fatal("a commit from before the cancellation was accepted")
 		}
 
-		if _, err := harness.Store.Renew(ctx, RenewCommand{
+		if _, err := harness.Store.Renew(ctx, store.RenewCommand{
 			RunID: "run-1", LeaseToken: claimed.Lease.Token, LeaseFor: time.Minute,
 		}); err == nil {
 			t.Error("a lease survived the cancellation")
@@ -348,9 +349,9 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		snapshot, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		snapshot, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
-			Commit: CommitContext{Transition: parked, Events: parked.Events},
+			Commit: store.CommitContext{Transition: parked, Events: parked.Events},
 		})
 		if err != nil {
 			t.Fatalf("enter approval: %v", err)
@@ -364,13 +365,13 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		if _, err := harness.Store.ResolveApproval(ctx, ResolveApprovalCommand{
-			Fence: ResolutionFence{
+		if _, err := harness.Store.ResolveApproval(ctx, store.ResolveApprovalCommand{
+			Fence: store.ResolutionFence{
 				RunID: "run-1", ExpectedRevision: snapshot.Revision,
 				TargetID: "ap-1", RequestedBy: samplePrincipal(),
 			},
-			Decision: ApprovalDecision{ID: "ap-1", Approved: true},
-			Commit:   CommitContext{Transition: resumed, Events: resumed.Events},
+			Decision: store.ApprovalDecision{ID: "ap-1", Approved: true},
+			Commit:   store.CommitContext{Transition: resumed, Events: resumed.Events},
 		}); err != nil {
 			t.Fatalf("resolve without a lease: %v", err)
 		}
@@ -385,9 +386,9 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		snapshot, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		snapshot, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
-			Commit: CommitContext{Transition: parked, Events: parked.Events},
+			Commit: store.CommitContext{Transition: parked, Events: parked.Events},
 		})
 		if err != nil {
 			t.Fatalf("enter approval: %v", err)
@@ -397,7 +398,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			t.Fatalf("reduce: %v", err)
 		}
 
-		cases := map[string]ResolutionFence{
+		cases := map[string]store.ResolutionFence{
 			"stale revision": {
 				RunID: "run-1", ExpectedRevision: snapshot.Revision - 1,
 				TargetID: "ap-1", RequestedBy: samplePrincipal(),
@@ -409,9 +410,9 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			},
 		}
 		for name, fence := range cases {
-			if _, err := harness.Store.ResolveApproval(ctx, ResolveApprovalCommand{
-				Fence: fence, Decision: ApprovalDecision{ID: "ap-1"},
-				Commit: CommitContext{Transition: resumed, Events: resumed.Events},
+			if _, err := harness.Store.ResolveApproval(ctx, store.ResolveApprovalCommand{
+				Fence: fence, Decision: store.ApprovalDecision{ID: "ap-1"},
+				Commit: store.CommitContext{Transition: resumed, Events: resumed.Events},
 			}); err == nil {
 				t.Errorf("%s: accepted", name)
 			}
@@ -419,13 +420,13 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 
 		// A decision naming a different target than the fence is a caller bug
 		// that would otherwise resolve the wrong approval.
-		if _, err := harness.Store.ResolveApproval(ctx, ResolveApprovalCommand{
-			Fence: ResolutionFence{
+		if _, err := harness.Store.ResolveApproval(ctx, store.ResolveApprovalCommand{
+			Fence: store.ResolutionFence{
 				RunID: "run-1", ExpectedRevision: snapshot.Revision,
 				TargetID: "ap-1", RequestedBy: samplePrincipal(),
 			},
-			Decision: ApprovalDecision{ID: "ap-2"},
-			Commit:   CommitContext{Transition: resumed, Events: resumed.Events},
+			Decision: store.ApprovalDecision{ID: "ap-2"},
+			Commit:   store.CommitContext{Transition: resumed, Events: resumed.Events},
 		}); run.KindOf(err) != run.ErrorInvalid {
 			t.Errorf("a mismatched target was accepted: %v", err)
 		}
@@ -443,10 +444,10 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		snapshot, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+		snapshot, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: InvocationBegin{ID: "inv-1", Reservation: BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
-			Commit:     CommitContext{Transition: began, Events: began.Events},
+			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
+			Commit:     store.CommitContext{Transition: began, Events: began.Events},
 		})
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -456,11 +457,11 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		if _, err := harness.Store.CompleteInvocation(ctx, CompleteInvocationCommand{
+		if _, err := harness.Store.CompleteInvocation(ctx, store.CompleteInvocationCommand{
 			Fence:  fenceFor(claimed, snapshot.Revision),
-			Result: InvocationResult{ID: "inv-1", Outcome: run.OutcomeUnknown},
-			Budget: BudgetSettlement{ReservationID: "res-1"},
-			Commit: CommitContext{Transition: parked, Events: parked.Events},
+			Result: store.InvocationResult{ID: "inv-1", Outcome: run.OutcomeUnknown},
+			Budget: store.BudgetSettlement{ReservationID: "res-1"},
+			Commit: store.CommitContext{Transition: parked, Events: parked.Events},
 		}); err != nil {
 			t.Fatalf("complete: %v", err)
 		}
@@ -488,13 +489,13 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		snapshot, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+		snapshot, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: InvocationBegin{
+			Invocation: store.InvocationBegin{
 				ID: "inv-1", Tool: "search_evidence",
-				Reservation: BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}},
+				Reservation: store.BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}},
 			},
-			Commit: CommitContext{Transition: began, Events: began.Events},
+			Commit: store.CommitContext{Transition: began, Events: began.Events},
 		})
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -504,9 +505,9 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		if _, err := harness.Store.CommitNodeResult(ctx, CommitNodeResultCommand{
+		if _, err := harness.Store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
 			Fence: fenceFor(claimed, snapshot.Revision), NodeName: "node-1",
-			Commit: CommitContext{Transition: parked, Events: parked.Events},
+			Commit: store.CommitContext{Transition: parked, Events: parked.Events},
 		}); err != nil {
 			t.Fatalf("commit park: %v", err)
 		}
@@ -537,11 +538,11 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce resolve: %v", err)
 		}
-		if _, err := harness.Store.ResolveInvocation(ctx, ResolveInvocationCommand{
-			Fence:    ResolutionFence{RunID: "run-1", ExpectedRevision: readBack.Revision, TargetID: "inv-1", RequestedBy: samplePrincipal()},
-			Decision: InvocationResolution{ID: "inv-1", Outcome: run.OutcomeApplied, Reason: "verified"},
-			Budget:   BudgetSettlement{ReservationID: "res-1", Release: true},
-			Commit:   CommitContext{Transition: resolved, Events: resolved.Events},
+		if _, err := harness.Store.ResolveInvocation(ctx, store.ResolveInvocationCommand{
+			Fence:    store.ResolutionFence{RunID: "run-1", ExpectedRevision: readBack.Revision, TargetID: "inv-1", RequestedBy: samplePrincipal()},
+			Decision: store.InvocationResolution{ID: "inv-1", Outcome: run.OutcomeApplied, Reason: "verified"},
+			Budget:   store.BudgetSettlement{ReservationID: "res-1", Release: true},
+			Commit:   store.CommitContext{Transition: resolved, Events: resolved.Events},
 		}); err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
@@ -567,10 +568,10 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		next.Nodes = map[string]run.NodeState{
 			"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"},
 		}
-		if _, err := harness.Store.CommitNodeResult(ctx, CommitNodeResultCommand{
+		if _, err := harness.Store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), NodeName: "planner",
 			OutputRef: "output-1",
-			Commit:    CommitContext{Transition: run.Transition{Next: next}},
+			Commit:    store.CommitContext{Transition: run.Transition{Next: next}},
 		}); err != nil {
 			t.Fatalf("commit node: %v", err)
 		}
@@ -607,7 +608,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		claimed := mustStart(t, harness, "run-1")
 
 		produced := json.RawMessage(`{"content":"## 大纲\n1. 起因"}`)
-		fact, err := NewProjectionFact(AssistantMessagePayload{
+		fact, err := store.NewProjectionFact(store.AssistantMessagePayload{
 			Output: produced, OutputRef: "output-1", AgentKey: "planner", NodeID: "planner",
 		})
 		if err != nil {
@@ -618,10 +619,10 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		next.Nodes = map[string]run.NodeState{
 			"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"},
 		}
-		if _, err := harness.Store.CommitNodeResult(ctx, CommitNodeResultCommand{
+		if _, err := harness.Store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), NodeName: "planner",
 			OutputRef: "output-1",
-			Commit:    CommitContext{Transition: run.Transition{Next: next}, Projections: []ProjectionFact{fact}},
+			Commit:    store.CommitContext{Transition: run.Transition{Next: next}, Projections: []store.ProjectionFact{fact}},
 		}); err != nil {
 			t.Fatalf("commit node: %v", err)
 		}
@@ -655,10 +656,10 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		if _, err := harness.Store.CompleteInvocation(ctx, CompleteInvocationCommand{
+		if _, err := harness.Store.CompleteInvocation(ctx, store.CompleteInvocationCommand{
 			Fence:  fenceFor(claimed, claimed.Snapshot.Revision),
-			Result: InvocationResult{ID: "inv-1", Outcome: run.OutcomeUnknown},
-			Budget: BudgetSettlement{ReservationID: "res-1", Release: true},
+			Result: store.InvocationResult{ID: "inv-1", Outcome: run.OutcomeUnknown},
+			Budget: store.BudgetSettlement{ReservationID: "res-1", Release: true},
 		}); run.KindOf(err) != run.ErrorInvalid {
 			t.Fatalf("error=%s want=invalid", run.KindOf(err))
 		}
@@ -684,10 +685,10 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		snapshot, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+		snapshot, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: InvocationBegin{ID: "inv-1", Reservation: BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
-			Commit:     CommitContext{Transition: began, Events: began.Events},
+			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
+			Commit:     store.CommitContext{Transition: began, Events: began.Events},
 		})
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -698,11 +699,11 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		stale := snapshot
 		stale.Revision = snapshot.Revision + 1
 		stale.Budget = snapshot.Budget.Settle(run.Limits{ToolCalls: 1}, run.Limits{ToolCalls: 1}, true)
-		if _, err := harness.Store.CompleteInvocation(ctx, CompleteInvocationCommand{
+		if _, err := harness.Store.CompleteInvocation(ctx, store.CompleteInvocationCommand{
 			Fence:  fenceFor(claimed, snapshot.Revision),
-			Result: InvocationResult{ID: "inv-1", Outcome: run.OutcomeApplied},
-			Budget: BudgetSettlement{ReservationID: "res-1"},
-			Commit: CommitContext{Transition: run.Transition{Next: stale}},
+			Result: store.InvocationResult{ID: "inv-1", Outcome: run.OutcomeApplied},
+			Budget: store.BudgetSettlement{ReservationID: "res-1"},
+			Commit: store.CommitContext{Transition: run.Transition{Next: stale}},
 		}); err != nil {
 			t.Fatalf("complete: %v", err)
 		}
@@ -725,31 +726,31 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		fact, err := NewProjectionFact(PendingApprovalPayload{
+		fact, err := store.NewProjectionFact(store.PendingApprovalPayload{
 			ApprovalID: "ap-1", Action: "publish",
 		})
 		if err != nil {
 			t.Fatalf("fact: %v", err)
 		}
-		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		if _, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
-			Commit: CommitContext{Transition: transition, Events: transition.Events, Projections: []ProjectionFact{fact}},
+			Commit: store.CommitContext{Transition: transition, Events: transition.Events, Projections: []store.ProjectionFact{fact}},
 		}); err != nil {
 			t.Fatalf("enter approval: %v", err)
 		}
 
 		projections := harness.Projections()
-		if len(projections) != 1 || projections[0].Kind != ProjectionPendingApproval {
+		if len(projections) != 1 || projections[0].Kind != store.ProjectionPendingApproval {
 			t.Fatalf("projection not committed with the state: %+v", projections)
 		}
 
 		// A rejected command must leave no projection behind, or the host's
 		// tables would describe a Run that never advanced.
-		bad := ProjectionFact{Kind: "invented", RunID: "run-1"}
+		bad := store.ProjectionFact{Kind: "invented", RunID: "run-1"}
 		before := len(harness.Projections())
-		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		if _, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: fenceFor(claimed, 999), ApprovalID: "ap-2",
-			Commit: CommitContext{Transition: transition, Projections: []ProjectionFact{bad}},
+			Commit: store.CommitContext{Transition: transition, Projections: []store.ProjectionFact{bad}},
 		}); err == nil {
 			t.Fatal("a stale command was accepted")
 		}
@@ -883,18 +884,18 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		harness := newHarness(t)
 		ctx := context.Background()
 
-		turn, err := NewProjectionFact(UserTurnPayload{SessionID: 7, Text: "why"})
+		turn, err := store.NewProjectionFact(store.UserTurnPayload{SessionID: 7, Text: "why"})
 		if err != nil {
 			t.Fatalf("fact: %v", err)
 		}
 		create := sampleCreate("run-1")
-		create.Projections = []ProjectionFact{turn}
+		create.Projections = []store.ProjectionFact{turn}
 		if _, err := harness.Store.Create(ctx, create); err != nil {
 			t.Fatalf("create: %v", err)
 		}
 
 		projections := harness.Projections()
-		if len(projections) != 1 || projections[0].Kind != ProjectionUserTurn {
+		if len(projections) != 1 || projections[0].Kind != store.ProjectionUserTurn {
 			t.Fatalf("projections = %+v; the turn was not committed with the Run", projections)
 		}
 		if projections[0].Sequence == 0 {
@@ -925,20 +926,20 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
-		first, err := NewProjectionFact(ProgressPayload{NodeID: "a", AgentKey: "writer"})
+		first, err := store.NewProjectionFact(store.ProgressPayload{NodeID: "a", AgentKey: "writer"})
 		if err != nil {
 			t.Fatalf("fact: %v", err)
 		}
-		second, err := NewProjectionFact(ProgressPayload{NodeID: "b", AgentKey: "writer"})
+		second, err := store.NewProjectionFact(store.ProgressPayload{NodeID: "b", AgentKey: "writer"})
 		if err != nil {
 			t.Fatalf("fact: %v", err)
 		}
 
-		if _, err := harness.Store.EnterApproval(ctx, EnterApprovalCommand{
+		if _, err := harness.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), ApprovalID: "ap-1",
-			Commit: CommitContext{
+			Commit: store.CommitContext{
 				Transition: transition, Events: transition.Events,
-				Projections: []ProjectionFact{first, second},
+				Projections: []store.ProjectionFact{first, second},
 			},
 		}); err != nil {
 			t.Fatalf("enter approval: %v", err)
@@ -981,15 +982,15 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 		for i := range transition.Events {
 			transition.Events[i].NodeID = "planner"
 		}
-		if _, err := harness.Store.BeginInvocation(ctx, BeginInvocationCommand{
+		if _, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: InvocationBegin{ID: "inv-1", Reservation: BudgetReservation{ID: "res-1"}},
-			Commit:     CommitContext{Transition: transition, Events: transition.Events},
+			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "res-1"}},
+			Commit:     store.CommitContext{Transition: transition, Events: transition.Events},
 		}); err != nil {
 			t.Fatalf("begin: %v", err)
 		}
 
-		page, err := harness.Store.Events(ctx, EventQuery{RunID: "run-1"})
+		page, err := harness.Store.Events(ctx, store.EventQuery{RunID: "run-1"})
 		if err != nil {
 			t.Fatalf("events: %v", err)
 		}
@@ -1027,7 +1028,7 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				lease, _, err := harness.Store.Claim(ctx, ClaimCommand{
+				lease, _, err := harness.Store.Claim(ctx, store.ClaimCommand{
 					RunID: "run-1", Owner: "worker-" + itoa(i), LeaseFor: time.Minute,
 				})
 				if err == nil {
@@ -1048,8 +1049,8 @@ func CoreStoreConformance(t *testing.T, newHarness func(t *testing.T) CoreHarnes
 	})
 }
 
-func sampleCreate(id run.ID) CreateCommand {
-	return CreateCommand{
+func sampleCreate(id run.ID) store.CreateCommand {
+	return store.CreateCommand{
 		ID:         id,
 		Definition: run.DefinitionRef{ID: "writer", Version: 1, Protocol: 1},
 		Graph:      run.ExecutionGraphRef{ID: "writer", Version: 1, Protocol: 1, Digest: "sha-1"},
@@ -1074,8 +1075,8 @@ func samplePrincipal() authorization.PrincipalRef {
 	return authorization.PrincipalRef{Subject: "u-1", Tenant: "t-1", Kind: authorization.PrincipalUser}
 }
 
-func fenceFor(claimed ClaimedRun, revision uint64) ExecutionFence {
-	return ExecutionFence{
+func fenceFor(claimed store.ClaimedRun, revision uint64) store.ExecutionFence {
+	return store.ExecutionFence{
 		RunID:            claimed.Snapshot.ID,
 		ExpectedRevision: revision,
 		LeaseToken:       claimed.Lease.Token,
@@ -1083,19 +1084,19 @@ func fenceFor(claimed ClaimedRun, revision uint64) ExecutionFence {
 }
 
 // mustStart creates, claims and starts a Run, returning it running.
-func mustStart(t *testing.T, harness CoreHarness, id run.ID) ClaimedRun {
+func mustStart(t *testing.T, harness CoreHarness, id run.ID) store.ClaimedRun {
 	t.Helper()
 	return mustStartOn(t, harness.Store, id)
 }
 
-func mustStartOn(t *testing.T, execution Execution, id run.ID) ClaimedRun {
+func mustStartOn(t *testing.T, execution store.Execution, id run.ID) store.ClaimedRun {
 	t.Helper()
 	ctx := context.Background()
 
 	if _, err := execution.Create(ctx, sampleCreate(id)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	lease, snapshot, err := execution.Claim(ctx, ClaimCommand{RunID: id, Owner: "worker-1", LeaseFor: time.Minute})
+	lease, snapshot, err := execution.Claim(ctx, store.ClaimCommand{RunID: id, Owner: "worker-1", LeaseFor: time.Minute})
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -1104,15 +1105,15 @@ func mustStartOn(t *testing.T, execution Execution, id run.ID) ClaimedRun {
 	if err != nil {
 		t.Fatalf("reduce start: %v", err)
 	}
-	started, err := execution.CommitNodeResult(ctx, CommitNodeResultCommand{
-		Fence:    ExecutionFence{RunID: id, ExpectedRevision: snapshot.Revision, LeaseToken: lease.Token},
+	started, err := execution.CommitNodeResult(ctx, store.CommitNodeResultCommand{
+		Fence:    store.ExecutionFence{RunID: id, ExpectedRevision: snapshot.Revision, LeaseToken: lease.Token},
 		NodeName: "start",
-		Commit:   CommitContext{Transition: transition, Events: transition.Events},
+		Commit:   store.CommitContext{Transition: transition, Events: transition.Events},
 	})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	return ClaimedRun{Lease: lease, Snapshot: started}
+	return store.ClaimedRun{Lease: lease, Snapshot: started}
 }
 
 func itoa(n int) string {
