@@ -15,8 +15,8 @@ import (
 // and were written into the audit explanation while the call proceeded — which
 // reads as governance to anyone who does not grep the gateway.
 //
-// Naming them did not change what they do; that needs a publish, not a deploy
-// (TD-058). What it changes is the next one: a decision added to Decisions()
+// Naming them did not change what they do; that needs a publish, not a deploy.
+// What it changes is the next one: a decision added to Decisions()
 // without a case fails here instead of silently joining the allow side.
 func TestEveryDecisionIsNamedInTheGateway(t *testing.T) {
 	spec := Spec{Name: "search_evidence"}
@@ -43,8 +43,9 @@ func TestWhichDecisionsTheGatewayActuallyEnforces(t *testing.T) {
 		{policy.DecisionAllow, false},
 		// Refused later, at the approval stage, not here.
 		{policy.DecisionRequireApproval, false},
-		// No enforcement point at all. When TD-058 removes these, this table
-		// loses two rows and TestEveryDecisionIsNamedInTheGateway keeps holding.
+		// No enforcement point at all. When the published documents stop naming
+		// these and they are removed, this table loses two rows and
+		// TestEveryDecisionIsNamedInTheGateway keeps holding.
 		{policy.DecisionCapBudget, false},
 		{policy.DecisionRequireReconciler, false},
 	} {

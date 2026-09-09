@@ -549,8 +549,10 @@ func requiresIdempotencyKey(spec Spec, key string) error {
 // So the two unenforced decisions are named here, saying what they actually do
 // rather than being absent. They are not converted to denials: cap_budget is
 // live in the published Policy document, and changing what a published rule
-// does is a publish, not a deploy. See TD-058 for the ordering that removes
-// them for good.
+// does is a publish, not a deploy: the documents have to stop naming them
+// before the decisions can go. That ordering is now enforced at admission —
+// see the retired_decision rule in docs/reference/http-api.md, which rejects
+// any new rule using a decision with no enforcement point.
 //
 // The default branch fails closed, and TestEveryDecisionIsNamedInTheGateway
 // keeps it unreachable: a fourth decision added to policy.Decisions() without a
