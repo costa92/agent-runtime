@@ -2,10 +2,10 @@ package conformance
 
 import (
 	"context"
-	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
+	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 

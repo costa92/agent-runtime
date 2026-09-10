@@ -2,11 +2,11 @@ package conformance
 
 import (
 	"context"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/quota"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/kart-io/wechat-account/agent-runtime/store"
 )
 
 // QuotaHarness is what a quota adapter supplies.

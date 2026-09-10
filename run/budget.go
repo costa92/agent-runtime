@@ -12,7 +12,7 @@ type Limits struct {
 	// audio clip actually produced. It is separate from ToolCalls because one
 	// tool call may produce nine images, and a cap that cannot tell those
 	// apart is off by that factor.
-	MediaOps int `json:"media_ops"`
+	MediaOps int `json:"media_ops,omitempty"`
 }
 
 // Add returns the componentwise sum.

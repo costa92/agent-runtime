@@ -3,12 +3,12 @@ package conformance
 import (
 	"context"
 	"encoding/json"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"testing"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
 	"github.com/kart-io/wechat-account/agent-runtime/resource"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/kart-io/wechat-account/agent-runtime/store"
 )
 
 // ResourceHarness is what a resource-store adapter supplies.

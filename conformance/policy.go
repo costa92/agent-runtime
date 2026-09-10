@@ -2,8 +2,9 @@ package conformance
 
 import (
 	"fmt"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"testing"
+
+	"github.com/kart-io/wechat-account/agent-runtime/policy"
 )
 
 // PolicyCase is one expectation about a deployment's policy set.

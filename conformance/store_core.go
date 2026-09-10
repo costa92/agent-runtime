@@ -3,7 +3,6 @@ package conformance
 import (
 	"context"
 	"encoding/json"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"slices"
 	"sync"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/kart-io/wechat-account/agent-runtime/store"
 )
 
 // CoreHarness is what an adapter supplies to be checked.
