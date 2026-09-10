@@ -28,7 +28,6 @@ var apiVersions = map[Kind]kindVersions{
 	KindPolicy:       {storage: "v1", published: []string{"v1"}},
 	KindQuota:        {storage: "v1", published: []string{"v1"}},
 	KindModelProfile: {storage: "v1", published: []string{"v1"}},
-	KindToolBinding:  {storage: "v1", published: []string{"v1"}},
 }
 
 // StorageVersion returns the apiVersion a Kind is stored as.

@@ -1,8 +1,8 @@
 // Package resource is the versioned declarative resource family.
 //
-// Definition, Policy, Quota, ModelProfile and ToolBinding are one family rather
-// than five parallel mechanisms: they share a publisher, a CAS, a digest rule,
-// an admission chain and an audit trail. Five publish paths would drift, and
+// Definition, Policy, Quota and ModelProfile are one family rather
+// than four parallel mechanisms: they share a publisher, a CAS, a digest rule,
+// an admission chain and an audit trail. Four publish paths would drift, and
 // governance that drifts is governance nobody can reason about.
 package resource
 
@@ -18,23 +18,11 @@ const (
 	KindPolicy       Kind = "Policy"
 	KindQuota        Kind = "Quota"
 	KindModelProfile Kind = "ModelProfile"
-	// KindToolBinding has no execution path: nothing loads a published one.
-	//
-	// The Gateway seam that would have made a bound tool invocable was removed
-	// once it turned out nothing had ever wired it — see Gateway.resolve. A
-	// host that has no reader for it is expected to refuse it in its admission
-	// chain, so that publishing fails loudly instead of storing a version no
-	// Run will ever consult. The Kind stays because removing a member of a
-	// closed set is a data question,
-	// not a code one: a deployment with stored ToolBinding rows would find them
-	// unreadable. Retire it by migrating those rows away first, then dropping
-	// the constant, its storage version and this comment together.
-	KindToolBinding Kind = "ToolBinding"
 )
 
 // Kinds returns every declared Kind, in a stable order.
 func Kinds() []Kind {
-	return []Kind{KindDefinition, KindPolicy, KindQuota, KindModelProfile, KindToolBinding}
+	return []Kind{KindDefinition, KindPolicy, KindQuota, KindModelProfile}
 }
 
 // Valid reports whether the Kind is one this Runtime knows.

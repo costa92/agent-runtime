@@ -327,6 +327,13 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 // than connected, because connecting it is a real design decision (a handler
 // arriving at runtime is outside every capability guarantee the frozen registry
 // makes) and an unwired branch is not a decision, it is the appearance of one.
+//
+// The ToolBinding Kind that would have carried such a tool is gone too: adding
+// an external tool without writing Go is what the MCP path already does, and it
+// answers the capability question rather than leaving it open — risk, side
+// effects, permissions and result ceilings are declared by the operator, and an
+// unclassified tool is not registered at all. What MCP does not offer is
+// arriving after the registry freezes, which is exactly the decision above.
 func (g *Gateway) resolve(_ context.Context, name string) (Spec, Handler, error) {
 	spec, err := g.registry.Lookup(name)
 	if err != nil {
