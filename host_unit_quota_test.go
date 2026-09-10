@@ -18,7 +18,7 @@ import (
 
 // --- fixtures -------------------------------------------------------------
 
-// mediaQuotaHarness wires one media tool, one media_ops cap and a ledger that
+// mediaQuotaHarness wires one media tool, one host-unit cap and a ledger that
 // already reports observed usage, then calls the tool once.
 func mediaQuotaHarness(
 	t *testing.T, spec tool.Spec, arguments json.RawMessage, maxOps, observed int,
@@ -45,11 +45,11 @@ func mediaQuotaHarness(
 		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
 		deps.Governance = fakeGovernance{quotas: quota.Snapshot{
 			Digest: "q", Limits: []quota.Limit{{
-				Name: "media-ops-per-hour", Scope: quota.Scope{Tenant: "acme"},
-				Unit: quota.UnitMediaOps, Max: maxOps, Window: time.Hour,
+				Name: "images-per-hour", Scope: quota.Scope{Tenant: "acme"},
+				Unit: "images", Max: maxOps, Window: time.Hour,
 			}},
 		}}
-		deps.Meter = fakeMeter{usage: map[quota.Unit]int{quota.UnitMediaOps: observed}}
+		deps.Meter = fakeMeter{usage: map[quota.Unit]int{"images": observed}}
 	}))
 	started := start(t, h)
 	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
@@ -65,33 +65,32 @@ func mediaQuotaHarness(
 func oneOpSpec() tool.Spec {
 	return tool.Spec{
 		Name: "render_picture_book", Description: "start one image",
-		Parameters:   json.RawMessage(`{"type":"object"}`),
-		RiskLevel:    policy.RiskLow,
-		SideEffect:   policy.SideEffectRead,
-		MediaOpsBase: 1,
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskLow,
+		SideEffect: policy.SideEffectRead,
+		Costs:      []tool.UnitCost{{Unit: "images", Base: 1}},
 	}
 }
 
 func pictureBookSpec() tool.Spec {
 	return tool.Spec{
 		Name: "render_picture_book", Description: "render a book",
-		Parameters:     json.RawMessage(`{"type":"object","properties":{"pages":{"type":"integer"}}}`),
-		RiskLevel:      policy.RiskLow,
-		SideEffect:     policy.SideEffectRead,
-		MediaOpsBase:   1,
-		MediaOpsPerArg: "pages",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"pages":{"type":"integer"}}}`),
+		RiskLevel:  policy.RiskLow,
+		SideEffect: policy.SideEffectRead,
+		Costs:      []tool.UnitCost{{Unit: "images", Base: 1, PerArg: "pages"}},
 	}
 }
 
 // A cap the ledger already reports as full has to refuse the next call. Before
 // the gateway declared what a media tool produces, the reservation carried zero
-// media_ops, a want of zero was skipped before the ledger was ever read, and
+// host-unit, a want of zero was skipped before the ledger was ever read, and
 // the cap could be crossed by any margin without a single refusal.
 
-func TestAFullMediaOpsLedgerRefusesTheNextImageGeneration(t *testing.T) {
+func TestAFullHostUnitLedgerRefusesTheNextImageGeneration(t *testing.T) {
 	err := mediaQuotaHarness(t, oneOpSpec(), json.RawMessage(`{}`), 400, 400)
 	if err == nil {
-		t.Fatal("the call was admitted with the media_ops ledger already at its cap")
+		t.Fatal("the call was admitted with the host-unit ledger already at its cap")
 	}
 	if got := run.CodeOf(err); got != "quota_exhausted" {
 		t.Fatalf("code = %q, want quota_exhausted (err=%v)", got, err)
@@ -104,7 +103,7 @@ func TestAFullMediaOpsLedgerRefusesTheNextImageGeneration(t *testing.T) {
 // Room for one more is room for one more: the same cap must not refuse the call
 // that fits, or a reservation would be a ceiling one short of the published one.
 
-func TestAMediaOpsLedgerWithRoomLeftAdmitsTheNextImageGeneration(t *testing.T) {
+func TestAHostUnitLedgerWithRoomLeftAdmitsTheNextImageGeneration(t *testing.T) {
 	if err := mediaQuotaHarness(t, oneOpSpec(), json.RawMessage(`{}`), 400, 399); err != nil {
 		t.Fatalf("the call was refused with one operation left under the cap: %v", err)
 	}

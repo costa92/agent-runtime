@@ -8,8 +8,8 @@ import (
 
 // Every budget dimension must be able to name itself on a refusal. An
 // unreported dimension is worse than silence when an operator is sizing the
-// envelope from telemetry: media_ops refusals would have read as "no dimension"
-// and pointed at nothing.
+// envelope from telemetry: a host unit's refusals would have read as "no
+// dimension" and pointed at nothing. Host units report under their own name.
 func TestEveryBudgetDimensionNamesItselfWhenItRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		want     string
@@ -19,7 +19,7 @@ func TestEveryBudgetDimensionNamesItselfWhenItRefuses(t *testing.T) {
 		{"llm_calls", run.Limits{LLMCalls: 1}, run.Limits{LLMCalls: 2}},
 		{"tokens", run.Limits{Tokens: 10}, run.Limits{Tokens: 11}},
 		{"tool_calls", run.Limits{ToolCalls: 1}, run.Limits{ToolCalls: 2}},
-		{"media_ops", run.Limits{MediaOps: 8}, run.Limits{MediaOps: 9}},
+		{"images", run.Limits{}.WithUnit("images", 8), run.Limits{}.WithUnit("images", 9)},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			budget := run.Budget{Envelope: tc.envelope}

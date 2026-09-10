@@ -78,18 +78,9 @@ type Ports interface {
 // the run package for one alias.
 type ID = run.ID
 
-// HandoffSignal represents an explicit transfer of control to another specialist agent.
-type HandoffSignal struct {
-	TargetAgentKey string          `json:"target_agent_key"`
-	ContextPayload json.RawMessage `json:"context_payload,omitempty"`
-	Reason         string          `json:"reason,omitempty"`
-}
-
 // Response is an agent's result.
 type Response struct {
 	Output json.RawMessage
-	// Handoff optionally transfers control to another declared specialist agent.
-	Handoff *HandoffSignal
 	// Used is what the agent actually consumed, for settlement against the
 	// reservation the Runtime made before calling.
 	Used run.Limits

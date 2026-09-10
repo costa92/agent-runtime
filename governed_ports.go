@@ -74,7 +74,7 @@ func (s *session) nodeToolDefs(keys []string) []llm.ToolDef {
 // that reserved afterwards has already spent the budget by the time anything
 // could refuse it, and a call with no committed begin fact leaves silence
 // rather than evidence if the process dies mid-flight.
-func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Response, error) {
+func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.Response, err error) {
 	s := p.session
 	if err := s.detachedErr(); err != nil {
 		return llm.Response{}, err
@@ -171,6 +171,8 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("model")
+	ctx, span := s.effectSpan(ctx, observe.SpanModelCall, "model.call", invocationID, "")
+	defer func() { span.End(err) }()
 	if err := s.begin(ctx, run.CommandInvokeModel, invocationID, "", "", reserve, false, p.node.ID); err != nil {
 		return llm.Response{}, err
 	}
@@ -242,11 +244,12 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (llm.Res
 	// leaving it out biases the very measurement used to size the ceiling that
 	// would have cut it short.
 	s.recordCallTiming(response.Model.Profile, callElapsed)
-	return response, callErr
+	err = callErr
+	return response, err
 }
 
 // Tool invokes a declared tool through the fixed gateway chain.
-func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.RawMessage) (json.RawMessage, error) {
+func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.RawMessage) (_ json.RawMessage, err error) {
 	s := p.session
 	if err := s.detachedErr(); err != nil {
 		return nil, err
@@ -260,6 +263,12 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("tool")
+	// Opened before Prepare, so a refusal by policy is a span too: "which
+	// tool calls were refused, and how long the decision took" is a trace
+	// question as much as an event one. The tool name is the only identifier
+	// in a span name — it comes from the frozen registry, never from input.
+	ctx, span := s.effectSpan(ctx, observe.SpanToolCall, "tool."+name, invocationID, string(invocationID))
+	defer func() { span.End(err) }()
 
 	// A denied hold reports the refusal on every request for that tool, rather
 	// than asking for approval again. The Run resumed specifically because a
@@ -327,7 +336,8 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	if err := s.complete(ctx, invocationID, mutation.Outcome, mutation.Used, p.node.ID); err != nil {
 		return nil, err
 	}
-	return mutation.Output, callErr
+	err = callErr
+	return mutation.Output, err
 }
 
 // Recall reads memory under the Definition's declared scope and ceilings.
@@ -335,11 +345,13 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 // The ceilings come from the Definition rather than from the caller: an agent
 // that could widen its own retrieval budget could put an unbounded prompt in
 // front of the model, and that fails as a model error far from the read.
-func (p *governedPorts) Recall(ctx context.Context, key, text string) ([]memory.Record, error) {
+func (p *governedPorts) Recall(ctx context.Context, key, text string) (_ []memory.Record, err error) {
 	s := p.session
 	if err := s.detachedErr(); err != nil {
 		return nil, err
 	}
+	ctx, span := s.effectSpan(ctx, observe.SpanMemoryRead, "memory.recall", "", "")
+	defer func() { span.End(err) }()
 	// The declaration is checked before the wiring: whether this Definition may
 	// touch this key is a property of what was published, not of what the
 	// deployment happens to have installed.
@@ -375,7 +387,7 @@ func recallTools(restrictions run.Restrictions, declared []string) []string {
 
 // Remember writes memory through the same reserve-commit-settle path as any
 // other effect.
-func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotencyKey string) error {
+func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotencyKey string) (err error) {
 	s := p.session
 	if err := s.detachedErr(); err != nil {
 		return err
@@ -394,6 +406,8 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	}
 
 	invocationID := s.runtime.deps.IDs.NewID("memory")
+	ctx, span := s.effectSpan(ctx, observe.SpanMemoryWrite, "memory.remember", invocationID, idempotencyKey)
+	defer func() { span.End(err) }()
 	prepared, err := s.runtime.deps.Memories.PrepareWrite(ctx, s.state().Principal, memory.WriteRequest{
 		InvocationID:   invocationID,
 		Key:            key,
@@ -416,7 +430,20 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	if err := s.commitMemory(ctx, invocationID, key, declared.Namespace, fact, p.node.ID); err != nil {
 		return err
 	}
-	return writeErr
+	err = writeErr
+	return err
+}
+
+// effectSpan opens one effect span under the session's advance span.
+func (s *session) effectSpan(ctx context.Context, kind observe.SpanKind, name string, invocation run.ID, idempotencyKey string) (context.Context, observe.Span) {
+	parent := s.nodeTrace
+	if parent == (observe.TraceContext{}) {
+		parent = s.trace
+	}
+	return s.runtime.deps.Tracer.Start(ctx, observe.SpanRequest{
+		Kind: kind, Name: name, RunID: s.state().ID, Parent: parent,
+		InvocationID: invocation, IdempotencyKey: idempotencyKey,
+	})
 }
 
 func (p *governedPorts) recordExplanation(name string, explanation policy.Explanation) {
@@ -486,21 +513,7 @@ func prePolicyDecision(runID run.ID, tool string, err error) observe.Decision {
 // one reported. A refusal on two at once is reported as the first, which is
 // enough to act on.
 func exhaustedUnit(budget run.Budget, want run.Limits) string {
-	committed := budget.Committed().Add(want)
-	switch {
-	case budget.Envelope.LLMCalls > 0 && committed.LLMCalls > budget.Envelope.LLMCalls:
-		return "llm_calls"
-	case budget.Envelope.Tokens > 0 && committed.Tokens > budget.Envelope.Tokens:
-		return "tokens"
-	case budget.Envelope.ToolCalls > 0 && committed.ToolCalls > budget.Envelope.ToolCalls:
-		return "tool_calls"
-	case budget.Envelope.MediaOps > 0 && committed.MediaOps > budget.Envelope.MediaOps:
-		return "media_ops"
-	}
-	// Affords said no, so one of the four should have matched. Reporting an
-	// empty unit rather than guessing keeps a future fifth dimension from
-	// being silently filed under one of these four.
-	return ""
+	return budget.ExhaustedUnit(want)
 }
 
 // quotaWant is what a model effect asks the quota for.

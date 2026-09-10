@@ -49,8 +49,6 @@ const (
 	// failed having done nothing, which is indistinguishable from a bug in the
 	// Runtime. AttrReason carries the assembly error's code.
 	EventRunUnrunnable = "runtime.run.unrunnable"
-	// EventAgentHandoff is emitted when an agent explicitly delegates to another specialist.
-	EventAgentHandoff = "runtime.agent.handoff"
 	// EventNodeLoopRetry is emitted when a node triggers a backward self-correction loop.
 	EventNodeLoopRetry = "runtime.node.loop_retry"
 )
@@ -62,7 +60,6 @@ const (
 	AttrAgent        = "agent"
 	AttrNode         = "node"
 	AttrTargetNode   = "target_node"
-	AttrTargetAgent  = "target_agent"
 	AttrAttempt      = "attempt"
 	AttrPlan         = "plan"
 	AttrProfile      = "profile"
@@ -162,10 +159,6 @@ func BuiltinEventSpecs() []EventSpec {
 		{
 			Name: EventNodeAbandoned, APIVersion: "v1", Stability: StableEvent,
 			Fields: []string{AttrNode, AttrAgent, AttrInvocationID},
-		},
-		{
-			Name: EventAgentHandoff, APIVersion: "v1", Stability: StableEvent,
-			Fields: []string{AttrAgent, AttrTargetAgent, AttrReason},
 		},
 		{
 			Name: EventNodeLoopRetry, APIVersion: "v1", Stability: StableEvent,

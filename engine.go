@@ -48,6 +48,15 @@ type session struct {
 	snapMu   sync.RWMutex
 	snapshot run.Snapshot
 
+	// trace is the advance span every effect span of this session hangs
+	// under. Set once after the session is assembled; NopTracer hands the
+	// pinned context back, so linkage holds for a host without tracing too.
+	trace observe.TraceContext
+	// nodeTrace is the span of the node currently executing; effect spans
+	// parent to it while it is open. Nodes run one at a time, so one field
+	// suffices.
+	nodeTrace observe.TraceContext
+
 	declared definition.Definition
 	graph    *workflow.ExecutionGraph
 	policies policy.Snapshot
@@ -174,12 +183,28 @@ func (r *runtime) Advance(ctx context.Context, id run.ID) (AdvanceResult, error)
 	return r.advanceClaimed(ctx, store.ClaimedRun{Lease: lease, Snapshot: snapshot})
 }
 
-func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) (AdvanceResult, error) {
+func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) (result AdvanceResult, err error) {
+	// One worker advance is one span, parented to the trace pinned at Start:
+	// two advances of the same Run are separated by the database, so no
+	// in-memory parent survives between them. A Run claimed in any state but
+	// queued is a continuation — after an approval, a takeover, a crash — and
+	// gets the resumed kind, so a wait spent on a human is not inside a
+	// latency measurement.
+	kind := observe.SpanRun
+	if claimed.Snapshot.State != run.StateQueued {
+		kind = observe.SpanResumed
+	}
+	ctx, span := r.deps.Tracer.Start(ctx, observe.SpanRequest{
+		Kind: kind, Name: "agent.run", RunID: claimed.Snapshot.ID, Parent: claimed.Snapshot.Pins.Trace,
+	})
+	defer func() { span.End(err) }()
+
 	current, err := r.newSession(ctx, claimed)
 	if err != nil {
 		r.endUnrunnable(ctx, claimed, err)
 		return AdvanceResult{}, err
 	}
+	current.trace = span.Context()
 
 	if current.state().State == run.StateQueued {
 		if err := current.start(ctx); err != nil {
@@ -406,7 +431,25 @@ func (s *session) parkForApproval(ctx context.Context, node string) error {
 }
 
 // runNode executes one node and commits its result.
-func (s *session) runNode(ctx context.Context, node workflow.Node) error {
+func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
+	ctx, span := s.runtime.deps.Tracer.Start(ctx, observe.SpanRequest{
+		Kind: observe.SpanNode, Name: "agent.node", RunID: s.state().ID, Parent: s.trace,
+		NodeID: node.ID, AgentKey: node.Implementation,
+	})
+	s.nodeTrace = span.Context()
+	// A node whose agent failed commits that failure and returns nil; the
+	// span still has to say the node failed, or the trace shows a green node
+	// above a red model call.
+	var executeErr error
+	defer func() {
+		s.nodeTrace = observe.TraceContext{}
+		if err != nil {
+			span.End(err)
+			return
+		}
+		span.End(executeErr)
+	}()
+
 	factory, err := s.runtime.deps.Agents.Lookup(node.Implementation)
 	if err != nil {
 		return err
@@ -459,7 +502,8 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) error {
 		stop()
 		return s.abandonNode(ctx, node)
 	}
-	response, executeErr := done.response, done.err
+	response := done.response
+	executeErr = done.err
 	stopped := stop()
 
 	if stopped.capped {

@@ -527,15 +527,17 @@ func TestAnAdmissionUnitCannotBePerPrincipal(t *testing.T) {
 	}
 }
 
-func TestAMediaOpsCapRefusesTheEffectThatWouldCrossIt(t *testing.T) {
+// A host-declared unit is a cap like any other: the Runtime carries the count
+// under the host's name and asks the ledger for it.
+func TestAHostUnitCapRefusesTheEffectThatWouldCrossIt(t *testing.T) {
 	scope := tenant()
 	meter := &fakeMeter{perScope: map[quota.Scope]map[quota.Unit]int{
-		scope: {quota.UnitMediaOps: 7},
+		scope: {"images": 7},
 	}}
 	enforcer, err := quota.NewEnforcer(quota.Snapshot{Limits: []quota.Limit{{
-		Name:   "media-ops-per-hour",
+		Name:   "images-per-hour",
 		Scope:  scope,
-		Unit:   quota.UnitMediaOps,
+		Unit:   "images",
 		Max:    10,
 		Window: time.Hour,
 	}}}, meter)
@@ -546,7 +548,7 @@ func TestAMediaOpsCapRefusesTheEffectThatWouldCrossIt(t *testing.T) {
 	// Three more fits exactly; four does not. The want is the real image
 	// count, not a probe — unlike tokens, the number is known before the call.
 	allowed, err := enforcer.AdmitEffect(context.Background(),
-		scope, run.Limits{MediaOps: 3})
+		scope, run.Limits{}.WithUnit("images", 3))
 	if err != nil {
 		t.Fatalf("AdmitEffect: %v", err)
 	}
@@ -555,46 +557,59 @@ func TestAMediaOpsCapRefusesTheEffectThatWouldCrossIt(t *testing.T) {
 	}
 
 	refused, err := enforcer.AdmitEffect(context.Background(),
-		scope, run.Limits{MediaOps: 4})
+		scope, run.Limits{}.WithUnit("images", 4))
 	if err != nil {
 		t.Fatalf("AdmitEffect: %v", err)
 	}
 	if refused.Allowed {
 		t.Fatal("allowed an effect that crosses the cap")
 	}
-	if refused.Limit.Name != "media-ops-per-hour" {
+	if refused.Limit.Name != "images-per-hour" {
 		t.Fatalf("wrong limit reported: %q", refused.Limit.Name)
 	}
 }
 
-func TestAMediaOpsCapMayNotAskToDegrade(t *testing.T) {
+func TestAHostUnitCapMayNotAskToDegrade(t *testing.T) {
 	// Degrading means dropping the tool loop, which is the only reduced form
 	// there is. Half an image is not a picture book.
 	err := quota.Snapshot{Limits: []quota.Limit{{
-		Name:    "media-ops-per-hour",
+		Name:    "images-per-hour",
 		Scope:   tenant(),
-		Unit:    quota.UnitMediaOps,
+		Unit:    "images",
 		Max:     10,
 		Window:  time.Hour,
 		Degrade: true,
 	}}}.Validate()
 	if err == nil {
-		t.Fatal("published a degrading media_ops cap")
+		t.Fatal("published a degrading host-unit cap")
 	}
 	if run.KindOf(err) != run.ErrorInvalid {
 		t.Fatalf("wrong kind: %v", run.KindOf(err))
 	}
 }
 
-func TestAMediaOpsCapNeedsAWindow(t *testing.T) {
+func TestAHostUnitCapNeedsAWindow(t *testing.T) {
 	// A consumption cap with no window is a lifetime cap nothing resets.
 	err := quota.Snapshot{Limits: []quota.Limit{{
-		Name:  "media-ops-forever",
+		Name:  "images-forever",
 		Scope: tenant(),
-		Unit:  quota.UnitMediaOps,
+		Unit:  "images",
 		Max:   10,
 	}}}.Validate()
 	if err == nil {
-		t.Fatal("published an unwindowed media_ops cap")
+		t.Fatal("published an unwindowed host-unit cap")
+	}
+}
+
+// A unit name is a ledger key and a metric label; one that could not be both
+// is refused at publication, the last moment anybody is reading.
+func TestAHostUnitNameMustBeAnIdentifier(t *testing.T) {
+	for _, name := range []quota.Unit{"Images", "media ops", "", "9lives"} {
+		err := quota.Snapshot{Limits: []quota.Limit{{
+			Name: "bad", Scope: tenant(), Unit: name, Max: 1, Window: time.Hour,
+		}}}.Validate()
+		if run.CodeOf(err) != "unknown_quota_unit" {
+			t.Errorf("unit %q: Validate() = %v, want unknown_quota_unit", name, err)
+		}
 	}
 }

@@ -19,7 +19,11 @@ type TraceContext = run.TraceContext
 type SpanKind string
 
 const (
-	SpanRun         SpanKind = "run"
+	SpanRun SpanKind = "run"
+	// SpanNode is one node's execution inside an advance. Effect spans hang
+	// under it, so a multi-node graph reads as nodes rather than as a flat
+	// list of calls.
+	SpanNode        SpanKind = "node"
 	SpanModelCall   SpanKind = "model_call"
 	SpanToolCall    SpanKind = "tool_call"
 	SpanMemoryRead  SpanKind = "memory_read"
@@ -42,6 +46,11 @@ type SpanRequest struct {
 	// from.
 	InvocationID   run.ID
 	IdempotencyKey string
+	// NodeID and AgentKey identify a node span. They are attributes, never part
+	// of the name: node ids are authored per Definition and would make the
+	// span name unbounded across tenants.
+	NodeID   string
+	AgentKey string
 }
 
 // Span is an open measurement. End is idempotent.

@@ -115,17 +115,3 @@ func TestRegistryIsSafeForConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
-
-func TestResponseCarriesOptionalHandoffSignal(t *testing.T) {
-	resp := agent.Response{
-		Output: json.RawMessage(`{"text":"hello"}`),
-		Handoff: &agent.HandoffSignal{
-			TargetAgentKey: "content.writer",
-			ContextPayload: json.RawMessage(`{"summary":"done"}`),
-			Reason:         "Need specialized writing",
-		},
-	}
-	if resp.Handoff == nil || resp.Handoff.TargetAgentKey != "content.writer" {
-		t.Fatalf("unexpected handoff response: %+v", resp.Handoff)
-	}
-}

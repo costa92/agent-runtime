@@ -59,6 +59,13 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		if snapshot.Pins != sampleCreate("run-1").Pins {
 			t.Fatalf("pins = %+v, want the ones the Run was created with", snapshot.Pins)
 		}
+		// The envelope's host unit has to survive the round trip too. It once
+		// did not: the Runtime's media unit had no column, so a Run's ceiling
+		// for it was lost on the first reload and nothing in this suite said
+		// it had to be there.
+		if want := sampleCreate("run-1").Budget.Envelope; !snapshot.Budget.Envelope.Equal(want) {
+			t.Fatalf("envelope = %+v, want %+v including the host unit", snapshot.Budget.Envelope, want)
+		}
 
 		if _, err := harness.Store.Create(ctx, sampleCreate("run-1")); run.KindOf(err) != run.ErrorConflict {
 			t.Fatalf("duplicate create error=%s want=conflict", run.KindOf(err))
@@ -1062,7 +1069,7 @@ func sampleCreate(id run.ID) store.CreateCommand {
 		Definition: run.DefinitionRef{ID: "writer", Version: 1, Protocol: 1},
 		Graph:      run.ExecutionGraphRef{ID: "writer", Version: 1, Protocol: 1, Digest: "sha-1"},
 		Principal:  samplePrincipal(),
-		Budget:     run.Budget{Envelope: run.Limits{LLMCalls: 100, Tokens: 100000, ToolCalls: 100}},
+		Budget:     run.Budget{Envelope: run.Limits{LLMCalls: 100, Tokens: 100000, ToolCalls: 100}.WithUnit("images", 10)},
 		// Every sample Run carries Pins, for the same reason it carries an
 		// input: a Store that drops them should fail the whole suite, not one
 		// case. Until this was here the suite was blind to the field — four

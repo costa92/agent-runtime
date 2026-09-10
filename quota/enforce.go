@@ -11,6 +11,7 @@ package quota
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 
@@ -31,11 +32,27 @@ const (
 	// re-checked, or a single Run outlives every cap in the system.
 	UnitTokens    Unit = "tokens"
 	UnitToolCalls Unit = "tool_calls"
-	// UnitMediaOps counts billable media generations in a window. It is a
-	// consumption unit like tokens: an image generated an hour into a Run is
-	// spent in this hour's window, not the one the Run was admitted in.
-	UnitMediaOps Unit = "media_ops"
 )
+
+// unitName is what a host-declared unit may be called. Lower-case identifier:
+// the name is a ledger key and a metric label, and a name with a space or a
+// capital would be two names by the time it reached both.
+var unitName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// Builtin reports whether the Runtime itself meters this unit. Anything else
+// is a host-declared consumption unit, reserved from a tool's declared cost
+// and charged from what the tool reported it produced — the Runtime carries
+// the count under the host's name and never interprets it.
+func (u Unit) Builtin() bool {
+	switch u {
+	case UnitConcurrentRuns, UnitQueuedRuns, UnitTokens, UnitToolCalls:
+		return true
+	}
+	return false
+}
+
+// Valid reports whether a unit may be published.
+func (u Unit) Valid() bool { return u.Builtin() || unitName.MatchString(string(u)) }
 
 // Admission reports whether a unit is checked at Run creation.
 func (u Unit) Admission() bool {
@@ -141,9 +158,7 @@ func (l Limit) validate() error {
 		return run.NewError("negative_quota", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("quota %q", l.Name))
 	}
-	switch l.Unit {
-	case UnitConcurrentRuns, UnitQueuedRuns, UnitTokens, UnitToolCalls, UnitMediaOps:
-	default:
+	if !l.Unit.Valid() {
 		return run.NewError("unknown_quota_unit", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("quota %q counts %q", l.Name, l.Unit))
 	}
@@ -283,10 +298,10 @@ func (e *Enforcer) AdmitEffect(ctx context.Context, scope Scope, want run.Limits
 			return want.Tokens
 		case UnitToolCalls:
 			return want.ToolCalls
-		case UnitMediaOps:
-			return want.MediaOps
-		default:
+		case UnitConcurrentRuns, UnitQueuedRuns:
 			return 0
+		default:
+			return want.Unit(string(unit))
 		}
 	})
 }

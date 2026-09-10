@@ -1,39 +1,147 @@
 package run
 
-// Limits is a spend in the four units the Runtime meters. It is used for the
+import (
+	"encoding/json"
+	"maps"
+	"slices"
+)
+
+// Limits is a spend in the units the Runtime meters. It is used for the
 // envelope, for what has been spent and for what is reserved — one type,
 // because a limit and a usage that are shaped differently cannot be compared
 // without a conversion nobody will keep correct.
+//
+// Three units are the Runtime's own: every Run makes model calls, spends
+// tokens and calls tools. Everything else is the host's — how many images a
+// tool produced, how many pages a render queued — and lives in Units under the
+// host's own name, so that a new billable thing is a declaration in the host
+// rather than a field here.
 type Limits struct {
 	LLMCalls  int `json:"llm_calls"`
 	Tokens    int `json:"tokens"`
 	ToolCalls int `json:"tool_calls"`
-	// MediaOps counts billable media generations — one per image, video or
-	// audio clip actually produced. It is separate from ToolCalls because one
-	// tool call may produce nine images, and a cap that cannot tell those
-	// apart is off by that factor.
-	MediaOps int `json:"media_ops,omitempty"`
+	// Units are host-declared consumption units, keyed by the quota unit name
+	// they are charged to. A missing key is zero. Never nil-checked by
+	// callers: every method here treats nil and empty alike.
+	Units map[string]int `json:"units,omitempty"`
+}
+
+// Unit returns one host-declared unit's count, zero when absent.
+func (l Limits) Unit(name string) int { return l.Units[name] }
+
+// WithUnit returns a copy with one host-declared unit set. Zero removes the
+// key, so a Limits that says nothing about a unit stays Zero.
+func (l Limits) WithUnit(name string, count int) Limits {
+	next := l
+	next.Units = maps.Clone(l.Units)
+	if count == 0 {
+		delete(next.Units, name)
+		if len(next.Units) == 0 {
+			next.Units = nil
+		}
+		return next
+	}
+	if next.Units == nil {
+		next.Units = map[string]int{}
+	}
+	next.Units[name] = count
+	return next
+}
+
+// UnitNames lists the declared units in a stable order, so that anything
+// iterating them — a ledger charge, a refusal reason — is deterministic.
+func (l Limits) UnitNames() []string {
+	names := slices.Collect(maps.Keys(l.Units))
+	slices.Sort(names)
+	return names
 }
 
 // Add returns the componentwise sum.
 func (l Limits) Add(other Limits) Limits {
-	return Limits{
+	sum := Limits{
 		LLMCalls:  l.LLMCalls + other.LLMCalls,
 		Tokens:    l.Tokens + other.Tokens,
 		ToolCalls: l.ToolCalls + other.ToolCalls,
-		MediaOps:  l.MediaOps + other.MediaOps,
 	}
+	for _, name := range l.UnitNames() {
+		sum = sum.WithUnit(name, l.Units[name]+other.Units[name])
+	}
+	for _, name := range other.UnitNames() {
+		if _, seen := l.Units[name]; !seen {
+			sum = sum.WithUnit(name, other.Units[name])
+		}
+	}
+	return sum
 }
 
 // Zero reports whether nothing is being asked for.
-func (l Limits) Zero() bool { return l == Limits{} }
+func (l Limits) Zero() bool {
+	if l.LLMCalls != 0 || l.Tokens != 0 || l.ToolCalls != 0 {
+		return false
+	}
+	for _, count := range l.Units {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Equal reports componentwise equality. Limits carries a map, so it is not
+// comparable with ==; a unit absent on one side and zero on the other is equal.
+func (l Limits) Equal(other Limits) bool {
+	if l.LLMCalls != other.LLMCalls || l.Tokens != other.Tokens || l.ToolCalls != other.ToolCalls {
+		return false
+	}
+	for _, name := range l.UnitNames() {
+		if l.Units[name] != other.Units[name] {
+			return false
+		}
+	}
+	for _, name := range other.UnitNames() {
+		if l.Units[name] != other.Units[name] {
+			return false
+		}
+	}
+	return true
+}
 
 // ExceededBy reports whether other exceeds l in any component. Any single
 // component over the line is over the line: a Run that stayed inside its token
 // budget by making a thousand tool calls has not stayed inside its budget.
 func (l Limits) ExceededBy(other Limits) bool {
-	return other.LLMCalls > l.LLMCalls || other.Tokens > l.Tokens ||
-		other.ToolCalls > l.ToolCalls || other.MediaOps > l.MediaOps
+	if other.LLMCalls > l.LLMCalls || other.Tokens > l.Tokens || other.ToolCalls > l.ToolCalls {
+		return true
+	}
+	for _, name := range other.UnitNames() {
+		if other.Units[name] > l.Units[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// legacyLimits is the wire shape before host units were generic: media_ops
+// was a named field. Rows written then still carry it, and a Run in flight
+// across the upgrade must not lose its count.
+type legacyLimits struct {
+	LLMCalls  int            `json:"llm_calls"`
+	Tokens    int            `json:"tokens"`
+	ToolCalls int            `json:"tool_calls"`
+	Units     map[string]int `json:"units,omitempty"`
+	MediaOps  int            `json:"media_ops,omitempty"`
+}
+
+func (l *Limits) UnmarshalJSON(data []byte) error {
+	var legacy legacyLimits
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	*l = Limits{LLMCalls: legacy.LLMCalls, Tokens: legacy.Tokens, ToolCalls: legacy.ToolCalls, Units: legacy.Units}
+	if legacy.MediaOps != 0 {
+		*l = l.WithUnit("media_ops", l.Unit("media_ops")+legacy.MediaOps)
+	}
+	return nil
 }
 
 // Budget is the root envelope and everything charged against it.
@@ -65,14 +173,32 @@ func (b Budget) Committed() Limits {
 // box, and the mistake is loud either way — an unbounded Run shows up in
 // the ledger.
 func (b Budget) Affords(want Limits) bool {
+	return b.ExhaustedUnit(want) == ""
+}
+
+// ExhaustedUnit names the first budget dimension want would push over the
+// envelope, or "" when it fits. Order is the Runtime's three units, then the
+// host's in name order, so a refusal on two at once is reported the same way
+// every time.
+func (b Budget) ExhaustedUnit(want Limits) string {
 	if b.Envelope.Zero() {
-		return true
+		return ""
 	}
 	committed := b.Committed().Add(want)
-	return !exceedsCapped(b.Envelope.LLMCalls, committed.LLMCalls) &&
-		!exceedsCapped(b.Envelope.Tokens, committed.Tokens) &&
-		!exceedsCapped(b.Envelope.ToolCalls, committed.ToolCalls) &&
-		!exceedsCapped(b.Envelope.MediaOps, committed.MediaOps)
+	switch {
+	case exceedsCapped(b.Envelope.LLMCalls, committed.LLMCalls):
+		return "llm_calls"
+	case exceedsCapped(b.Envelope.Tokens, committed.Tokens):
+		return "tokens"
+	case exceedsCapped(b.Envelope.ToolCalls, committed.ToolCalls):
+		return "tool_calls"
+	}
+	for _, name := range b.Envelope.UnitNames() {
+		if exceedsCapped(b.Envelope.Units[name], committed.Units[name]) {
+			return name
+		}
+	}
+	return ""
 }
 
 func exceedsCapped(ceiling, used int) bool {
@@ -91,12 +217,15 @@ func (b Budget) Settle(reserved, charged Limits, release bool) Budget {
 	if !release {
 		return next
 	}
-	next.Reserved = Limits{
+	remaining := Limits{
 		LLMCalls:  max(0, b.Reserved.LLMCalls-reserved.LLMCalls),
 		Tokens:    max(0, b.Reserved.Tokens-reserved.Tokens),
 		ToolCalls: max(0, b.Reserved.ToolCalls-reserved.ToolCalls),
-		MediaOps:  max(0, b.Reserved.MediaOps-reserved.MediaOps),
 	}
+	for _, name := range b.Reserved.UnitNames() {
+		remaining = remaining.WithUnit(name, max(0, b.Reserved.Units[name]-reserved.Units[name]))
+	}
+	next.Reserved = remaining
 	return next
 }
 
@@ -118,18 +247,21 @@ func (b Budget) reserve(want Limits) Budget {
 // implementation may make minus three calls.
 //
 // This exists because the caller that needed it wrote the subtraction inline,
-// guarded the whole struct on Zero rather than each unit, and left MediaOps out.
-// An agent asking how many images it could still generate was told none,
-// whatever the envelope said, and one asking for tokens under an envelope that
-// capped only calls was told a negative number.
+// guarded the whole struct on Zero rather than each unit, and left the host
+// units out. An agent asking how many images it could still generate was told
+// none, whatever the envelope said, and one asking for tokens under an envelope
+// that capped only calls was told a negative number.
 func (b Budget) Remaining() Limits {
 	committed := b.Committed()
-	return Limits{
+	remaining := Limits{
 		LLMCalls:  remainingUnit(b.Envelope.LLMCalls, committed.LLMCalls),
 		Tokens:    remainingUnit(b.Envelope.Tokens, committed.Tokens),
 		ToolCalls: remainingUnit(b.Envelope.ToolCalls, committed.ToolCalls),
-		MediaOps:  remainingUnit(b.Envelope.MediaOps, committed.MediaOps),
 	}
+	for _, name := range b.Envelope.UnitNames() {
+		remaining = remaining.WithUnit(name, remainingUnit(b.Envelope.Units[name], committed.Units[name]))
+	}
+	return remaining
 }
 
 func remainingUnit(ceiling, used int) int {
