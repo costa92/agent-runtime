@@ -17,12 +17,18 @@ const (
 	// name is kept because it is a StableEvent whose value is already persisted
 	// in agent_run_decisions rows. Renaming would split one fact across two
 	// names for every query that reads history.
-	EventRouterPlanSelected   = "runtime.router.plan_selected"
-	EventModelSelected        = "runtime.model.selected"
-	EventPolicyEvaluated      = "runtime.policy.evaluated"
-	EventQuotaRejected        = "runtime.quota.rejected"
-	EventQuotaDegraded        = "runtime.quota.degraded"
-	EventBudgetRefused        = "runtime.budget.refused"
+	EventRouterPlanSelected = "runtime.router.plan_selected"
+	EventModelSelected      = "runtime.model.selected"
+	EventPolicyEvaluated    = "runtime.policy.evaluated"
+	EventQuotaRejected      = "runtime.quota.rejected"
+	EventQuotaDegraded      = "runtime.quota.degraded"
+	EventBudgetRefused      = "runtime.budget.refused"
+	// EventQuotaUnreadable is a refusal caused by a meter that could not
+	// answer, not by a limit that was reached. The two must not share a name:
+	// one says the deployment is at its ceiling, the other says the ceiling
+	// cannot be read, and the second is an availability fault that happens to
+	// look like enforcement working.
+	EventQuotaUnreadable      = "runtime.quota.unreadable"
 	EventApprovalRequested    = "runtime.approval.requested"
 	EventApprovalDecided      = "runtime.approval.decided"
 	EventEgressHostResolved   = "runtime.egress.host_resolved"
@@ -118,6 +124,13 @@ func BuiltinEventSpecs() []EventSpec {
 		{
 			Name: EventQuotaDegraded, APIVersion: "v1", Stability: StableEvent,
 			Fields: []string{AttrQuotaName, AttrQuotaScope, AttrLimit, AttrObserved, AttrUnit},
+		},
+		{
+			// No quota name: the failure is the meter's, and which limit was
+			// being read when it failed is a detail of iteration order rather
+			// than a property of the fault.
+			Name: EventQuotaUnreadable, APIVersion: "v1", Stability: StableEvent,
+			Fields: []string{AttrQuotaScope},
 		},
 		{
 			Name: EventBudgetRefused, APIVersion: "v1", Stability: StableEvent,

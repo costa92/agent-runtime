@@ -293,6 +293,13 @@ func (e *Enforcer) AdmitEffect(ctx context.Context, scope Scope, want run.Limits
 
 // check walks the applicable limits in a fixed order and returns the first
 // refusal, or the strictest degradation.
+// CodeUnreadable is the refusal a meter that could not answer produces.
+//
+// Exported because the caller has to tell it apart from a limit being reached:
+// the two arrive as the same shape of denial, but one is the deployment working
+// as configured and the other is an availability fault.
+const CodeUnreadable = "quota_unreadable"
+
 func (e *Enforcer) check(ctx context.Context, scope Scope, wantFor func(Unit) int) (Decision, error) {
 	limits := e.applicable(scope)
 	degraded := Decision{Allowed: true}
@@ -313,7 +320,7 @@ func (e *Enforcer) check(ctx context.Context, scope Scope, wantFor func(Unit) in
 			// A meter that cannot answer fails closed. Treating an unreachable
 			// meter as "no usage" removes every cap at exactly the moment the
 			// system is already unhealthy.
-			return Decision{}, run.NewError("quota_unreadable", run.ErrorDenied, run.RetryBackoff,
+			return Decision{}, run.NewError(CodeUnreadable, run.ErrorDenied, run.RetryBackoff,
 				fmt.Errorf("quota %q: %w", limit.Name, err))
 		}
 		if observed+want <= limit.Max {

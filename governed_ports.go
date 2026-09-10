@@ -11,6 +11,7 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"github.com/kart-io/wechat-account/agent-runtime/observe"
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
+	"github.com/kart-io/wechat-account/agent-runtime/quota"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"github.com/kart-io/wechat-account/agent-runtime/tool"
@@ -529,6 +530,20 @@ func quotaWant(reserve run.Limits) run.Limits {
 func (s *session) admitEffect(ctx context.Context, want, reserve run.Limits, toolName string) error {
 	decision, err := s.quotas.AdmitEffect(ctx, s.scope, want)
 	if err != nil {
+		// A meter that could not answer refuses too, and a refusal that is only
+		// an error cannot answer "why did this Run stop" a week later. It is
+		// deliberately not EventQuotaRejected: that one means the deployment is
+		// at a ceiling, this one means the ceiling could not be read, and an
+		// availability fault that reads as enforcement working is the worst
+		// possible way for this to look.
+		if run.CodeOf(err) == quota.CodeUnreadable {
+			s.runtime.record(observe.Decision{
+				Name: observe.EventQuotaUnreadable, RunID: s.state().ID,
+				Attributes: []observe.Attribute{
+					observe.Attr(observe.AttrQuotaScope, s.scope.String()),
+				},
+			})
+		}
 		return err
 	}
 	if !decision.Allowed {

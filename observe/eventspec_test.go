@@ -93,6 +93,7 @@ func TestEveryGovernanceDecisionIsDeclared(t *testing.T) {
 		observe.EventPolicyEvaluated,
 		observe.EventQuotaRejected,
 		observe.EventQuotaDegraded,
+		observe.EventQuotaUnreadable,
 		observe.EventBudgetRefused,
 		observe.EventApprovalRequested,
 		observe.EventApprovalDecided,
