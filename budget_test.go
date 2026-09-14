@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
@@ -167,6 +168,34 @@ func TestAnUncappedTokenEnvelopeStillAdmitsTheNextEffect(t *testing.T) {
 	}
 	if result.Run.Budget.Used.LLMCalls != 2 {
 		t.Fatalf("used llm=%d; the second model call did not settle", result.Run.Budget.Used.LLMCalls)
+	}
+}
+
+// A full tenant token window refuses a model call that declares no MaxTokens —
+// the shape of every published Definition. quotaWant probes with one token so
+// the Enforcer reads the ledger instead of skipping the limit.
+
+func TestAFullTenantTokenWindowRefusesAnUncappedModelCall(t *testing.T) {
+	var modelErr error
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		_, modelErr = request.Ports.Model(ctx, llm.Request{})
+		return agent.Response{Output: json.RawMessage(`"ok"`)}, nil
+	}}, withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Governance = fakeGovernance{quotas: quota.Snapshot{
+			Digest: "q", Limits: []quota.Limit{{
+				Name: "llm-calls-per-hour", Scope: quota.Scope{Tenant: "acme"},
+				Unit: quota.UnitTokens, Max: 1000, Window: time.Hour,
+			}},
+		}}
+		deps.Meter = fakeMeter{usage: map[quota.Unit]int{quota.UnitTokens: 1000}}
+		deps.Models = scriptedModels{}
+	}))
+	started := start(t, h)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if got := run.CodeOf(modelErr); got != "quota_exhausted" {
+		t.Fatalf("code = %q, want quota_exhausted (err=%v)", got, modelErr)
 	}
 }
 
