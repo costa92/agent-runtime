@@ -146,6 +146,12 @@ type Result struct {
 }
 
 // Handler is a tool implementation.
+// ArgumentValidator performs pure argument validation before a tool effect is reserved.
+// Implementations must not access external state or perform effects.
+type ArgumentValidator interface {
+	ValidateArguments(json.RawMessage) error
+}
+
 type Handler interface {
 	Invoke(ctx context.Context, invocation Invocation) (Result, error)
 }

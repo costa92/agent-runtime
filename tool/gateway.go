@@ -226,6 +226,13 @@ func (g *Gateway) Prepare(ctx context.Context, request InvocationRequest) (Prepa
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
+	if validator, ok := handler.(ArgumentValidator); ok {
+		err = validator.ValidateArguments(arguments)
+		stage(StageSchema, spec, err)
+		if err != nil {
+			return PreparedInvocation{}, err
+		}
+	}
 	decision.ArgsDigest = digest(arguments)
 
 	err = allowlisted(spec, request.Allowlist)
