@@ -122,6 +122,10 @@ type UserTurnPayload struct {
 	// Runtime does not read it — it travels with the turn because the turn is
 	// what it describes, and because the host has no other write on this row.
 	RouteDisclosure json.RawMessage `json:"route_disclosure,omitempty"`
+	// Intake is the host's idempotency record for a Run started outside a user
+	// turn. Like RouteDisclosure the Runtime does not read it; it travels with
+	// the turn because the host's Create hook must file it in the same commit.
+	Intake json.RawMessage `json:"intake,omitempty"`
 }
 
 // AssistantMessagePayload is one agent output.
