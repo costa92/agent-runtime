@@ -430,6 +430,19 @@ func (s *session) parkForApproval(ctx context.Context, node string) error {
 	return nil
 }
 
+// callerFault reports whether a node failure is something the caller asked
+// for that this deployment will not do, rather than a fault an operator has to
+// fix. Interrupted is included because it is not a failure at all — the Run is
+// parked waiting on someone.
+func callerFault(kind run.ErrorKind) bool {
+	switch kind {
+	case run.ErrorInvalid, run.ErrorDenied, run.ErrorInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
 // runNode executes one node and commits its result.
 func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
 	ctx, span := s.runtime.deps.Tracer.Start(ctx, observe.SpanRequest{
@@ -536,7 +549,15 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
 	result := workflow.NodeResult{NodeID: node.ID, Output: response.Output}
 	if executeErr != nil {
 		result.Failed = true
-		s.runtime.deps.Logger.Error(ctx, "agent node failed",
+		// The caller is told about every node failure through the Run itself.
+		// Only kinds that mean the Runtime or an adapter is broken belong in the
+		// error log; a model without the requested capability or a refused quota
+		// is a routine outcome, and logging it at Error buries the real faults.
+		log := s.runtime.deps.Logger.Error
+		if callerFault(run.KindOf(executeErr)) {
+			log = s.runtime.deps.Logger.Warn
+		}
+		log(ctx, "agent node failed",
 			"run_id", string(s.state().ID),
 			"node_id", node.ID,
 			"agent", node.Implementation,
