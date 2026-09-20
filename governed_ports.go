@@ -103,6 +103,9 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.R
 	if request.Model.Profile == "" {
 		request.Model.Profile = s.declared.Model.Profile
 	}
+	if request.Model.Profile == "" {
+		request.Model.Profile = s.state().Restrictions.ModelProfile
+	}
 	client, err := s.runtime.deps.Models.Resolve(ctx, request.Model)
 	if err != nil {
 		return llm.Response{}, err

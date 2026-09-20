@@ -299,6 +299,10 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 	if err := declaredLabels(declared, request.Restrictions.Labels); err != nil {
 		return run.Snapshot{}, err
 	}
+	if request.Restrictions.ModelProfile != "" && declared.Model.Profile != "" {
+		return run.Snapshot{}, run.NewError("model_profile_pinned", run.ErrorInvalid, run.RetryNever,
+			fmt.Errorf("definition %q pins model profile %q", declared.Ref.ID, declared.Model.Profile))
+	}
 	input := request.Input
 	if r.deps.Schemas != nil && len(declared.InputSchema) > 0 {
 		input, err = r.deps.Schemas.NormalizeValue(declared.InputSchema, request.Input)

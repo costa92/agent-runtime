@@ -190,6 +190,10 @@ type Restrictions struct {
 	// publish time and a caller cannot invent a fact to be judged by. What a
 	// label means is decided by the published policy set, not here.
 	Labels []string `json:"labels,omitempty"`
+	// ModelProfile is the engine the caller chose for this Run. It applies only
+	// where the Definition pinned none; Start refuses it otherwise. Durable for
+	// the same reason Labels are: a resumed Run must call the engine it started on.
+	ModelProfile string `json:"model_profile,omitempty"`
 }
 
 // Zero reports a Restrictions that narrows nothing.
@@ -199,7 +203,7 @@ type Restrictions struct {
 // "never restricted", losing the narrowing rather than failing. A reflection
 // test in this package fails when a field is added and not accounted for here.
 func (r Restrictions) Zero() bool {
-	return len(r.ToolNarrowing) == 0 && !r.DenySideEffects && len(r.Labels) == 0
+	return len(r.ToolNarrowing) == 0 && !r.DenySideEffects && len(r.Labels) == 0 && r.ModelProfile == ""
 }
 
 // Narrow returns the allowlist a Run may actually use.
