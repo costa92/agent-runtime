@@ -1,10 +1,20 @@
 package observe
 
 import (
+	"context"
 	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
+
+const auditWriteTimeout = 5 * time.Second
+
+// AuditWriteError marks a failed durable decision write. The executor must
+// retry without committing a failed node when no governed action followed it.
+type AuditWriteError struct{ Cause error }
+
+func (e *AuditWriteError) Error() string { return "audit write: " + e.Cause.Error() }
+func (e *AuditWriteError) Unwrap() error { return e.Cause }
 
 // Clock is the Runtime's time source. A port rather than time.Now so that a
 // test can make a lease expire without sleeping, and so nothing in the Runtime
@@ -25,10 +35,8 @@ type IDGenerator interface {
 
 // Observer receives decisions and streamed model output.
 //
-// It is told, never asked: an Observer that could refuse or alter a decision
-// would be a governance component pretending to be a listener. Errors from it
-// are ignored by design — observability that can fail a Run is worse than no
-// observability.
+// Decisions are audit facts. A recorder failure must stop the Run before it
+// takes the governed action; streamed output remains observational.
 //
 // Implementations must be safe for concurrent use. Both methods are called from
 // whichever goroutine reached them: an agent may call the model from several at
@@ -39,7 +47,7 @@ type IDGenerator interface {
 // back here. NopObserver is safe because it holds nothing.
 type Observer interface {
 	// Decision reports a governance decision that has been committed.
-	Decision(decision Decision)
+	Decision(ctx context.Context, decision Decision) error
 	// Chunk reports streamed model output. It carries no Run payload beyond
 	// the text the caller is already receiving.
 	Chunk(runID run.ID, text string)
@@ -50,8 +58,8 @@ type Observer interface {
 // so.
 type NopObserver struct{}
 
-func (NopObserver) Decision(Decision)    {}
-func (NopObserver) Chunk(run.ID, string) {}
+func (NopObserver) Decision(context.Context, Decision) error { return nil }
+func (NopObserver) Chunk(run.ID, string)                     {}
 
 // Recorder is the one path from a decision to an Observer.
 //
@@ -74,14 +82,18 @@ func NewRecorder(registry *EventSpecRegistry, observer Observer) *Recorder {
 }
 
 // Record validates and forwards a decision.
-func (r *Recorder) Record(decision Decision) error {
+func (r *Recorder) Record(ctx context.Context, decision Decision) error {
 	if r == nil || r.registry == nil {
 		return run.NewError("missing_event_registry", run.ErrorInternal, run.RetryNever)
 	}
 	if err := r.registry.Validate(decision); err != nil {
 		return err
 	}
-	r.observer.Decision(decision)
+	writeCtx, cancel := context.WithTimeout(ctx, auditWriteTimeout)
+	defer cancel()
+	if err := r.observer.Decision(writeCtx, decision); err != nil {
+		return &AuditWriteError{Cause: err}
+	}
 	return nil
 }
 

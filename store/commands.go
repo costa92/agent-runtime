@@ -3,9 +3,11 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/kart-io/wechat-account/agent-runtime/authorization"
+	"github.com/kart-io/wechat-account/agent-runtime/observe"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 )
 
@@ -233,10 +235,13 @@ func (c SealCommand) Validate() error {
 // Store, so that a crash in the window that follows leaves evidence rather than
 // silence.
 type InvocationBegin struct {
-	ID run.ID
+	ID     run.ID
+	NodeID string
 	// Tool is the tool key, empty for model and memory calls. Durable because a
 	// per-Run call ceiling has to survive the claim that observed the calls.
 	Tool           string
+	Write          bool
+	RequestDigest  string
 	IdempotencyKey string
 	Reservation    BudgetReservation
 }
@@ -292,6 +297,8 @@ type CommitContext struct {
 	Transition  run.Transition
 	Events      []run.Event
 	Projections []ProjectionFact
+	// Decisions are audit facts that must commit with the state they describe.
+	Decisions []observe.Decision
 }
 
 type BeginInvocationCommand struct {
@@ -307,10 +314,24 @@ func (c BeginInvocationCommand) Validate() error {
 	if c.Invocation.ID == "" {
 		return run.NewError("missing_invocation_id", run.ErrorInvalid, run.RetryNever)
 	}
+	command := c.Commit.Transition.Command
+	if command == nil || (command.Kind != run.CommandInvokeModel && command.Kind != run.CommandInvokeTool && command.Kind != run.CommandWriteMemory) ||
+		command.InvocationID != c.Invocation.ID || command.NodeID != c.Invocation.NodeID ||
+		command.Tool != c.Invocation.Tool || command.Write != c.Invocation.Write ||
+		command.RequestDigest != c.Invocation.RequestDigest || command.IdempotencyKey != c.Invocation.IdempotencyKey ||
+		!reflect.DeepEqual(command.Reserve, c.Invocation.Reservation.Amount) {
+		return run.NewError("invocation_command_mismatch", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.Invocation.Write && c.Invocation.NodeID == "" {
+		return run.NewError("missing_invocation_node", run.ErrorInvalid, run.RetryNever)
+	}
 	if c.Invocation.Reservation.ID == "" {
 		// Beginning a paid effect with no reservation is the double-spend the
 		// reserve-before-effect order exists to prevent.
 		return run.NewError("missing_reservation", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.Invocation.Reservation.ID != c.Invocation.ID {
+		return run.NewError("reservation_invocation_mismatch", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
 }
@@ -330,8 +351,17 @@ func (c CompleteInvocationCommand) Validate() error {
 	if c.Result.ID == "" {
 		return run.NewError("missing_invocation_id", run.ErrorInvalid, run.RetryNever)
 	}
+	command := c.Commit.Transition.Command
+	if command == nil || command.Kind != run.CommandSettleInvocation || command.InvocationID != c.Result.ID ||
+		command.Outcome != c.Result.Outcome || !reflect.DeepEqual(command.Usage, c.Usage) ||
+		!reflect.DeepEqual(command.Usage, c.Budget.Charged) {
+		return run.NewError("invocation_command_mismatch", run.ErrorInvalid, run.RetryNever)
+	}
 	if c.Budget.ReservationID == "" {
 		return run.NewError("missing_reservation", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.Budget.ReservationID != c.Result.ID {
+		return run.NewError("reservation_invocation_mismatch", run.ErrorInvalid, run.RetryNever)
 	}
 	if c.Result.Outcome == run.OutcomeUnknown && c.Budget.Release {
 		return run.NewError("released_unknown_reservation", run.ErrorInvalid, run.RetryNever,
@@ -353,6 +383,10 @@ func (c EnterApprovalCommand) Validate() error {
 	if c.ApprovalID == "" {
 		return run.NewError("missing_approval_id", run.ErrorInvalid, run.RetryNever)
 	}
+	command := c.Commit.Transition.Command
+	if command == nil || command.Kind != run.CommandWaitApproval || command.ApprovalID != c.ApprovalID {
+		return run.NewError("approval_command_mismatch", run.ErrorInvalid, run.RetryNever)
+	}
 	return nil
 }
 
@@ -368,6 +402,10 @@ func (c ResolveApprovalCommand) Validate() error {
 	}
 	if c.Decision.ID == "" || string(c.Decision.ID) != c.Fence.TargetID {
 		return run.NewError("target_mismatch", run.ErrorInvalid, run.RetryNever)
+	}
+	command := c.Commit.Transition.Command
+	if command == nil || command.Kind != run.CommandResume || command.ApprovalID != c.Decision.ID || command.Approved != c.Decision.Approved {
+		return run.NewError("approval_command_mismatch", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
 }
@@ -391,8 +429,17 @@ func (c ResolveInvocationCommand) Validate() error {
 		return run.NewError("invalid_resolution", run.ErrorInvalid, run.RetryNever,
 			fmt.Errorf("outcome %q", c.Decision.Outcome))
 	}
+	command := c.Commit.Transition.Command
+	if command == nil || command.Kind != run.CommandResolveInvocation || command.InvocationID != c.Decision.ID ||
+		command.Outcome != c.Decision.Outcome || !reflect.DeepEqual(command.Usage, c.Budget.Charged) ||
+		!reflect.DeepEqual(command.Usage, c.Usage) {
+		return run.NewError("invocation_command_mismatch", run.ErrorInvalid, run.RetryNever)
+	}
 	if c.Decision.Outcome == run.OutcomeStillUnknown && c.Budget.Release {
 		return run.NewError("released_unknown_reservation", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.Budget.ReservationID != c.Decision.ID {
+		return run.NewError("reservation_invocation_mismatch", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
 }
@@ -443,8 +490,17 @@ func (c CommitMemoryMutationCommand) Validate() error {
 	if c.Invocation.ID == "" {
 		return run.NewError("missing_invocation_id", run.ErrorInvalid, run.RetryNever)
 	}
+	command := c.Commit.Transition.Command
+	if command == nil || command.Kind != run.CommandSettleInvocation || command.InvocationID != c.Invocation.ID ||
+		command.Outcome != c.Invocation.Outcome || !reflect.DeepEqual(command.Usage, c.Usage) ||
+		!reflect.DeepEqual(command.Usage, c.Budget.Charged) {
+		return run.NewError("invocation_command_mismatch", run.ErrorInvalid, run.RetryNever)
+	}
 	if c.Mutation.Key == "" || c.Mutation.Namespace == "" {
 		return run.NewError("unscoped_mutation", run.ErrorInvalid, run.RetryNever)
+	}
+	if c.Budget.ReservationID != c.Invocation.ID {
+		return run.NewError("reservation_invocation_mismatch", run.ErrorInvalid, run.RetryNever)
 	}
 	return nil
 }

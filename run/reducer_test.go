@@ -69,6 +69,142 @@ func TestResumeClearsPendingApproval(t *testing.T) {
 	}
 }
 
+func TestSettleInvocationOwnsBudgetOutcomeAndUnknownParking(t *testing.T) {
+	snapshot := runningSnapshot()
+	snapshot.Invocations = map[ID]Invocation{"call-1": {
+		ID: "call-1", Outcome: OutcomeInFlight, Reserved: Limits{LLMCalls: 1, Tokens: 100},
+	}}
+	snapshot.Budget.Reserved = Limits{LLMCalls: 1, Tokens: 100}
+	checkpoint := json.RawMessage(`{"protocol":2,"applied_write":{"node":"writer","invocation":"call-1"}}`)
+	applied, err := Reduce(snapshot, Command{
+		Kind: CommandSettleInvocation, InvocationID: "call-1", Outcome: OutcomeApplied,
+		Usage: Limits{LLMCalls: 1, Tokens: 9}, ReplaceCheckpoint: true, Checkpoint: checkpoint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Next.Invocations["call-1"].Outcome != OutcomeApplied || applied.Next.Budget.Used.Tokens != 9 || applied.Next.Budget.Reserved.Tokens != 0 {
+		t.Fatalf("applied settlement = %+v", applied.Next)
+	}
+	if string(applied.Next.Checkpoint) != string(checkpoint) || applied.Next.Revision != snapshot.Revision+1 {
+		t.Fatalf("checkpoint/revision = %s/%d", applied.Next.Checkpoint, applied.Next.Revision)
+	}
+	if snapshot.Invocations["call-1"].Outcome != OutcomeInFlight {
+		t.Fatal("reducer mutated its input invocation map")
+	}
+
+	unknown, err := Reduce(snapshot, Command{
+		Kind: CommandSettleInvocation, InvocationID: "call-1", Outcome: OutcomeUnknown,
+		Usage: Limits{LLMCalls: 1, Tokens: 9},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Next.State != StateWaitingResolution || unknown.Next.Budget.Reserved.Tokens != 100 ||
+		unknown.Next.Budget.Used.Tokens != 9 || unknown.Next.Invocations["call-1"].Outcome != OutcomeUnknown {
+		t.Fatalf("unknown settlement = %+v", unknown.Next)
+	}
+	if len(unknown.Events) != 2 || unknown.Events[1].Kind != EventInvocationParked {
+		t.Fatalf("unknown events = %+v", unknown.Events)
+	}
+}
+
+func TestUnknownInvocationResolutionChargesOnlyUnbilledUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		outcome     Outcome
+		wantTokens  int
+		wantCharged int
+	}{
+		{name: "applied", outcome: OutcomeApplied, wantTokens: 100, wantCharged: 100},
+		{name: "not_applied", outcome: OutcomeNotApplied, wantTokens: 9, wantCharged: 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := runningSnapshot()
+			snapshot.Invocations = map[ID]Invocation{"call-1": {
+				ID: "call-1", Outcome: OutcomeInFlight, Reserved: Limits{LLMCalls: 1, Tokens: 100},
+			}}
+			snapshot.Budget.Reserved = Limits{LLMCalls: 1, Tokens: 100}
+			unknown, err := Reduce(snapshot, Command{
+				Kind: CommandSettleInvocation, InvocationID: "call-1", Outcome: OutcomeUnknown,
+				Usage: Limits{LLMCalls: 1, Tokens: 9},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			invocation := unknown.Next.Invocations["call-1"]
+			if invocation.Charged.Tokens != 9 || invocation.Charged.LLMCalls != 1 {
+				t.Fatalf("unknown charged = %+v", invocation.Charged)
+			}
+			charge := Limits{}
+			if tc.outcome == OutcomeApplied {
+				charge = invocation.RemainingCharge()
+			}
+			resolved, err := Reduce(unknown.Next, Command{
+				Kind: CommandResolveInvocation, InvocationID: "call-1", Outcome: tc.outcome, Usage: charge,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resolved.Next.Budget.Used.Tokens; got != tc.wantTokens {
+				t.Errorf("used tokens = %d, want %d", got, tc.wantTokens)
+			}
+			if got := resolved.Next.Budget.Used.LLMCalls; got != 1 {
+				t.Errorf("used model calls = %d, want 1", got)
+			}
+			if got := resolved.Next.Budget.Reserved.Tokens; got != 0 {
+				t.Errorf("reserved tokens = %d, want 0", got)
+			}
+			if got := resolved.Next.Invocations["call-1"].Charged.Tokens; got != tc.wantCharged {
+				t.Errorf("invocation charged tokens = %d, want %d", got, tc.wantCharged)
+			}
+		})
+	}
+}
+
+func TestNodeAndApprovalProgressAreReducerCommands(t *testing.T) {
+	snapshot := runningSnapshot()
+	nodes := map[string]NodeState{"writer": {Status: StateSucceeded, Attempts: 1}}
+	advanced, err := Reduce(snapshot, Command{Kind: CommandAdvanceNodes, Nodes: nodes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advanced.Next.State != StateRunning || advanced.Next.Nodes["writer"].Status != StateSucceeded || advanced.Next.Revision != 1 {
+		t.Fatalf("node advance = %+v", advanced.Next)
+	}
+	nodes["writer"] = NodeState{Status: StateFailed}
+	if advanced.Next.Nodes["writer"].Status != StateSucceeded {
+		t.Fatal("reducer retained caller's mutable node map")
+	}
+	checkpoint := json.RawMessage(`{"protocol":2,"approval":{"tool":"publish_article"}}`)
+	parked, err := Reduce(snapshot, Command{
+		Kind: CommandWaitApproval, ApprovalID: "approval-1", ReplaceCheckpoint: true, Checkpoint: checkpoint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Next.PendingApprovalID != "approval-1" || string(parked.Next.Checkpoint) != string(checkpoint) {
+		t.Fatalf("parked approval = %+v", parked.Next)
+	}
+}
+
+func TestAcceptedTransitionCarriesItsReplayCommand(t *testing.T) {
+	snapshot := runningSnapshot()
+	command := Command{Kind: CommandAdvanceNodes, Nodes: map[string]NodeState{"writer": {Status: StateSucceeded}}}
+	transition, err := Reduce(snapshot, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition.Command == nil || transition.Command.Kind != command.Kind ||
+		transition.Command.Nodes["writer"].Status != StateSucceeded {
+		t.Fatalf("missing command on transition: %+v", transition.Command)
+	}
+	command.Nodes["writer"] = NodeState{Status: StateFailed}
+	if transition.Command.Nodes["writer"].Status != StateSucceeded {
+		t.Fatal("replay command retained caller's mutable node map")
+	}
+}
+
 // A terminal Run is a fact, not a state that happens to have no outgoing edges.
 // Nothing reopens it — not a resume, not a retry, not another terminal command,
 // and not a cancellation that arrived after the Run had already finished.
@@ -135,6 +271,7 @@ func TestEffectCommandOverTheEnvelopeIsDenied(t *testing.T) {
 // handed out in parallel and each one looks affordable on its own.
 func TestRecordUnknownParksTheRunInWaitingResolution(t *testing.T) {
 	snapshot := runningSnapshot()
+	snapshot.Invocations = map[ID]Invocation{"inv-1": {ID: "inv-1", Outcome: OutcomeInFlight}}
 
 	got, err := Reduce(snapshot, Command{Kind: CommandRecordUnknown, InvocationID: "inv-1"})
 	if err != nil {
@@ -149,6 +286,32 @@ func TestRecordUnknownParksTheRunInWaitingResolution(t *testing.T) {
 	}
 	if len(got.Effects) != 1 || got.Effects[0].Kind != EffectUnknown {
 		t.Fatalf("effects=%+v want one EffectUnknown", got.Effects)
+	}
+}
+
+func TestRecordUnknownRejectsInvocationWithoutDurableBegin(t *testing.T) {
+	snapshot := runningSnapshot()
+	got, err := Reduce(snapshot, Command{Kind: CommandRecordUnknown, InvocationID: "phantom"})
+	if CodeOf(err) != "invocation_not_in_flight" {
+		t.Fatalf("error=%v, want invocation_not_in_flight", err)
+	}
+	if got.Next.State != StateRunning || len(got.Next.Invocations) != 0 {
+		t.Fatalf("refused command changed Run: %+v", got.Next)
+	}
+}
+
+func TestHistoricalWriteResolutionRecordsAppliedAndStopsRun(t *testing.T) {
+	snapshot := runningSnapshot()
+	snapshot.State = StateWaitingResolution
+	snapshot.Invocations = map[ID]Invocation{
+		"old-write": {ID: "old-write", Write: true, Outcome: OutcomeUnknown},
+	}
+	got, err := Reduce(snapshot, Command{Kind: CommandResolveInvocation, InvocationID: "old-write", Outcome: OutcomeApplied})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Next.State != StateFailed || got.Next.Invocations["old-write"].Outcome != OutcomeApplied {
+		t.Fatalf("historical write was not safely resolved: %+v", got.Next)
 	}
 }
 
@@ -224,6 +387,14 @@ func TestResolutionStillUnknownStaysParked(t *testing.T) {
 	}
 	if got.Next.State != StateWaitingResolution {
 		t.Fatalf("state=%s want=waiting_resolution", got.Next.State)
+	}
+	repeated, err := Reduce(got.Next, Command{Kind: CommandResolveInvocation, InvocationID: "inv-1", Outcome: OutcomeStillUnknown})
+	if err != nil || repeated.Next.Revision != got.Next.Revision {
+		t.Fatalf("repeat still_unknown: transition=%+v err=%v", repeated, err)
+	}
+	final, err := Reduce(got.Next, Command{Kind: CommandResolveInvocation, InvocationID: "inv-1", Outcome: OutcomeApplied})
+	if err != nil || final.Next.State != StateRunning || final.Next.Invocations["inv-1"].Outcome != OutcomeApplied {
+		t.Fatalf("final resolution: transition=%+v err=%v", final, err)
 	}
 }
 
@@ -345,6 +516,7 @@ func TestSnapshotCarriesPrincipalRefButNoRequestScopedIdentity(t *testing.T) {
 func TestMultiEventTransitionsNumberEveryEvent(t *testing.T) {
 	snapshot := runningSnapshot()
 	snapshot.LastEventSequence = 4
+	snapshot.Invocations = map[ID]Invocation{"inv-1": {ID: "inv-1", Outcome: OutcomeInFlight}}
 
 	got, err := Reduce(snapshot, Command{Kind: CommandRecordUnknown, InvocationID: "inv-1"})
 	if err != nil {
@@ -362,12 +534,9 @@ func TestMultiEventTransitionsNumberEveryEvent(t *testing.T) {
 	}
 }
 
-// The settle path builds its own Transition, so this is the one outcome write
-// that Reduce does not perform and cannot protect. Writing it through the map
-// would settle the invocation in the caller's snapshot — the record the Store
-// returned from the previous commit — before the Store has accepted anything,
-// so a settlement the fence rejects would still read as applied and the
-// recovery scans would skip the effect nobody established.
+// Store adapters may apply their authoritative outcome to a reduced transition
+// after the effect result is committed. That copy must not mutate the prior
+// snapshot if a fence rejects the commit.
 func TestWithInvocationOutcomeLeavesTheReceiverUntouched(t *testing.T) {
 	snapshot := runningSnapshot()
 	begun, err := Reduce(snapshot, Command{
@@ -394,5 +563,20 @@ func TestWithInvocationOutcomeIgnoresAnUnknownInvocation(t *testing.T) {
 
 	if got := snapshot.WithInvocationOutcome("absent", OutcomeApplied); len(got.Invocations) != 0 {
 		t.Fatalf("invocations=%+v want none", got.Invocations)
+	}
+}
+
+func TestCancelRejectsAnOlderRootEpoch(t *testing.T) {
+	snapshot := runningSnapshot()
+	snapshot.RootCancellationEpoch = 2
+	if _, err := Reduce(snapshot, Command{Kind: CommandCancel, CancelEpoch: 1}); err == nil {
+		t.Fatal("cancel accepted an older root epoch")
+	}
+	transition, err := Reduce(snapshot, Command{Kind: CommandCancel, CancelEpoch: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition.Next.RootCancellationEpoch != 3 || transition.Next.State != StateCancelled {
+		t.Fatalf("cancel transition=%+v", transition.Next)
 	}
 }

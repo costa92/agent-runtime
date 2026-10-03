@@ -23,12 +23,15 @@ func (l *levelRecordingLogger) record(level, msg string) { l.levels[msg] = level
 func (l *levelRecordingLogger) Debug(_ context.Context, msg string, _ ...any) {
 	l.record("debug", msg)
 }
+
 func (l *levelRecordingLogger) Info(_ context.Context, msg string, _ ...any) {
 	l.record("info", msg)
 }
+
 func (l *levelRecordingLogger) Warn(_ context.Context, msg string, _ ...any) {
 	l.record("warn", msg)
 }
+
 func (l *levelRecordingLogger) Error(_ context.Context, msg string, _ ...any) {
 	l.record("error", msg)
 }

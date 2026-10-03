@@ -30,7 +30,10 @@ import (
 // probeInvocation is the invocation id the successor probe installs, so that
 // the commands which require one (record_unknown, resolve_invocation) are
 // exercised rather than refused for a reason unrelated to the state.
-const probeInvocation run.ID = "replay-probe"
+const (
+	probeInvocation run.ID = "replay-probe"
+	probeInFlight   run.ID = "replay-in-flight"
+)
 
 // Result is what a verified history amounts to.
 type Result struct {
@@ -161,6 +164,7 @@ func probeSnapshot(state run.State) run.Snapshot {
 		// and no probe is refused for a reason the trajectory does not describe.
 		Invocations: map[run.ID]run.Invocation{
 			probeInvocation: {ID: probeInvocation, Outcome: run.OutcomeUnknown},
+			probeInFlight:   {ID: probeInFlight, Outcome: run.OutcomeInFlight},
 		},
 	}
 }
@@ -174,14 +178,17 @@ func probeCommands() []run.Command {
 		{Kind: run.CommandStart},
 		{Kind: run.CommandResume},
 		{Kind: run.CommandWaitApproval},
+		{Kind: run.CommandAdvanceNodes, Nodes: map[string]run.NodeState{"probe": {Status: run.StateSucceeded}}},
+		{Kind: run.CommandSettleInvocation, InvocationID: probeInvocation, Outcome: run.OutcomeApplied},
 		{Kind: run.CommandInvokeModel, InvocationID: probeInvocation},
 		{Kind: run.CommandInvokeTool, InvocationID: probeInvocation},
 		{Kind: run.CommandWriteMemory, InvocationID: probeInvocation},
-		{Kind: run.CommandRecordUnknown, InvocationID: probeInvocation},
+		{Kind: run.CommandRecordUnknown, InvocationID: probeInFlight},
 		{Kind: run.CommandResolveInvocation, InvocationID: probeInvocation, Outcome: run.OutcomeApplied},
 		{Kind: run.CommandSucceed},
 		{Kind: run.CommandPartial},
 		{Kind: run.CommandFail},
 		{Kind: run.CommandCancel},
+		{Kind: run.CommandFenceCancellation, CancelEpoch: 1},
 	}
 }

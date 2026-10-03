@@ -49,33 +49,28 @@ func declaredMemory(s *session, key string) (definition.MemoryRef, error) {
 // be a second writer of Run-adjacent state, outside the fence — and the write
 // and its budget settlement could then land separately.
 func (s *session) commitMemory(ctx context.Context, id run.ID, key, namespace string, fact memory.ResultFact, node string) error {
-	reserved := s.state().Invocations[id].Reserved
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	charged := run.Limits{ToolCalls: 1}
-
-	transition := run.Transition{Next: s.state()}
-	transition.Next.Revision = s.state().Revision + 1
-	transition.Next.Budget = s.state().Budget.Settle(reserved, charged, fact.Outcome != run.OutcomeUnknown)
-	// Same rule as complete(): the settled outcome must reach the snapshot.
-	// Left in_flight it reads to parkUnclassifiedEffects as a worker that died
-	// mid-effect, and an approval-resumed Run parks itself in waiting_resolution
-	// for the memory write it already finished.
-	existing := transition.Next.Invocations[id]
-	existing.Outcome = fact.Outcome
-	transition.Next.Invocations[id] = existing
+	command := run.Command{Kind: run.CommandSettleInvocation, InvocationID: id, Outcome: fact.Outcome, Usage: charged}
+	if fact.Outcome == run.OutcomeApplied {
+		var err error
+		command.Checkpoint, err = checkpointWithAppliedWrite(s.state().Checkpoint, node, id)
+		if err != nil {
+			return err
+		}
+		command.ReplaceCheckpoint = true
+	}
+	transition, err := run.Reduce(s.state(), command)
+	if err != nil {
+		return err
+	}
 
 	settlement := store.BudgetSettlement{
 		ReservationID: id, Charged: run.Limits{ToolCalls: 1}, Release: true,
 	}
 	if fact.Outcome == run.OutcomeUnknown {
 		settlement.Release = false
-		parked, err := run.Reduce(s.state(), run.Command{
-			Kind: run.CommandRecordUnknown, InvocationID: id,
-		})
-		if err != nil {
-			return err
-		}
-		parked.Next.Budget = transition.Next.Budget
-		transition = parked
 	}
 	stampNode(transition.Events, node)
 

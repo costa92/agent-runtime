@@ -138,10 +138,11 @@ type recordingObserver struct {
 	chunks    []string
 }
 
-func (o *recordingObserver) Decision(decision observe.Decision) {
+func (o *recordingObserver) Decision(_ context.Context, decision observe.Decision) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.decisions = append(o.decisions, decision)
+	return nil
 }
 
 func (o *recordingObserver) Chunk(_ run.ID, text string) {

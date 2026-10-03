@@ -28,12 +28,11 @@ import (
 // returned RouteDelegate, and no host wired one), so no stored checkpoint can
 // contain them and no reader can observe their absence. Bumping would have
 // rejected every parked approval checkpoint that does exist.
-const checkpointProtocol = 1
+const checkpointProtocol = 2
 
 // checkpoint is the envelope every resume state is written in.
 //
-// One payload today: the write parked for a human. The envelope stays because
-// the versioning above is what makes a second one safe to add.
+// Approval and applied-write recovery share one versioned resume envelope.
 type checkpoint struct {
 	// Protocol is mandatory on every non-empty checkpoint. Legacy unversioned
 	// rows are upgraded once by the database migration; keeping that conversion
@@ -41,6 +40,39 @@ type checkpoint struct {
 	Protocol uint32 `json:"protocol"`
 
 	Approval json.RawMessage `json:"approval,omitempty"`
+	// AppliedWrite is the node whose external write completed before its node
+	// result was committed. A worker must not start that node again after a
+	// takeover: the agent's in-memory tool loop would issue a new invocation.
+	AppliedWrite *appliedWrite `json:"applied_write,omitempty"`
+}
+
+type appliedWrite struct {
+	Node       string `json:"node"`
+	Invocation run.ID `json:"invocation"`
+}
+
+func checkpointWithAppliedWrite(raw json.RawMessage, node string, invocation run.ID) (json.RawMessage, error) {
+	state, err := decodeCheckpoint(raw)
+	if err != nil {
+		return nil, err
+	}
+	state.AppliedWrite = &appliedWrite{Node: node, Invocation: invocation}
+	return encodeCheckpoint(state)
+}
+
+func checkpointWithoutAppliedWrite(raw json.RawMessage, node string) (json.RawMessage, error) {
+	state, err := decodeCheckpoint(raw)
+	if err != nil {
+		return nil, err
+	}
+	if state.AppliedWrite == nil || state.AppliedWrite.Node != node {
+		return raw, nil
+	}
+	state.AppliedWrite = nil
+	if len(state.Approval) == 0 {
+		return nil, nil
+	}
+	return encodeCheckpoint(state)
 }
 
 // decodeCheckpoint reads the envelope and refuses one this build cannot read.

@@ -83,10 +83,13 @@ func TestWhatIsWrittenCarriesTheProtocolAndRoundTrips(t *testing.T) {
 }
 
 func TestInspectPendingApprovalReturnsOnlyAnUndecidedWaitingHold(t *testing.T) {
-	checkpoint := encodeApprovalHold(approvalHold{
+	checkpoint, err := encodeApprovalHold(nil, approvalHold{
 		Tool:      "publish_article",
 		Arguments: json.RawMessage(`{"article_id":7,"account_id":9}`),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	snapshot := run.Snapshot{
 		State:             run.StateWaitingApproval,
 		PendingApprovalID: "approval-1",
@@ -114,7 +117,7 @@ func TestInspectPendingApprovalReturnsOnlyAnUndecidedWaitingHold(t *testing.T) {
 		"malformed hold":   func(s *run.Snapshot) { s.Checkpoint = json.RawMessage(`{"approval":[]}`) },
 		"unsupported hold": func(s *run.Snapshot) { s.Checkpoint = json.RawMessage(`{"protocol":99,"approval":{}}`) },
 		"denied approval": func(s *run.Snapshot) {
-			s.Checkpoint = encodeApprovalHold(approvalHold{Tool: "publish_article", Denied: true})
+			s.Checkpoint, _ = encodeApprovalHold(nil, approvalHold{Tool: "publish_article", Denied: true})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

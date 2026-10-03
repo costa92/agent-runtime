@@ -237,7 +237,9 @@ const (
 	// waiting_resolution, which only a resolution may leave.
 	CommandResume CommandKind = "resume"
 
-	CommandWaitApproval CommandKind = "wait_approval"
+	CommandWaitApproval     CommandKind = "wait_approval"
+	CommandAdvanceNodes     CommandKind = "advance_nodes"
+	CommandSettleInvocation CommandKind = "settle_invocation"
 
 	// The three governed effects. Each reserves budget before the effect is
 	// issued, which is what makes the envelope a limit rather than a report.
@@ -255,6 +257,9 @@ const (
 	CommandPartial CommandKind = "partial"
 	CommandFail    CommandKind = "fail"
 	CommandCancel  CommandKind = "cancel"
+	// CommandFenceCancellation advances a terminal root's epoch while active
+	// descendants are cancelled. Its terminal state remains immutable.
+	CommandFenceCancellation CommandKind = "fence_cancellation"
 )
 
 // Command is one typed instruction. Fields are populated per kind rather than
@@ -263,20 +268,42 @@ const (
 // does not already do.
 type Command struct {
 	Kind CommandKind
+	// CancelEpoch is the root's new cancellation fence, set only on the root
+	// command. Descendant commands leave their own epoch unchanged.
+	CancelEpoch uint64
 
 	// Reserve is the spend an effect command charges before issuing.
 	Reserve Limits
+	// Usage is the actual spend reported when an invocation settles.
+	Usage Limits
 
 	// InvocationID names the Invocation for record_unknown and
 	// resolve_invocation.
 	InvocationID ID
+	// NodeID is the graph node issuing an invocation.
+	NodeID string
 	// Outcome is the resolver's answer for resolve_invocation.
 	Outcome Outcome
 	// IdempotencyKey is recorded with a new Invocation.
 	IdempotencyKey string
 	// Tool is the tool key recorded with a new Invocation, empty for model and
 	// memory calls.
-	Tool string
+	Tool          string
+	Write         bool
+	RequestDigest string
+	// ApprovalID names the approval created by wait_approval.
+	ApprovalID ID
+	// Approved records the control-plane answer carried by resume.
+	Approved bool
+	// Nodes is the graph's settled node projection for an advance or terminal
+	// command. The reducer copies it before putting it in the Snapshot.
+	Nodes map[string]NodeState
+	// ReplaceCheckpoint distinguishes clearing a checkpoint from leaving it
+	// untouched. Checkpoint alone cannot express the first case when nil.
+	ReplaceCheckpoint bool
+	// ConsumeApproval removes the one-use approval hold when a granted effect
+	// begins. The caller supplies the resulting encoded checkpoint.
+	ConsumeApproval bool
 	// Checkpoint replaces the Run's checkpoint on resume. Used by the
 	// approval resolver to mark a refused hold as denied before the Run
 	// continues; Reduce is the only writer of state, so the marker travels
@@ -351,4 +378,8 @@ type Transition struct {
 	Next    Snapshot
 	Events  []Event
 	Effects []Effect
+	// Command is the exact reducer input that produced this revision. A Store
+	// writes it beside the snapshot so command replay needs no inference from
+	// events, which intentionally omit effect payloads and resolver answers.
+	Command *Command
 }

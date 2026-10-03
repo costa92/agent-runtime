@@ -116,16 +116,17 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		claimed := mustStart(t, harness, "run-1")
 
 		snapshot := claimed.Snapshot
-		for range 3 {
+		for index := range 3 {
+			invocationID := run.ID("inv-" + itoa(index))
 			transition, err := run.Reduce(snapshot, run.Command{
-				Kind: run.CommandInvokeModel, Reserve: run.Limits{Tokens: 10},
+				Kind: run.CommandInvokeModel, InvocationID: invocationID, Reserve: run.Limits{Tokens: 10},
 			})
 			if err != nil {
 				t.Fatalf("reduce: %v", err)
 			}
 			snapshot, err = harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 				Fence:      fenceFor(claimed, snapshot.Revision),
-				Invocation: store.InvocationBegin{ID: run.ID("inv-" + snapshot.State), Reservation: store.BudgetReservation{ID: run.ID("res-" + itoa(int(snapshot.Revision)))}},
+				Invocation: store.InvocationBegin{ID: invocationID, Reservation: store.BudgetReservation{ID: invocationID, Amount: run.Limits{Tokens: 10}}},
 				Commit:     store.CommitContext{Transition: transition, Events: transition.Events},
 			})
 			if err != nil {
@@ -152,7 +153,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval, ApprovalID: "ap-1"})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -171,7 +172,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval, ApprovalID: "ap-1"})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -328,7 +329,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 
 		// The worker was mid-step and knows nothing about the cancellation. Its
 		// commit must fail on the epoch, not succeed and resurrect the Run.
-		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval, ApprovalID: "ap-1"})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -359,7 +360,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		parked, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		parked, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval, ApprovalID: "ap-1"})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -375,7 +376,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		// human answering now must still be able to.
 		harness.Advance(time.Hour)
 
-		resumed, err := run.Reduce(snapshot, run.Command{Kind: run.CommandResume})
+		resumed, err := run.Reduce(snapshot, run.Command{Kind: run.CommandResume, ApprovalID: "ap-1", Approved: true})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -396,7 +397,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		parked, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		parked, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval, ApprovalID: "ap-1"})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -407,7 +408,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		if err != nil {
 			t.Fatalf("enter approval: %v", err)
 		}
-		resumed, err := run.Reduce(snapshot, run.Command{Kind: run.CommandResume})
+		resumed, err := run.Reduce(snapshot, run.Command{Kind: run.CommandResume, ApprovalID: "ap-1", Approved: true})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -425,7 +426,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		}
 		for name, fence := range cases {
 			if _, err := harness.Store.ResolveApproval(ctx, store.ResolveApprovalCommand{
-				Fence: fence, Decision: store.ApprovalDecision{ID: "ap-1"},
+				Fence: fence, Decision: store.ApprovalDecision{ID: "ap-1", Approved: true},
 				Commit: store.CommitContext{Transition: resumed, Events: resumed.Events},
 			}); err == nil {
 				t.Errorf("%s: accepted", name)
@@ -460,27 +461,27 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		}
 		snapshot, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
+			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "inv-1", Amount: run.Limits{ToolCalls: 1}}},
 			Commit:     store.CommitContext{Transition: began, Events: began.Events},
 		})
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
 
-		parked, err := run.Reduce(snapshot, run.Command{Kind: run.CommandRecordUnknown, InvocationID: "inv-1"})
+		parked, err := run.Reduce(snapshot, run.Command{Kind: run.CommandSettleInvocation, InvocationID: "inv-1", Outcome: run.OutcomeUnknown})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
 		if _, err := harness.Store.CompleteInvocation(ctx, store.CompleteInvocationCommand{
 			Fence:  fenceFor(claimed, snapshot.Revision),
 			Result: store.InvocationResult{ID: "inv-1", Outcome: run.OutcomeUnknown},
-			Budget: store.BudgetSettlement{ReservationID: "res-1"},
+			Budget: store.BudgetSettlement{ReservationID: "inv-1"},
 			Commit: store.CommitContext{Transition: parked, Events: parked.Events},
 		}); err != nil {
 			t.Fatalf("complete: %v", err)
 		}
 
-		if _, outstanding := harness.Reservation("res-1"); !outstanding {
+		if _, outstanding := harness.Reservation("inv-1"); !outstanding {
 			t.Fatal("an unknown reservation was released; the capacity could now be spent twice")
 		}
 	})
@@ -498,7 +499,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 
 		began, err := run.Reduce(claimed.Snapshot, run.Command{
 			Kind: run.CommandInvokeTool, Reserve: run.Limits{ToolCalls: 1},
-			InvocationID: "inv-1", Tool: "search_evidence",
+			InvocationID: "inv-1", NodeID: "writer", Tool: "search_evidence", Write: true,
 		})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
@@ -506,8 +507,8 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		snapshot, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision),
 			Invocation: store.InvocationBegin{
-				ID: "inv-1", Tool: "search_evidence",
-				Reservation: store.BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}},
+				ID: "inv-1", NodeID: "writer", Tool: "search_evidence", Write: true,
+				Reservation: store.BudgetReservation{ID: "inv-1", Amount: run.Limits{ToolCalls: 1}},
 			},
 			Commit: store.CommitContext{Transition: began, Events: began.Events},
 		})
@@ -542,6 +543,9 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 			t.Fatalf("tool after the commit = %q, want search_evidence; "+
 				"a per-Run call ceiling cannot count what the ledger forgot", got)
 		}
+		if !readBack.Invocations["inv-1"].Write {
+			t.Fatal("write classification was not retained across reload")
+		}
 
 		// The parked invocation must now be resolvable, which is the whole
 		// point of parking. The first decision is what the ledger acts on, and
@@ -555,7 +559,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		if _, err := harness.Store.ResolveInvocation(ctx, store.ResolveInvocationCommand{
 			Fence:    store.ResolutionFence{RunID: "run-1", ExpectedRevision: readBack.Revision, TargetID: "inv-1", RequestedBy: samplePrincipal()},
 			Decision: store.InvocationResolution{ID: "inv-1", Outcome: run.OutcomeApplied, Reason: "verified"},
-			Budget:   store.BudgetSettlement{ReservationID: "res-1", Release: true},
+			Budget:   store.BudgetSettlement{ReservationID: "inv-1", Release: true},
 			Commit:   store.CommitContext{Transition: resolved, Events: resolved.Events},
 		}); err != nil {
 			t.Fatalf("resolve: %v", err)
@@ -575,17 +579,17 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		// What the engine commits when the graph advanced but the Run's own
-		// state did not (session.transitionFor's no-command branch).
-		next := claimed.Snapshot
-		next.Revision = claimed.Snapshot.Revision + 1
-		next.Nodes = map[string]run.NodeState{
-			"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"},
+		progress, err := run.Reduce(claimed.Snapshot, run.Command{
+			Kind:  run.CommandAdvanceNodes,
+			Nodes: map[string]run.NodeState{"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"}},
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 		if _, err := harness.Store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), NodeName: "planner",
 			OutputRef: "output-1",
-			Commit:    store.CommitContext{Transition: run.Transition{Next: next}},
+			Commit:    store.CommitContext{Transition: progress, Events: progress.Events},
 		}); err != nil {
 			t.Fatalf("commit node: %v", err)
 		}
@@ -628,15 +632,17 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		if err != nil {
 			t.Fatalf("fact: %v", err)
 		}
-		next := claimed.Snapshot
-		next.Revision = claimed.Snapshot.Revision + 1
-		next.Nodes = map[string]run.NodeState{
-			"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"},
+		progress, err := run.Reduce(claimed.Snapshot, run.Command{
+			Kind:  run.CommandAdvanceNodes,
+			Nodes: map[string]run.NodeState{"planner": {Status: run.StateSucceeded, Attempts: 1, OutputRef: "output-1"}},
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 		if _, err := harness.Store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
 			Fence: fenceFor(claimed, claimed.Snapshot.Revision), NodeName: "planner",
 			OutputRef: "output-1",
-			Commit:    store.CommitContext{Transition: run.Transition{Next: next}, Projections: []store.ProjectionFact{fact}},
+			Commit:    store.CommitContext{Transition: progress, Events: progress.Events, Projections: []store.ProjectionFact{fact}},
 		}); err != nil {
 			t.Fatalf("commit node: %v", err)
 		}
@@ -673,7 +679,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		if _, err := harness.Store.CompleteInvocation(ctx, store.CompleteInvocationCommand{
 			Fence:  fenceFor(claimed, claimed.Snapshot.Revision),
 			Result: store.InvocationResult{ID: "inv-1", Outcome: run.OutcomeUnknown},
-			Budget: store.BudgetSettlement{ReservationID: "res-1", Release: true},
+			Budget: store.BudgetSettlement{ReservationID: "inv-1", Release: true},
 		}); run.KindOf(err) != run.ErrorInvalid {
 			t.Fatalf("error=%s want=invalid", run.KindOf(err))
 		}
@@ -701,23 +707,26 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		}
 		snapshot, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "res-1", Amount: run.Limits{ToolCalls: 1}}},
+			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "inv-1", Amount: run.Limits{ToolCalls: 1}}},
 			Commit:     store.CommitContext{Transition: began, Events: began.Events},
 		})
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
 
-		// The transition as the engine used to produce it: budget settled,
-		// invocation outcome untouched.
-		stale := snapshot
-		stale.Revision = snapshot.Revision + 1
-		stale.Budget = snapshot.Budget.Settle(run.Limits{ToolCalls: 1}, run.Limits{ToolCalls: 1}, true)
+		settled, err := run.Reduce(snapshot, run.Command{
+			Kind: run.CommandSettleInvocation, InvocationID: "inv-1", Outcome: run.OutcomeApplied,
+			Usage: run.Limits{ToolCalls: 1},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, err := harness.Store.CompleteInvocation(ctx, store.CompleteInvocationCommand{
 			Fence:  fenceFor(claimed, snapshot.Revision),
 			Result: store.InvocationResult{ID: "inv-1", Outcome: run.OutcomeApplied},
-			Budget: store.BudgetSettlement{ReservationID: "res-1"},
-			Commit: store.CommitContext{Transition: run.Transition{Next: stale}},
+			Usage:  run.Limits{ToolCalls: 1},
+			Budget: store.BudgetSettlement{ReservationID: "inv-1", Charged: run.Limits{ToolCalls: 1}},
+			Commit: store.CommitContext{Transition: settled, Events: settled.Events},
 		}); err != nil {
 			t.Fatalf("complete: %v", err)
 		}
@@ -736,7 +745,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval, ApprovalID: "ap-1"})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -936,7 +945,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		ctx := context.Background()
 		claimed := mustStart(t, harness, "run-1")
 
-		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval})
+		transition, err := run.Reduce(claimed.Snapshot, run.Command{Kind: run.CommandWaitApproval, ApprovalID: "ap-1"})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
 		}
@@ -988,7 +997,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		claimed := mustStart(t, harness, "run-1")
 
 		transition, err := run.Reduce(claimed.Snapshot, run.Command{
-			Kind: run.CommandInvokeModel, Reserve: run.Limits{Tokens: 10},
+			Kind: run.CommandInvokeModel, InvocationID: "inv-1", Reserve: run.Limits{Tokens: 10},
 		})
 		if err != nil {
 			t.Fatalf("reduce: %v", err)
@@ -998,7 +1007,7 @@ func CoreStore(t *testing.T, newHarness func(t *testing.T) CoreHarness) {
 		}
 		if _, err := harness.Store.BeginInvocation(ctx, store.BeginInvocationCommand{
 			Fence:      fenceFor(claimed, claimed.Snapshot.Revision),
-			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "res-1"}},
+			Invocation: store.InvocationBegin{ID: "inv-1", Reservation: store.BudgetReservation{ID: "inv-1", Amount: run.Limits{Tokens: 10}}},
 			Commit:     store.CommitContext{Transition: transition, Events: transition.Events},
 		}); err != nil {
 			t.Fatalf("begin: %v", err)

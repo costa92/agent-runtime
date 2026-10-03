@@ -3,14 +3,20 @@ package agentruntime_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
+	"github.com/kart-io/wechat-account/agent-runtime/definition"
+	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
 	"github.com/kart-io/wechat-account/agent-runtime/llm"
+	"github.com/kart-io/wechat-account/agent-runtime/memory"
+	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
+	"github.com/kart-io/wechat-account/agent-runtime/tool"
 )
 
 // --- fixtures -------------------------------------------------------------
@@ -177,6 +183,223 @@ func TestASettledEffectDoesNotParkTheRun(t *testing.T) {
 	}
 	if !result.Run.State.Terminal() {
 		t.Fatalf("state = %s", result.Run.State)
+	}
+}
+
+type failNodeCommitOnce struct {
+	store.Execution
+	failed bool
+}
+
+type countingMemoryProvider struct{ writes int }
+
+func (*countingMemoryProvider) Retrieve(context.Context, memory.Query) ([]memory.Record, error) {
+	return nil, nil
+}
+
+func (p *countingMemoryProvider) Write(context.Context, memory.Scope, string, string) (memory.Mutation, error) {
+	p.writes++
+	return memory.Mutation{Ref: "saved"}, nil
+}
+
+func TestCompletedMemoryWriteIsNotRepeatedAfterNodeCommitCrash(t *testing.T) {
+	provider := &countingMemoryProvider{}
+	registry := memory.NewRegistry()
+	if err := registry.Register("notes", provider); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if err := request.Ports.Remember(ctx, "notes", "ref", "text", "one-write"); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`"done"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:  run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode: definition.ModeSpecialist, Implementation: "answer",
+		Model:    definition.ModelPolicy{Profile: "fast"},
+		Memories: []definition.MemoryRef{{Key: "notes", Namespace: "ns", Writable: true, MaxRecords: 8, MaxTokens: 600}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Memories = memory.NewGateway(registry, testkit.AllowAllMemoryAuthorizer())
+		deps.Store = &failNodeCommitOnce{Execution: deps.Store}
+	}))
+	started := start(t, h)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err == nil {
+		t.Fatal("node commit was not interrupted")
+	}
+	if provider.writes != 1 {
+		t.Fatalf("memory writes after first execution = %d, want 1", provider.writes)
+	}
+	h.clock.Advance(time.Minute)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatal(err)
+	}
+	if provider.writes != 1 {
+		t.Fatalf("recovery repeated memory write %d times", provider.writes)
+	}
+}
+
+func (s *failNodeCommitOnce) CommitNodeResult(ctx context.Context, command store.CommitNodeResultCommand) (run.Snapshot, error) {
+	if command.OutputRef != "" && !s.failed {
+		s.failed = true
+		return run.Snapshot{}, errors.New("injected process loss after tool settlement")
+	}
+	return s.Execution.CommitNodeResult(ctx, command)
+}
+
+func TestCompletedWriteIsNotRepeatedAfterNodeCommitCrash(t *testing.T) {
+	registry := tool.NewRegistry()
+	handler := testkit.ToolSucceeding(`{"id":"created"}`)
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "create book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if _, err := request.Ports.Tool(ctx, "render_picture_book", json.RawMessage(`{"title":"one"}`)); err != nil {
+			return agent.Response{}, err
+		}
+		return agent.Response{Output: json.RawMessage(`"done"`)}, nil
+	}}, withDefinition(definition.Definition{
+		Ref:  run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode: definition.ModeSpecialist, Implementation: "answer",
+		Model: definition.ModelPolicy{Profile: "fast"},
+		Tools: []definition.ToolRef{{Key: "render_picture_book"}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Governance = fakeGovernance{policies: policy.Snapshot{Policies: []policy.Policy{{
+			Name: "allow-test-write", Scope: policy.ScopeTenant,
+			Decision: policy.DecisionAllow,
+		}}}}
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		deps.Store = &failNodeCommitOnce{Execution: deps.Store}
+	}))
+	started := start(t, h)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err == nil {
+		t.Fatal("node commit was not interrupted")
+	}
+	if got := handler.Calls(); got != 1 {
+		t.Fatalf("first execution called write %d times, want 1", got)
+	}
+	h.clock.Advance(time.Minute)
+	if _, err := h.runtime.Advance(t.Context(), started.ID); err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	if got := handler.Calls(); got != 1 {
+		t.Fatalf("recovery repeated a completed write %d times", got)
+	}
+}
+
+func TestReconciledAppliedWriteIsNotExecutedAgain(t *testing.T) {
+	registry := tool.NewRegistry()
+	handler := testkit.ToolSucceeding(`{"id":"duplicate"}`)
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "create book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		_, err := request.Ports.Tool(ctx, "render_picture_book", json.RawMessage(`{"title":"one"}`))
+		return agent.Response{Output: json.RawMessage(`"done"`)}, err
+	}}, withDefinition(definition.Definition{
+		Ref:            run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode:           definition.ModeSpecialist,
+		Implementation: "answer",
+		Model:          definition.ModelPolicy{Profile: "fast"},
+		Tools:          []definition.ToolRef{{Key: "render_picture_book"}},
+		Graph: definition.GraphSpec{Nodes: []definition.NodeSpec{
+			{Name: "a_after", Agent: "answer", DependsOn: []string{"z_writer"}, Optional: true},
+			{Name: "z_writer", Agent: "answer", Tools: []string{"render_picture_book"}},
+		}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Governance = fakeGovernance{policies: policy.Snapshot{Policies: []policy.Policy{{
+			Name: "allow-test-write", Scope: policy.ScopeTenant,
+			Decision: policy.DecisionAllow,
+		}}}}
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+	}))
+	started := start(t, h)
+	ctx := t.Context()
+	lease, queued, err := h.store.Claim(ctx, store.ClaimCommand{
+		RunID: started.ID, Owner: "dying-worker", LeaseFor: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err := run.Reduce(queued, run.Command{Kind: run.CommandStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := h.store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
+		Fence:    store.ExecutionFence{RunID: started.ID, ExpectedRevision: queued.Revision, LeaseToken: lease.Token},
+		NodeName: "run", Commit: store.CommitContext{Transition: transition, Events: transition.Events},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err = run.Reduce(running, run.Command{
+		Kind: run.CommandInvokeTool, InvocationID: "tool-lost", NodeID: "z_writer", Tool: "render_picture_book", Write: true,
+		IdempotencyKey: "tool-lost", Reserve: run.Limits{ToolCalls: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.BeginInvocation(ctx, store.BeginInvocationCommand{
+		Fence: store.ExecutionFence{RunID: started.ID, ExpectedRevision: running.Revision, LeaseToken: lease.Token},
+		Invocation: store.InvocationBegin{
+			ID: "tool-lost", NodeID: "z_writer", Tool: "render_picture_book", Write: true, IdempotencyKey: "tool-lost",
+			Reservation: store.BudgetReservation{ID: "tool-lost", Amount: run.Limits{ToolCalls: 1}},
+		},
+		Commit: store.CommitContext{Transition: transition, Events: transition.Events},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.Advance(time.Hour)
+	parked, err := h.runtime.Advance(ctx, started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Run.State != run.StateWaitingResolution {
+		t.Fatalf("state = %s, want waiting_resolution", parked.Run.State)
+	}
+	stillUnknown, err := h.runtime.ResolveInvocation(ctx, agentruntime.InvocationResolution{
+		RunID: started.ID, InvocationID: "tool-lost", Outcome: run.OutcomeStillUnknown,
+		ResolvedBy: principal(), Reason: "external status pending",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := h.runtime.ResolveInvocation(ctx, agentruntime.InvocationResolution{
+		RunID: started.ID, InvocationID: "tool-lost", Outcome: run.OutcomeStillUnknown,
+		ResolvedBy: principal(), Reason: "external status pending",
+	})
+	if err != nil || repeated.Revision != stillUnknown.Revision {
+		t.Fatalf("repeated still_unknown: revision=%d, want %d; error=%v", repeated.Revision, stillUnknown.Revision, err)
+	}
+	if _, err := h.runtime.ResolveInvocation(ctx, agentruntime.InvocationResolution{
+		RunID: started.ID, InvocationID: "tool-lost", Outcome: run.OutcomeApplied,
+		ExpectedRevision: parked.Run.Revision, ResolvedBy: principal(), Reason: "stale tab",
+	}); run.KindOf(err) != run.ErrorConflict {
+		t.Fatalf("stale client revision was accepted: %v", err)
+	}
+	if _, err := h.runtime.ResolveInvocation(ctx, agentruntime.InvocationResolution{
+		RunID: started.ID, InvocationID: "tool-lost", Outcome: run.OutcomeApplied,
+		ExpectedRevision: stillUnknown.Revision, ResolvedBy: principal(), Reason: "confirmed external action",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.Advance(time.Hour)
+	if _, err := h.runtime.Advance(ctx, started.ID); err != nil {
+		t.Fatal(err)
+	}
+	if handler.Calls() != 0 {
+		t.Fatalf("resolved applied write was repeated %d times", handler.Calls())
 	}
 }
 

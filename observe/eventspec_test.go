@@ -1,6 +1,7 @@
 package observe_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -237,7 +238,7 @@ func TestTheRecorderDropsWhatTheRegistryRefuses(t *testing.T) {
 	observer := &capturingObserver{}
 	recorder := observe.NewRecorder(builtin(t), observer)
 
-	if err := recorder.Record(observe.Decision{Name: "runtime.improvised", RunID: "run-1"}); err == nil {
+	if err := recorder.Record(t.Context(), observe.Decision{Name: "runtime.improvised", RunID: "run-1"}); err == nil {
 		t.Fatal("an undeclared event was accepted")
 	}
 	if len(observer.decisions) != 0 {
@@ -248,7 +249,7 @@ func TestTheRecorderDropsWhatTheRegistryRefuses(t *testing.T) {
 		Name: observe.EventApprovalDecided, RunID: "run-1",
 		Attributes: []observe.Attribute{observe.Attr(observe.AttrApproved, "true")},
 	}
-	if err := recorder.Record(valid); err != nil {
+	if err := recorder.Record(t.Context(), valid); err != nil {
 		t.Fatalf("a declared event was refused: %v", err)
 	}
 	if len(observer.decisions) != 1 {
@@ -259,7 +260,7 @@ func TestTheRecorderDropsWhatTheRegistryRefuses(t *testing.T) {
 func TestANilObserverIsNotACrash(t *testing.T) {
 	recorder := observe.NewRecorder(builtin(t), nil)
 
-	if err := recorder.Record(observe.Decision{
+	if err := recorder.Record(t.Context(), observe.Decision{
 		Name: observe.EventApprovalDecided, RunID: "run-1",
 	}); err != nil {
 		t.Fatalf("record: %v", err)
@@ -286,8 +287,9 @@ type capturingObserver struct {
 	decisions []observe.Decision
 }
 
-func (o *capturingObserver) Decision(decision observe.Decision) {
+func (o *capturingObserver) Decision(_ context.Context, decision observe.Decision) error {
 	o.decisions = append(o.decisions, decision)
+	return nil
 }
 
 func (o *capturingObserver) Chunk(run.ID, string) {}

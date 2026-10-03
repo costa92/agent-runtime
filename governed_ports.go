@@ -1,7 +1,9 @@
 package agentruntime
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -144,7 +146,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.R
 		// point — the reservation happens below.
 		return llm.Response{}, llm.ErrCapabilityUnsupported
 	}
-	s.runtime.record(observe.Decision{
+	if err := s.runtime.record(ctx, observe.Decision{
 		Name: observe.EventModelSelected, RunID: s.state().ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrProfile, request.Model.Profile),
@@ -152,7 +154,15 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.R
 			observe.Attr(observe.AttrNode, p.node.ID),
 			observe.Attr(observe.AttrCapability, boolText(capabilities.Tools)),
 		},
-	})
+	}); err != nil {
+		return llm.Response{}, err
+	}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		return llm.Response{}, err
+	}
+	requestHash := sha256.Sum256(requestJSON)
+	requestDigest := fmt.Sprintf("sha256:v1:%x", requestHash)
 
 	reserve := run.Limits{LLMCalls: 1, Tokens: request.MaxTokens}
 	// The quota asks for one token, not for the reservation. The two are
@@ -176,7 +186,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.R
 	invocationID := s.runtime.deps.IDs.NewID("model")
 	ctx, span := s.effectSpan(ctx, observe.SpanModelCall, "model.call", invocationID, "")
 	defer func() { span.End(err) }()
-	if err := s.begin(ctx, run.CommandInvokeModel, invocationID, "", "", reserve, false, p.node.ID); err != nil {
+	if err := s.begin(ctx, run.CommandInvokeModel, invocationID, "", "", reserve, false, false, requestDigest, p.node.ID); err != nil {
 		return llm.Response{}, err
 	}
 
@@ -229,7 +239,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.R
 			outcome = run.OutcomeUnknown
 		}
 	}
-	if err := s.complete(ctx, invocationID, outcome, used, p.node.ID); err != nil {
+	if err := s.complete(ctx, invocationID, outcome, used, p.node.ID, false); err != nil {
 		return llm.Response{}, err
 	}
 	// The response handed to the agent carries the settled totals, so an
@@ -254,6 +264,8 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.R
 // Tool invokes a declared tool through the fixed gateway chain.
 func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.RawMessage) (_ json.RawMessage, err error) {
 	s := p.session
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
 	if err := s.detachedErr(); err != nil {
 		return nil, err
 	}
@@ -278,13 +290,17 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	// human said no; re-asking turns the decision into a loop. The error is a
 	// plain denial — not approval_required — so an agent that can answer
 	// without the tool does, instead of parking a second time.
-	if s.approvalHold != nil && s.approvalHold.Denied && s.approvalHold.Tool == name &&
+	granted := false
+	if hold := s.approvalHold; hold != nil && hold.Tool == name &&
 		s.state().PendingApprovalID == "" && s.state().State == run.StateRunning {
-		return nil, run.NewError("approval_denied", run.ErrorDenied, run.RetryNever)
+		if !bytes.Equal(hold.Arguments, arguments) {
+			return nil, run.NewError("approval_arguments_mismatch", run.ErrorDenied, run.RetryNever)
+		}
+		if hold.Denied {
+			return nil, run.NewError("approval_denied", run.ErrorDenied, run.RetryNever)
+		}
+		granted = true
 	}
-
-	granted := s.approvalHold != nil && !s.approvalHold.Denied && s.approvalHold.Tool == name &&
-		s.state().PendingApprovalID == "" && s.state().State == run.StateRunning
 	prepared, err := s.runtime.deps.Tools.Prepare(ctx, tool.InvocationRequest{
 		RunID:          s.state().ID,
 		InvocationID:   invocationID,
@@ -309,34 +325,42 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	})
 	if err != nil {
 		if tool.IsApprovalRequired(err) {
-			s.approvalHold = &approvalHold{Tool: name, Arguments: arguments}
+			s.approvalHold = &approvalHold{Tool: name, Arguments: bytes.Clone(arguments)}
 		}
-		p.recordPolicy(name, err)
+		if auditErr := p.recordPolicy(ctx, name, err); auditErr != nil {
+			return nil, auditErr
+		}
 		return nil, err
 	}
-	p.recordExplanation(name, prepared.Explanation)
+	if err := p.recordExplanation(ctx, name, prepared.Explanation); err != nil {
+		return nil, err
+	}
 	if host := prepared.Spec.TargetHost; host != "" {
 		// The destination policy and quota just judged, recorded as the fact
 		// they judged: "which hosts did this Run reach" is asked long after the
 		// allowlist that permitted them has been edited.
-		s.runtime.record(observe.Decision{
+		if err := s.runtime.record(ctx, observe.Decision{
 			Name: observe.EventEgressHostResolved, RunID: s.state().ID,
 			Attributes: []observe.Attribute{
 				observe.Attr(observe.AttrHost, host),
 				observe.Attr(observe.AttrTool, name),
 			},
-		})
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := s.admitEffect(ctx, prepared.Reserve, prepared.Reserve, name); err != nil {
 		return nil, err
 	}
-	if err := s.begin(ctx, run.CommandInvokeTool, invocationID, name, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted, p.node.ID); err != nil {
+	if err := s.begin(ctx, run.CommandInvokeTool, invocationID, name, prepared.Invocation.IdempotencyKey, prepared.Reserve, granted,
+		prepared.Spec.SideEffect == policy.SideEffectWrite, "", p.node.ID); err != nil {
 		return nil, err
 	}
 
 	mutation, callErr := s.runtime.deps.Tools.Execute(ctx, tool.CommittedInvocation{Prepared: prepared})
-	if err := s.complete(ctx, invocationID, mutation.Outcome, mutation.Used, p.node.ID); err != nil {
+	if err := s.complete(ctx, invocationID, mutation.Outcome, mutation.Used, p.node.ID,
+		prepared.Spec.SideEffect == policy.SideEffectWrite); err != nil {
 		return nil, err
 	}
 	err = callErr
@@ -425,7 +449,7 @@ func (p *governedPorts) Remember(ctx context.Context, key, ref, text, idempotenc
 	if err := s.admitEffect(ctx, prepared.Reserve, prepared.Reserve, ""); err != nil {
 		return err
 	}
-	if err := s.begin(ctx, run.CommandWriteMemory, invocationID, "", idempotencyKey, prepared.Reserve, false, p.node.ID); err != nil {
+	if err := s.begin(ctx, run.CommandWriteMemory, invocationID, "", idempotencyKey, prepared.Reserve, false, true, "", p.node.ID); err != nil {
 		return err
 	}
 
@@ -449,7 +473,7 @@ func (s *session) effectSpan(ctx context.Context, kind observe.SpanKind, name st
 	})
 }
 
-func (p *governedPorts) recordExplanation(name string, explanation policy.Explanation) {
+func (p *governedPorts) recordExplanation(ctx context.Context, name string, explanation policy.Explanation) error {
 	decision := observe.Decision{
 		Name: observe.EventPolicyEvaluated, RunID: p.session.state().ID,
 		Attributes: []observe.Attribute{
@@ -471,14 +495,14 @@ func (p *governedPorts) recordExplanation(name string, explanation policy.Explan
 	_, diverged := explanation.ShadowWouldTighten()
 	decision.Attributes = append(decision.Attributes,
 		observe.Attr(observe.AttrShadow, boolText(diverged)))
-	p.session.runtime.record(decision)
+	return p.session.runtime.record(ctx, decision)
 }
 
 // recordPolicy reports a refusal that happened before an explanation existed —
 // an unknown tool, a schema mismatch, an allowlist miss. The refusal is still a
 // governance decision and still has to be visible.
-func (p *governedPorts) recordPolicy(name string, err error) {
-	p.session.runtime.record(prePolicyDecision(p.session.state().ID, name, err))
+func (p *governedPorts) recordPolicy(ctx context.Context, name string, err error) error {
+	return p.session.runtime.record(ctx, prePolicyDecision(p.session.state().ID, name, err))
 }
 
 // prePolicyDecision builds the record for a refusal that no Explanation
@@ -553,37 +577,45 @@ func (s *session) admitEffect(ctx context.Context, want, reserve run.Limits, too
 		// availability fault that reads as enforcement working is the worst
 		// possible way for this to look.
 		if run.CodeOf(err) == quota.CodeUnreadable {
-			s.runtime.record(observe.Decision{
+			if auditErr := s.runtime.record(ctx, observe.Decision{
 				Name: observe.EventQuotaUnreadable, RunID: s.state().ID,
 				Attributes: []observe.Attribute{
 					observe.Attr(observe.AttrQuotaScope, s.scope.String()),
 				},
-			})
+			}); auditErr != nil {
+				return auditErr
+			}
 		}
 		return err
 	}
 	if !decision.Allowed {
-		s.runtime.record(observe.Decision{
+		if err := s.runtime.record(ctx, observe.Decision{
 			Name: observe.EventQuotaRejected, RunID: s.state().ID,
 			Attributes: quotaAttributes(decision, s.scope),
-		})
+		}); err != nil {
+			return err
+		}
 		return run.NewError("quota_exhausted", run.ErrorDenied, run.RetryBackoff)
 	}
 	if decision.Degraded {
-		s.runtime.record(observe.Decision{
+		if err := s.runtime.record(ctx, observe.Decision{
 			Name: observe.EventQuotaDegraded, RunID: s.state().ID,
 			Attributes: quotaAttributes(decision, s.scope),
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	if !s.state().Budget.Affords(reserve) {
-		s.runtime.record(observe.Decision{
+		if err := s.runtime.record(ctx, observe.Decision{
 			Name: observe.EventBudgetRefused, RunID: s.state().ID,
 			Attributes: []observe.Attribute{
 				observe.Attr(observe.AttrUnit, exhaustedUnit(s.state().Budget, reserve)),
 				observe.Attr(observe.AttrTool, toolName),
 			},
-		})
+		}); err != nil {
+			return err
+		}
 		return run.NewError(run.CodeBudgetExhausted, run.ErrorDenied, run.RetryNever)
 	}
 	return nil
@@ -661,21 +693,35 @@ func (s *session) callCeiling(name string) (ceiling, used int, exhausted bool) {
 // from a tool call and not from each other.
 func (s *session) begin(
 	ctx context.Context, kind run.CommandKind, id run.ID, toolName, idempotencyKey string,
-	reserve run.Limits, consumesGrant bool, node string,
+	reserve run.Limits, consumesGrant, write bool, requestDigest, node string,
 ) error {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	if err := s.detachedErr(); err != nil {
 		return err
 	}
 	command := run.Command{
 		Kind: kind, Reserve: reserve,
-		InvocationID: id, Tool: toolName, IdempotencyKey: idempotencyKey,
+		InvocationID: id, NodeID: node, Tool: toolName, IdempotencyKey: idempotencyKey,
+		Write: write, RequestDigest: requestDigest,
+	}
+	if consumesGrant {
+		state, err := decodeCheckpoint(s.state().Checkpoint)
+		if err != nil {
+			return err
+		}
+		state.Approval = nil
+		if state.AppliedWrite != nil {
+			command.Checkpoint, err = encodeCheckpoint(state)
+			if err != nil {
+				return err
+			}
+		}
+		command.ConsumeApproval = true
 	}
 	transition, err := run.Reduce(s.state(), command)
 	if err != nil {
 		return err
-	}
-	if consumesGrant {
-		transition.Next.Checkpoint = nil
 	}
 	stampNode(transition.Events, node)
 
@@ -683,8 +729,11 @@ func (s *session) begin(
 		Fence: s.fence(),
 		Invocation: store.InvocationBegin{
 			ID:             id,
+			NodeID:         node,
 			IdempotencyKey: idempotencyKey,
 			Tool:           toolName,
+			Write:          write,
+			RequestDigest:  requestDigest,
 			Reservation:    store.BudgetReservation{ID: id, Amount: reserve},
 		},
 		Commit: store.CommitContext{Transition: transition, Events: transition.Events},
@@ -700,7 +749,9 @@ func (s *session) begin(
 }
 
 // complete settles the reservation against what was actually used.
-func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, used run.Limits, node string) error {
+func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, used run.Limits, node string, write bool) error {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	if err := s.detachedErr(); err != nil {
 		return err
 	}
@@ -708,22 +759,19 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 		s.runtime.deps.Logger.Warn(ctx, "session: invocation settled non-applied",
 			"run_id", string(s.state().ID), "invocation", string(id), "outcome", string(outcome))
 	}
-	reserved := s.state().Invocations[id].Reserved
-
-	// The outcome is part of the transition, not a side effect of the store's
-	// UPDATE. The snapshot is what every later decision reads — most
-	// importantly parkUnclassifiedEffects, which parks a Run the moment it
-	// sees an in_flight invocation after an approval resumes it. A completed
-	// call left as in_flight here reads exactly like a worker that died
-	// mid-effect, and the Run pays for that confusion with a second,
-	// unresolvable parking.
-	//
-	// WithInvocationOutcome copies. Writing through the map instead would put
-	// the outcome into the snapshot the Store handed back, before the Store has
-	// agreed to it — see the note on that method.
-	transition := run.Transition{Next: s.state().WithInvocationOutcome(id, outcome)}
-	transition.Next.Revision = s.state().Revision + 1
-	transition.Next.Budget = s.state().Budget.Settle(reserved, used, outcome != run.OutcomeUnknown)
+	command := run.Command{Kind: run.CommandSettleInvocation, InvocationID: id, Outcome: outcome, Usage: used}
+	if write && outcome == run.OutcomeApplied {
+		var err error
+		command.Checkpoint, err = checkpointWithAppliedWrite(s.state().Checkpoint, node, id)
+		if err != nil {
+			return err
+		}
+		command.ReplaceCheckpoint = true
+	}
+	transition, err := run.Reduce(s.state(), command)
+	if err != nil {
+		return err
+	}
 
 	settlement := store.BudgetSettlement{ReservationID: id, Charged: used, Release: true}
 	if outcome == run.OutcomeUnknown {
@@ -731,15 +779,6 @@ func (s *session) complete(ctx context.Context, id run.ID, outcome run.Outcome, 
 		// Releasing it would let the budget be spent twice if the effect turns
 		// out to have happened.
 		settlement.Release = false
-
-		parked, err := run.Reduce(s.state(), run.Command{
-			Kind: run.CommandRecordUnknown, InvocationID: id,
-		})
-		if err != nil {
-			return err
-		}
-		parked.Next.Budget = transition.Next.Budget
-		transition = parked
 	}
 	stampNode(transition.Events, node)
 

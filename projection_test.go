@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
 	"github.com/kart-io/wechat-account/agent-runtime/agent"
@@ -29,6 +30,68 @@ func factsFor(t *testing.T, h *harness, id run.ID) []store.ProjectionFact {
 		}
 	}
 	return facts
+}
+
+func TestHistoricalWriteResolutionPublishesTerminalResult(t *testing.T) {
+	h := newHarness(t, scriptedAgent{execute: func(context.Context, agent.Request) (agent.Response, error) {
+		t.Fatal("historical write node must not execute again")
+		return agent.Response{}, nil
+	}})
+	ctx := t.Context()
+	started := start(t, h)
+	lease, queued, err := h.store.Claim(ctx, store.ClaimCommand{
+		RunID: started.ID, Owner: "test", LeaseFor: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err := run.Reduce(queued, run.Command{Kind: run.CommandStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := h.store.CommitNodeResult(ctx, store.CommitNodeResultCommand{
+		Fence:    store.ExecutionFence{RunID: started.ID, ExpectedRevision: queued.Revision, LeaseToken: lease.Token},
+		NodeName: "run", Commit: store.CommitContext{Transition: transition, Events: transition.Events},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err = run.Reduce(running, run.Command{
+		Kind: run.CommandInvokeTool, InvocationID: "historical-write", NodeID: "answer", Tool: "publish_article", Write: true,
+		Reserve: run.Limits{ToolCalls: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.BeginInvocation(ctx, store.BeginInvocationCommand{
+		Fence: store.ExecutionFence{RunID: started.ID, ExpectedRevision: running.Revision, LeaseToken: lease.Token},
+		Invocation: store.InvocationBegin{
+			ID: "historical-write", NodeID: "answer", Tool: "publish_article", Write: true,
+			Reservation: store.BudgetReservation{ID: "historical-write", Amount: run.Limits{ToolCalls: 1}},
+		},
+		Commit: store.CommitContext{Transition: transition, Events: transition.Events},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.EraseInvocationNode(started.ID, "historical-write"); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.Advance(time.Hour)
+	parked, err := h.runtime.Advance(ctx, started.ID)
+	if err != nil || parked.Run.State != run.StateWaitingResolution {
+		t.Fatalf("parked state=%s error=%v", parked.Run.State, err)
+	}
+	resolved, err := h.runtime.ResolveInvocation(ctx, agentruntime.InvocationResolution{
+		RunID: started.ID, InvocationID: "historical-write", Outcome: run.OutcomeApplied,
+		ResolvedBy: principal(), Reason: "confirmed historical action",
+	})
+	if err != nil || resolved.State != run.StateFailed {
+		t.Fatalf("resolved state=%s error=%v", resolved.State, err)
+	}
+	facts := factsFor(t, h, started.ID)
+	if len(facts) == 0 || facts[len(facts)-1].Kind != store.ProjectionTerminalResult {
+		t.Fatalf("missing terminal projection: %+v", facts)
+	}
 }
 
 func TestEngineCommitsTheSchedulersNormalizedOutput(t *testing.T) {

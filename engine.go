@@ -1,9 +1,10 @@
 package agentruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"strconv"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/tool"
 	"github.com/kart-io/wechat-account/agent-runtime/workflow"
 )
+
+const maxAbandonGrace = 30 * time.Second
 
 // session is one claimed Run being advanced by one worker.
 //
@@ -65,6 +68,12 @@ type session struct {
 	// approvalHold is the write parked for a human. Loaded from Checkpoint
 	// on resume so confirm can perform that effect.
 	approvalHold *approvalHold
+	// toolMu keeps approval matching and consumption in one session-local
+	// critical section. A grant can authorize only one invocation.
+	toolMu sync.Mutex
+	// commandMu serializes Run command commits made by concurrent ports. Each
+	// command must reduce and fence against the revision committed before it.
+	commandMu sync.Mutex
 
 	// detached is set when a node was abandoned at its wall-clock cap and the
 	// handler is still running. Everything that would touch the session on that
@@ -224,6 +233,9 @@ func (r *runtime) advanceClaimed(ctx context.Context, claimed store.ClaimedRun) 
 	if err := current.parkUnclassifiedEffects(ctx); err != nil {
 		return AdvanceResult{Run: current.state()}, err
 	}
+	if err := current.failInterruptedWriteNode(ctx); err != nil {
+		return AdvanceResult{Run: current.state()}, err
+	}
 
 	for {
 		if current.state().State.Terminal() {
@@ -291,15 +303,15 @@ func (r *runtime) endUnrunnable(ctx context.Context, claimed store.ClaimedRun, c
 	if err != nil {
 		return
 	}
-	if _, err := current.commitNode(ctx, transition, "", "", run.Limits{}, nil); err != nil {
-		return
-	}
-	r.record(observe.Decision{
+	if err := r.record(ctx, observe.Decision{
 		Name: observe.EventRunUnrunnable, RunID: claimed.Snapshot.ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrReason, run.CodeOf(cause)),
 		},
-	})
+	}); err != nil {
+		return
+	}
+	_, _ = current.commitNode(ctx, transition, "", "", run.Limits{}, nil)
 }
 
 // newSession assembles everything the Run pinned. Every load is by the pinned
@@ -392,22 +404,22 @@ func stampNode(events []run.Event, node string) {
 }
 
 func (s *session) parkForApproval(ctx context.Context, node string) error {
-	transition, err := run.Reduce(s.state(), run.Command{Kind: run.CommandWaitApproval})
+	approvalID := s.runtime.deps.IDs.NewID("approval")
+	command := run.Command{Kind: run.CommandWaitApproval, ApprovalID: approvalID}
+	if s.approvalHold != nil {
+		var err error
+		command.Checkpoint, err = encodeApprovalHold(s.state().Checkpoint, *s.approvalHold)
+		if err != nil {
+			return err
+		}
+		command.ReplaceCheckpoint = true
+	}
+	transition, err := run.Reduce(s.state(), command)
 	if err != nil {
 		return err
 	}
-	approvalID := s.runtime.deps.IDs.NewID("approval")
-	for i := range transition.Events {
-		if transition.Events[i].To == run.StateWaitingApproval {
-			transition.Events[i].ApprovalID = approvalID
-		}
-	}
 	stampNode(transition.Events, node)
-	transition.Next.PendingApprovalID = approvalID
-	if s.approvalHold != nil {
-		transition.Next.Checkpoint = encodeApprovalHold(*s.approvalHold)
-	}
-	s.runtime.record(observe.Decision{
+	audit := observe.Decision{
 		Name:  observe.EventApprovalRequested,
 		RunID: s.state().ID,
 		Attributes: []observe.Attribute{
@@ -415,12 +427,15 @@ func (s *session) parkForApproval(ctx context.Context, node string) error {
 			observe.Attr(observe.AttrTool, holdToolName(s.approvalHold)),
 			observe.Attr(observe.AttrPolicyName, "require_approval"),
 		},
-	})
+	}
+	if err := s.runtime.deps.Events.Validate(audit); err != nil {
+		return err
+	}
 	committed, err := s.runtime.deps.Store.EnterApproval(ctx, store.EnterApprovalCommand{
 		Fence:      s.fence(),
 		ApprovalID: approvalID,
 		Commit: store.CommitContext{
-			Transition: transition, Events: transition.Events,
+			Transition: transition, Events: transition.Events, Decisions: []observe.Decision{audit},
 		},
 	})
 	if err != nil {
@@ -472,21 +487,26 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
 		return err
 	}
 
-	s.runtime.record(observe.Decision{
+	// Start renewal before the synchronous audit write; a stalled sink
+	// cannot consume the lease while this worker waits for acknowledgement.
+	effectCtx, abandoned, stop := s.renewing(ctx)
+	if err := s.runtime.record(effectCtx, observe.Decision{
 		Name: observe.EventRouterPlanSelected, RunID: s.state().ID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrPlan, s.graph.Ref.Digest),
 			observe.Attr(observe.AttrAgent, node.Implementation),
 			observe.Attr(observe.AttrNode, node.ID),
 		},
-	})
+	}); err != nil {
+		stop()
+		return err
+	}
 
 	// The renew loop runs for as long as the effect does. A node that calls a
 	// slow model can outlive the lease it was claimed under, and a worker whose
 	// lease lapsed mid-effect must not be the one that commits the result.
-	effectCtx, abandoned, stop := s.renewing(ctx)
 	ports := &governedPorts{session: s, node: node}
-	built, err := s.request(ctx, node, ports)
+	built, err := s.request(effectCtx, node, ports)
 	if err != nil {
 		stop()
 		return err
@@ -517,6 +537,20 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
 	}
 	response := done.response
 	executeErr = done.err
+	if executeErr != nil && approvalRequired(executeErr) {
+		parkErr := s.parkForApproval(effectCtx, node.ID)
+		stopped := stop()
+		if parkErr == nil {
+			return nil
+		}
+		if stopped.capped {
+			return s.abandonNode(ctx, node)
+		}
+		if stopped.err != nil {
+			return stopped.err
+		}
+		return parkErr
+	}
 	stopped := stop()
 
 	if stopped.capped {
@@ -534,16 +568,18 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
 	}
 	renewErr := stopped.err
 
-	if executeErr != nil && approvalRequired(executeErr) {
-		return s.parkForApproval(ctx, node.ID)
-	}
-
 	if renewErr != nil {
 		// Ownership was lost while the effect was in flight. The result is
 		// rejected rather than committed: another worker may already have taken
 		// over, and two workers committing one node is the double-write the
 		// lease exists to prevent.
 		return renewErr
+	}
+	var auditFailure *observe.AuditWriteError
+	if errors.As(executeErr, &auditFailure) {
+		// A failed audit write prevented the governed action. Do not turn a
+		// transient sink outage into a durable failed node.
+		return executeErr
 	}
 
 	result := workflow.NodeResult{NodeID: node.ID, Output: response.Output}
@@ -582,7 +618,7 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
 	if progress.Command != nil {
 		command = *progress.Command
 	}
-	transition, err := s.transitionFor(progress, command)
+	transition, err := s.transitionFor(progress, command, node.ID)
 	if err != nil {
 		return err
 	}
@@ -599,6 +635,95 @@ func (s *session) runNode(ctx context.Context, node workflow.Node) (err error) {
 	}
 	s.setSnapshot(committed)
 	return nil
+}
+
+// failInterruptedWriteNode settles an incomplete node without executing it
+// again. Its write invocation already completed, but the node result did not
+// commit before ownership changed. The agent's in-memory tool loop cannot
+// resume after that call, and retrying it would issue a fresh idempotency key.
+func (s *session) failInterruptedWriteNode(ctx context.Context) error {
+	state, err := decodeCheckpoint(s.state().Checkpoint)
+	if err != nil || s.state().State != run.StateRunning {
+		return err
+	}
+	nodeID := ""
+	if state.AppliedWrite != nil {
+		nodeID = state.AppliedWrite.Node
+	} else {
+		// Historical applied writes have no checkpoint. A recovered node can
+		// still be failed precisely; an older call with no node evidence makes
+		// the whole Run unsafe to resume.
+		for _, invocation := range s.state().Invocations {
+			if !invocation.Write || invocation.Outcome != run.OutcomeApplied {
+				continue
+			}
+			if invocation.NodeID == "" {
+				// Only durable terminal node results prove that no node can
+				// reissue this write. ReadyNodes can also be empty because a
+				// dependency is blocked or the budget is exhausted.
+				if s.allNodesTerminal() {
+					continue
+				}
+				transition, reduceErr := run.Reduce(s.state(), run.Command{Kind: run.CommandFail})
+				if reduceErr != nil {
+					return reduceErr
+				}
+				committed, commitErr := s.commitNode(ctx, transition, "", "", run.Limits{}, nil)
+				if commitErr != nil {
+					return commitErr
+				}
+				s.setSnapshot(committed)
+				return nil
+			}
+			if settled := s.state().Nodes[invocation.NodeID]; !settled.Status.Terminal() {
+				nodeID = invocation.NodeID
+				break
+			}
+		}
+	}
+	if nodeID == "" {
+		return nil
+	}
+	node, err := s.graph.Lookup(nodeID)
+	if err != nil {
+		return err
+	}
+	if settled := s.state().Nodes[node.ID]; settled.Status.Terminal() {
+		return run.NewError("stale_applied_write_checkpoint", run.ErrorInternal, run.RetryNever)
+	}
+	cause := run.NewError("node_result_lost_after_write", run.ErrorInternal, run.RetryNever)
+	result := workflow.NodeResult{NodeID: node.ID, Failed: true}
+	progress, err := workflow.ApplyNodeResult(s.graph, s.state(), result, s.runtime.deps.Schemas)
+	if err != nil {
+		return err
+	}
+	command := run.Command{Kind: run.CommandSucceed}
+	if progress.Command != nil {
+		command = *progress.Command
+	}
+	transition, err := s.transitionFor(progress, command, node.ID)
+	if err != nil {
+		return err
+	}
+	fact, err := s.nodeFact(node, result, cause)
+	if err != nil {
+		return err
+	}
+	committed, err := s.commitNode(ctx, transition, node.ID, "", run.Limits{}, nil, fact)
+	if err != nil {
+		return err
+	}
+	s.setSnapshot(committed)
+	return nil
+}
+
+func (s *session) allNodesTerminal() bool {
+	for _, node := range s.graph.Nodes {
+		if !s.state().Nodes[node.ID].Status.Terminal() {
+			return false
+		}
+	}
+	return true
 }
 
 // nodeFact is what one finished node contributes to the host's transcript.
@@ -633,21 +758,18 @@ func (s *session) nodeFact(
 // The two are computed apart — Reduce owns Run state and knows nothing about
 // nodes — and committed together, because a node map that landed without its
 // transition would describe a graph further along than the Run it belongs to.
-func (s *session) transitionFor(progress workflow.Progress, command run.Command) (run.Transition, error) {
+func (s *session) transitionFor(progress workflow.Progress, command run.Command, node string) (run.Transition, error) {
 	if progress.Command == nil {
-		// The graph advanced but the Run's state did not. There is no reducer
-		// command for "keep running", so the transition is the node map alone.
-		next := s.state()
-		next.Revision = s.state().Revision + 1
-		next.Nodes = progress.Nodes
-		return run.Transition{Next: next}, nil
+		command = run.Command{Kind: run.CommandAdvanceNodes}
 	}
-	transition, err := run.Reduce(s.state(), command)
+	command.Nodes = progress.Nodes
+	checkpoint, err := checkpointWithoutAppliedWrite(s.state().Checkpoint, node)
 	if err != nil {
 		return run.Transition{}, err
 	}
-	transition.Next.Nodes = progress.Nodes
-	return transition, nil
+	command.ReplaceCheckpoint = true
+	command.Checkpoint = checkpoint
+	return run.Reduce(s.state(), command)
 }
 
 // finish terminates a Run that has nothing left to schedule.
@@ -656,10 +778,12 @@ func (s *session) finish(ctx context.Context) (AdvanceResult, error) {
 	if !s.state().Budget.Affords(run.Limits{LLMCalls: 1}) {
 		// Out of budget with work outstanding is a partial result, not a
 		// failure: what did complete is still the honest answer.
-		s.runtime.record(observe.Decision{
+		if err := s.runtime.record(ctx, observe.Decision{
 			Name: observe.EventBudgetRefused, RunID: s.state().ID,
 			Attributes: []observe.Attribute{observe.Attr(observe.AttrUnit, "llm_calls")},
-		})
+		}); err != nil {
+			return AdvanceResult{}, err
+		}
 	}
 	if len(s.state().Nodes) == 0 {
 		command = run.Command{Kind: run.CommandFail}
@@ -711,17 +835,12 @@ func (s *session) parkUnclassifiedEffects(ctx context.Context) error {
 
 // abandonNode parks a Run whose node hit the wall-clock cap and did not return.
 //
-// Unknown, never failed. The handler is still running and reserve-before-effect
-// only promises that the begin fact is durable — whether the write landed is
-// precisely what nobody knows, and failing the Run tells the layer above it is
-// safe to try again. waiting_resolution says the true thing and is the same path
-// a tool with an unestablished outcome takes, so the same resolution — a human
-// or a reconciler — settles it.
+// An in-flight invocation is parked for reconciliation. If the node never
+// began an invocation, there is no external outcome to reconcile, so the Run
+// fails without creating an invocation that the durable ledger cannot store.
 //
-// The invocation named is the one left in flight where there is one, so the
-// resolver has the effect itself to look at. A node wedged before it issued
-// anything gets a fresh id instead: the reducer needs one, and parking under an
-// invocation the Run never made would point the resolver at nothing.
+// The invocation named is the one left in flight, so the resolver has the
+// effect itself to inspect.
 //
 // It refuses the detached handler first and then insists, because leaving the
 // Run running is the one outcome that must not happen. Renewal has already
@@ -764,31 +883,34 @@ func (s *session) parkAbandoned(ctx context.Context, node workflow.Node, announc
 			break
 		}
 	}
-	if invocationID == "" {
-		invocationID = s.runtime.deps.IDs.NewID("abandoned")
+	command := run.Command{Kind: run.CommandFail}
+	if invocationID != "" {
+		command = run.Command{Kind: run.CommandRecordUnknown, InvocationID: invocationID}
 	}
-
-	transition, err := run.Reduce(s.state(), run.Command{
-		Kind: run.CommandRecordUnknown, InvocationID: invocationID,
-	})
+	transition, err := run.Reduce(s.state(), command)
 	if err != nil {
 		return err
 	}
 	// This event is what keeps the cap from being silent. It says the node hit
-	// its wall-clock ceiling and the Run was parked as unknown — not that any
+	// its wall-clock ceiling and the Run was stopped — not that any
 	// handler misbehaved. Both wind-down paths reach here: the one whose handler
 	// returned the moment we cancelled it, and the one that never returned at
 	// all. Only the second leaks a goroutine, which is the accepted cost of
 	// never releasing the lease, and this event alone does not tell them apart.
 	if announce {
-		s.runtime.record(observe.Decision{
+		attributes := []observe.Attribute{
+			observe.Attr(observe.AttrNode, node.ID),
+			observe.Attr(observe.AttrAgent, node.Implementation),
+		}
+		if invocationID != "" {
+			attributes = append(attributes, observe.Attr(observe.AttrInvocationID, string(invocationID)))
+		}
+		if err := s.runtime.record(ctx, observe.Decision{
 			Name: observe.EventNodeAbandoned, RunID: s.state().ID,
-			Attributes: []observe.Attribute{
-				observe.Attr(observe.AttrNode, node.ID),
-				observe.Attr(observe.AttrAgent, node.Implementation),
-				observe.Attr(observe.AttrInvocationID, string(invocationID)),
-			},
-		})
+			Attributes: attributes,
+		}); err != nil {
+			return err
+		}
 	}
 	committed, err := s.commitNode(ctx, transition, node.ID, "", run.Limits{}, nil)
 	if err != nil {
@@ -825,13 +947,7 @@ func (s *session) commitNode(
 		name = "run"
 	}
 	if transition.Next.State.Terminal() {
-		userID, _ := strconv.ParseInt(s.state().Principal.Subject, 10, 64)
-		terminal, err := store.NewProjectionFact(store.TerminalResultPayload{
-			State:        string(transition.Next.State),
-			UserID:       userID,
-			UsedLLMCalls: int64(transition.Next.Budget.Used.LLMCalls),
-			UsedTokens:   int64(transition.Next.Budget.Used.Tokens),
-		})
+		terminal, err := terminalResultFact(transition.Next)
 		if err != nil {
 			return run.Snapshot{}, err
 		}
@@ -884,7 +1000,7 @@ func (s *session) request(ctx context.Context, node workflow.Node, ports *govern
 		// the Run so the agent can answer, but the refused effect must not be
 		// performed — not even silently, as a granted write.
 		req.Granted = &agent.GrantedTool{
-			Name: s.approvalHold.Tool, Arguments: s.approvalHold.Arguments,
+			Name: s.approvalHold.Tool, Arguments: bytes.Clone(s.approvalHold.Arguments),
 		}
 	}
 	return req, nil
@@ -1011,8 +1127,8 @@ type windDown struct {
 // it has no way to shorten.
 func abandonGraceFor(limit time.Duration) time.Duration {
 	grace := limit / 20
-	if grace > 30*time.Second {
-		grace = 30 * time.Second
+	if grace > maxAbandonGrace {
+		grace = maxAbandonGrace
 	}
 	if grace <= 0 {
 		grace = time.Millisecond

@@ -72,8 +72,8 @@ func TestANodeIsAbandonedEvenWhenItsHandlerHonoursTheCancellation(t *testing.T) 
 	if !returned.Load() {
 		t.Fatal("the handler never saw the cancellation; this test proves nothing about the honoured case")
 	}
-	if result.Run.State != run.StateWaitingResolution {
-		t.Fatalf("state=%s, want waiting_resolution", result.Run.State)
+	if result.Run.State != run.StateFailed {
+		t.Fatalf("state=%s, want failed when no invocation began", result.Run.State)
 	}
 	if len(h.observer.named(observe.EventNodeAbandoned)) != 1 {
 		t.Fatal("a node that hit its cap said nothing about it")
@@ -136,8 +136,8 @@ func TestTheLeaseIsNotReleasedForTakeoverAfterTheDeadline(t *testing.T) {
 	if returned.Load() {
 		t.Fatal("the handler returned on its own; this test proves nothing about the cap")
 	}
-	if !result.Waiting || result.Run.State != run.StateWaitingResolution {
-		t.Fatalf("state=%s waiting=%t, want waiting_resolution", result.Run.State, result.Waiting)
+	if result.Waiting || result.Run.State != run.StateFailed {
+		t.Fatalf("state=%s waiting=%t, want failed when no invocation began", result.Run.State, result.Waiting)
 	}
 
 	// Let the lease lapse, which is what abandoning it looks like from another
@@ -212,8 +212,8 @@ func TestASettleThatLandsDuringTheWindDownStillLeavesTheRunUnclaimable(t *testin
 	if result.Run.State == run.StateRunning {
 		t.Fatal("the Run was left running after a lost fence race, with renewal already stopped")
 	}
-	if result.Run.State != run.StateWaitingResolution {
-		t.Fatalf("state=%s, want waiting_resolution", result.Run.State)
+	if result.Run.State != run.StateFailed {
+		t.Fatalf("state=%s, want failed when no invocation began", result.Run.State)
 	}
 
 	h.clock.Advance(time.Hour)
@@ -265,8 +265,8 @@ func TestAStoreThatFailsMidWindDownStillAbandonsTheNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	if result.Run.State != run.StateWaitingResolution {
-		t.Fatalf("state=%s, want waiting_resolution", result.Run.State)
+	if result.Run.State != run.StateFailed {
+		t.Fatalf("state=%s, want failed when no invocation began", result.Run.State)
 	}
 }
 
@@ -294,7 +294,7 @@ func TestANegativeCapRestoresUnboundedRenewal(t *testing.T) {
 	}
 }
 
-func TestAnAbandonedEffectLeavesTheRunWaitingResolutionNotFailed(t *testing.T) {
+func TestAnAbandonedNodeWithoutInvocationFailsWithoutPhantomResolution(t *testing.T) {
 	var returned atomic.Bool
 	h := newHarness(t, wedgedAgent(2*time.Second, &returned),
 		withDeps(func(deps *agentruntime.Dependencies) {
@@ -307,13 +307,11 @@ func TestAnAbandonedEffectLeavesTheRunWaitingResolutionNotFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	// Judging it failed would invite the layer above to retry a non-idempotent
-	// write that may already have landed.
-	if result.Run.State == run.StateFailed {
-		t.Fatal("an abandoned effect was judged failed, which reads as safe to retry")
+	if result.Run.State != run.StateFailed {
+		t.Fatalf("state=%s, want failed without an invocation", result.Run.State)
 	}
-	if result.Run.State != run.StateWaitingResolution {
-		t.Fatalf("state=%s, want waiting_resolution", result.Run.State)
+	if len(result.Run.Invocations) != 0 {
+		t.Fatalf("phantom invocations: %+v", result.Run.Invocations)
 	}
 
 	// A leaked goroutine is the accepted cost of never releasing the lease, and

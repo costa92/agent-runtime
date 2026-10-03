@@ -128,6 +128,23 @@ func (s *MemoryStore) Projections() []store.ProjectionFact {
 	return append([]store.ProjectionFact(nil), s.projections...)
 }
 
+// EraseInvocationNode simulates a call persisted before node_id existed.
+func (s *MemoryStore) EraseInvocationNode(runID, invocationID run.ID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("unknown test run %s", runID)
+	}
+	invocation, ok := record.snapshot.Invocations[invocationID]
+	if !ok {
+		return fmt.Errorf("unknown test invocation %s", invocationID)
+	}
+	invocation.NodeID = ""
+	record.snapshot.Invocations[invocationID] = invocation
+	return nil
+}
+
 // Reservation returns an outstanding budget reservation.
 func (s *MemoryStore) Reservation(id run.ID) (store.BudgetReservation, bool) {
 	s.mu.Lock()
@@ -381,7 +398,7 @@ func (s *MemoryStore) CompleteInvocation(_ context.Context, command store.Comple
 	if err != nil {
 		return run.Snapshot{}, err
 	}
-	if err := s.settleLocked(command.Budget, command.Result.Outcome); err != nil {
+	if err := s.settleLocked(record.snapshot, command.Budget, command.Result.Outcome); err != nil {
 		return run.Snapshot{}, err
 	}
 	commit := command.Commit
@@ -449,10 +466,10 @@ func (s *MemoryStore) ResolveInvocation(_ context.Context, command store.Resolve
 	if !ok {
 		return run.Snapshot{}, run.NewError("unknown_invocation", run.ErrorInvalid, run.RetryNever)
 	}
-	if invocation.Outcome != run.OutcomeUnknown && invocation.Outcome != command.Decision.Outcome {
+	if invocation.Outcome != run.OutcomeUnknown && invocation.Outcome != run.OutcomeStillUnknown && invocation.Outcome != command.Decision.Outcome {
 		return run.Snapshot{}, run.NewError("resolution_conflict", run.ErrorConflict, run.RetryNever)
 	}
-	if err := s.settleLocked(command.Budget, command.Decision.Outcome); err != nil {
+	if err := s.settleLocked(record.snapshot, command.Budget, command.Decision.Outcome); err != nil {
 		return run.Snapshot{}, err
 	}
 	return s.commitLocked(record, command.Commit)
@@ -470,7 +487,7 @@ func (s *MemoryStore) CommitNodeResult(_ context.Context, command store.CommitNo
 	if err != nil {
 		return run.Snapshot{}, err
 	}
-	if err := s.settleLocked(command.Budget, run.OutcomeApplied); err != nil {
+	if err := s.settleLocked(record.snapshot, command.Budget, run.OutcomeApplied); err != nil {
 		return run.Snapshot{}, err
 	}
 	if len(command.ModelUsage) > 0 {
@@ -506,7 +523,7 @@ func (s *MemoryStore) CommitMemoryMutation(_ context.Context, command store.Comm
 	if err != nil {
 		return run.Snapshot{}, err
 	}
-	if err := s.settleLocked(command.Budget, command.Invocation.Outcome); err != nil {
+	if err := s.settleLocked(record.snapshot, command.Budget, command.Invocation.Outcome); err != nil {
 		return run.Snapshot{}, err
 	}
 	commit := command.Commit
@@ -646,9 +663,12 @@ func (s *MemoryStore) checkResolutionFenceLocked(fence store.ResolutionFence, wa
 // settleLocked closes a reservation. An unknown outcome keeps it outstanding:
 // releasing it would let the same capacity be spent twice if the effect turns
 // out to have happened.
-func (s *MemoryStore) settleLocked(settlement store.BudgetSettlement, outcome run.Outcome) error {
+func (s *MemoryStore) settleLocked(current run.Snapshot, settlement store.BudgetSettlement, outcome run.Outcome) error {
 	if settlement.ReservationID == "" {
 		return nil
+	}
+	if _, ok := current.Invocations[settlement.ReservationID]; !ok {
+		return run.NewError("reservation_invocation_mismatch", run.ErrorInvalid, run.RetryNever)
 	}
 	reservation, ok := s.reservations[settlement.ReservationID]
 	if !ok {

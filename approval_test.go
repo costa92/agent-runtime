@@ -1,8 +1,10 @@
 package agentruntime_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,11 +13,120 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/definition"
 	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
 	"github.com/kart-io/wechat-account/agent-runtime/llm"
+	"github.com/kart-io/wechat-account/agent-runtime/memory"
 	"github.com/kart-io/wechat-account/agent-runtime/policy"
 	"github.com/kart-io/wechat-account/agent-runtime/run"
 	"github.com/kart-io/wechat-account/agent-runtime/store"
 	"github.com/kart-io/wechat-account/agent-runtime/tool"
 )
+
+func TestApprovedToolArgumentsCannotBeSubstituted(t *testing.T) {
+	handler := testkit.ToolSucceeding(`{"ok":true}`)
+	h := approvalTestHarness(t, handler, func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if request.Granted == nil {
+			_, err := request.Ports.Tool(ctx, "render_picture_book", json.RawMessage(`{"theme":"approved"}`))
+			return agent.Response{}, err
+		}
+		mutated := request.Granted.Arguments
+		mutated[bytes.Index(mutated, []byte("approved"))] = 'X'
+		_, err := request.Ports.Tool(ctx, request.Granted.Name, mutated)
+		if err == nil || run.CodeOf(err) != "approval_arguments_mismatch" {
+			t.Errorf("substituted arguments: %v", err)
+		}
+		return agent.Response{Output: json.RawMessage(`{"refused":true}`)}, nil
+	})
+	approveAndAdvance(t, h)
+	if calls := handler.Calls(); calls != 0 {
+		t.Fatalf("substituted write executed %d times", calls)
+	}
+}
+
+func TestConcurrentCallsConsumeOneApprovalOnce(t *testing.T) {
+	handler := testkit.ToolSucceeding(`{"ok":true}`)
+	h := approvalTestHarness(t, handler, func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if request.Granted == nil {
+			_, err := request.Ports.Tool(ctx, "render_picture_book", json.RawMessage(`{"theme":"approved"}`))
+			return agent.Response{}, err
+		}
+		var group sync.WaitGroup
+		group.Add(2)
+		start := make(chan struct{})
+		errors := make(chan error, 2)
+		for range 2 {
+			go func() {
+				defer group.Done()
+				<-start
+				_, err := request.Ports.Tool(ctx, request.Granted.Name, request.Granted.Arguments)
+				errors <- err
+			}()
+		}
+		close(start)
+		group.Wait()
+		close(errors)
+		successes := 0
+		for err := range errors {
+			if err == nil {
+				successes++
+			} else if !tool.IsApprovalRequired(err) {
+				t.Errorf("second call returned %v", err)
+			}
+		}
+		if successes != 1 {
+			t.Errorf("approved executions=%d want=1", successes)
+		}
+		return agent.Response{Output: json.RawMessage(`{"done":true}`)}, nil
+	})
+	approveAndAdvance(t, h)
+	if calls := handler.Calls(); calls != 1 {
+		t.Fatalf("write executed %d times, want one", calls)
+	}
+}
+
+func approvalTestHarness(t *testing.T, handler tool.Handler, execute func(context.Context, agent.Request) (agent.Response, error)) *harness {
+	t.Helper()
+	registry := tool.NewRegistry()
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "create book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+	return newHarness(t, scriptedAgent{execute: execute}, withDefinition(definition.Definition{
+		Ref:  run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode: definition.ModeSpecialist, Implementation: "answer",
+		Prompt: "be brief", Model: definition.ModelPolicy{Profile: "fast"},
+		Tools: []definition.ToolRef{{Key: "render_picture_book"}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Governance = fakeGovernance{policies: policy.Snapshot{Policies: []policy.Policy{{
+			Name: "writes-need-approval", Scope: policy.ScopeTenant,
+			Conditions: []policy.Condition{{Fact: policy.FactToolSideEffect, Operator: policy.OpEquals, Values: []string{string(policy.SideEffectWrite)}}},
+			Decision:   policy.DecisionRequireApproval,
+		}}}}
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+	}))
+}
+
+func approveAndAdvance(t *testing.T, h *harness) {
+	t.Helper()
+	started := start(t, h)
+	parked, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil || parked.Run.State != run.StateWaitingApproval {
+		t.Fatalf("initial advance: state=%s err=%v", parked.Run.State, err)
+	}
+	if _, err := h.runtime.ResolveApproval(t.Context(), agentruntime.ApprovalDecision{
+		RunID: started.ID, ApprovalID: parked.Run.PendingApprovalID,
+		Approved: true, DecidedBy: principal(),
+	}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	h.clock.Advance(time.Minute)
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil || result.Run.State != run.StateSucceeded {
+		t.Fatalf("resumed advance: state=%s err=%v", result.Run.State, err)
+	}
+}
 
 // --- fixtures -------------------------------------------------------------
 
@@ -226,6 +337,73 @@ func TestConfirmingAWritePerformsTheWrite(t *testing.T) {
 	}
 	if handler.Calls() != 1 {
 		t.Fatalf("write calls=%d; the approved effect did not run", handler.Calls())
+	}
+}
+
+func TestMemoryWriteBeforeApprovedToolPreservesGrant(t *testing.T) {
+	registry := tool.NewRegistry()
+	handler := testkit.ToolSucceeding(`{"id":"created"}`)
+	if err := registry.Register(tool.Spec{
+		Name: "render_picture_book", Description: "create book",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		RiskLevel:  policy.RiskHigh, SideEffect: policy.SideEffectWrite,
+	}, handler); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+	memoryProvider := &countingMemoryProvider{}
+	memoryRegistry := memory.NewRegistry()
+	if err := memoryRegistry.Register("notes", memoryProvider); err != nil {
+		t.Fatal(err)
+	}
+	memoryRegistry.Freeze()
+
+	h := newHarness(t, scriptedAgent{execute: func(ctx context.Context, request agent.Request) (agent.Response, error) {
+		if request.Granted != nil {
+			if err := request.Ports.Remember(ctx, "notes", "ref", "text", "approved-memory"); err != nil {
+				return agent.Response{}, err
+			}
+			out, err := request.Ports.Tool(ctx, request.Granted.Name, request.Granted.Arguments)
+			return agent.Response{Output: out}, err
+		}
+		_, err := request.Ports.Tool(ctx, "render_picture_book", json.RawMessage(`{"theme":"兔"}`))
+		return agent.Response{}, err
+	}}, withDefinition(definition.Definition{
+		Ref:  run.DefinitionRef{ID: "assistant", Version: 1, Protocol: 1},
+		Mode: definition.ModeSpecialist, Implementation: "answer",
+		Model:    definition.ModelPolicy{Profile: "fast"},
+		Tools:    []definition.ToolRef{{Key: "render_picture_book"}},
+		Memories: []definition.MemoryRef{{Key: "notes", Namespace: "ns", Writable: true, MaxRecords: 8, MaxTokens: 600}},
+	}), withDeps(func(deps *agentruntime.Dependencies) {
+		deps.Governance = fakeGovernance{policies: policy.Snapshot{Policies: []policy.Policy{{
+			Name: "writes-need-a-human", Scope: policy.ScopeTenant,
+			Conditions: []policy.Condition{{
+				Fact: policy.FactToolSideEffect, Operator: policy.OpEquals,
+				Values: []string{string(policy.SideEffectWrite)},
+			}},
+			Decision: policy.DecisionRequireApproval,
+		}}}}
+		deps.Tools = tool.NewGateway(registry, testkit.AllowAllToolAuthorizer())
+		deps.Memories = memory.NewGateway(memoryRegistry, testkit.AllowAllMemoryAuthorizer())
+	}))
+	started := start(t, h)
+	parked, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil || parked.Run.State != run.StateWaitingApproval {
+		t.Fatalf("parked state=%s err=%v", parked.Run.State, err)
+	}
+	if _, err := h.runtime.ResolveApproval(t.Context(), agentruntime.ApprovalDecision{
+		RunID: started.ID, ApprovalID: parked.Run.PendingApprovalID,
+		Approved: true, DecidedBy: principal(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.Advance(time.Minute)
+	result, err := h.runtime.Advance(t.Context(), started.ID)
+	if err != nil || result.Run.State != run.StateSucceeded {
+		t.Fatalf("resumed state=%s err=%v", result.Run.State, err)
+	}
+	if memoryProvider.writes != 1 || handler.Calls() != 1 {
+		t.Fatalf("memory writes=%d tool calls=%d, want one each", memoryProvider.writes, handler.Calls())
 	}
 }
 

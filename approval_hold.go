@@ -39,14 +39,15 @@ func holdToolName(hold *approvalHold) string {
 	return hold.Tool
 }
 
-func encodeApprovalHold(hold approvalHold) json.RawMessage {
+func encodeApprovalHold(raw json.RawMessage, hold approvalHold) (json.RawMessage, error) {
 	payload, err := json.Marshal(hold)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	encoded, err := encodeCheckpoint(checkpoint{Approval: payload})
+	state, err := decodeCheckpoint(raw)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return encoded
+	state.Approval = payload
+	return encodeCheckpoint(state)
 }

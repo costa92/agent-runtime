@@ -21,6 +21,12 @@ import (
 	"github.com/kart-io/wechat-account/agent-runtime/tool"
 )
 
+const (
+	defaultLeaseDuration   = 30 * time.Second
+	defaultMaxNodeDuration = 10 * time.Minute
+	defaultWorkerOwner     = "agent-runtime"
+)
+
 // DefinitionSource loads a published Definition by pinned ref.
 type DefinitionSource interface {
 	// Load returns the Definition and the graph ref that was compiled when it
@@ -141,9 +147,12 @@ type ApprovalDecision struct {
 type InvocationResolution struct {
 	RunID        run.ID
 	InvocationID run.ID
-	Outcome      run.Outcome
-	Reason       string
-	ResolvedBy   authorization.PrincipalContext
+	// ExpectedRevision is the caller's observed Run version. Internal
+	// reconcilers may leave it zero and use the version read by Runtime.
+	ExpectedRevision uint64
+	Outcome          run.Outcome
+	Reason           string
+	ResolvedBy       authorization.PrincipalContext
 }
 
 // CancelRequest stops a whole tree.
@@ -219,17 +228,17 @@ func New(deps Dependencies) (Runtime, error) {
 	}
 
 	if deps.LeaseFor <= 0 {
-		deps.LeaseFor = 30 * time.Second
+		deps.LeaseFor = defaultLeaseDuration
 	}
 	if deps.MaxNodeDuration == 0 {
 		// 10m: comfortably above the 180s tool ceiling a node may spend inside a
 		// single call, and low enough that a wedged worker slot comes back the
 		// same hour. Only an explicitly negative value disables it, so that
 		// unbounded renewal is something a host asks for rather than forgets.
-		deps.MaxNodeDuration = 10 * time.Minute
+		deps.MaxNodeDuration = defaultMaxNodeDuration
 	}
 	if deps.Owner == "" {
-		deps.Owner = "agent-runtime"
+		deps.Owner = defaultWorkerOwner
 	}
 	if deps.Tracer == nil {
 		deps.Tracer = observe.NopTracer{}
@@ -279,10 +288,12 @@ func (r *runtime) Start(ctx context.Context, request StartRequest) (run.Snapshot
 		return run.Snapshot{}, err
 	}
 	if !decision.Allowed {
-		r.record(observe.Decision{
+		if err := r.record(ctx, observe.Decision{
 			Name: observe.EventQuotaRejected, RunID: "pending",
 			Attributes: quotaAttributes(decision, scope),
-		})
+		}); err != nil {
+			return run.Snapshot{}, err
+		}
 		return run.Snapshot{}, run.NewError("quota_exhausted", run.ErrorDenied, run.RetryBackoff,
 			fmt.Errorf("quota %q: %d used of %d", decision.Limit.Name, decision.Observed, decision.Limit.Max))
 	}
@@ -427,7 +438,7 @@ func (r *runtime) ResolveApproval(ctx context.Context, decision ApprovalDecision
 		return run.Snapshot{}, err
 	}
 
-	command := run.Command{Kind: run.CommandResume}
+	command := run.Command{Kind: run.CommandResume, ApprovalID: decision.ApprovalID, Approved: decision.Approved}
 	if !decision.Approved {
 		// A refusal is a refusal of one effect, not of the Run. Resuming with
 		// the hold marked denied keeps the refused write from ever being
@@ -435,7 +446,11 @@ func (r *runtime) ResolveApproval(ctx context.Context, decision ApprovalDecision
 		// whose picture-book request was refused still owes the user a reply.
 		if hold := loadApprovalHold(snapshot.Checkpoint); hold != nil {
 			hold.Denied = true
-			command = run.Command{Kind: run.CommandResume, Checkpoint: encodeApprovalHold(*hold)}
+			encoded, err := encodeApprovalHold(snapshot.Checkpoint, *hold)
+			if err != nil {
+				return run.Snapshot{}, err
+			}
+			command.Checkpoint = encoded
 		}
 	}
 	transition, err := run.Reduce(snapshot, command)
@@ -443,14 +458,16 @@ func (r *runtime) ResolveApproval(ctx context.Context, decision ApprovalDecision
 		return run.Snapshot{}, err
 	}
 
-	r.record(observe.Decision{
+	audit := observe.Decision{
 		Name: observe.EventApprovalDecided, RunID: decision.RunID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrApprovalID, string(decision.ApprovalID)),
 			observe.Attr(observe.AttrApproved, boolText(decision.Approved)),
 		},
-	})
-
+	}
+	if err := r.deps.Events.Validate(audit); err != nil {
+		return run.Snapshot{}, err
+	}
 	return r.deps.Store.ResolveApproval(ctx, store.ResolveApprovalCommand{
 		Fence: store.ResolutionFence{
 			RunID:                         decision.RunID,
@@ -462,7 +479,17 @@ func (r *runtime) ResolveApproval(ctx context.Context, decision ApprovalDecision
 		Decision: store.ApprovalDecision{
 			ID: decision.ApprovalID, Approved: decision.Approved, Reason: decision.Reason,
 		},
-		Commit: store.CommitContext{Transition: transition, Events: transition.Events},
+		Commit: store.CommitContext{Transition: transition, Events: transition.Events, Decisions: []observe.Decision{audit}},
+	})
+}
+
+func terminalResultFact(snapshot run.Snapshot) (store.ProjectionFact, error) {
+	userID, _ := strconv.ParseInt(snapshot.Principal.Subject, 10, 64)
+	return store.NewProjectionFact(store.TerminalResultPayload{
+		State:        string(snapshot.State),
+		UserID:       userID,
+		UsedLLMCalls: int64(snapshot.Budget.Used.LLMCalls),
+		UsedTokens:   int64(snapshot.Budget.Used.Tokens),
 	})
 }
 
@@ -477,39 +504,74 @@ func (r *runtime) ResolveInvocation(ctx context.Context, resolution InvocationRe
 	if err != nil {
 		return run.Snapshot{}, err
 	}
+	if resolution.ExpectedRevision != 0 && snapshot.Revision != resolution.ExpectedRevision {
+		return run.Snapshot{}, run.NewError("stale_revision", run.ErrorConflict, run.RetryNever)
+	}
 
-	transition, err := run.Reduce(snapshot, run.Command{
+	command := run.Command{
 		Kind:         run.CommandResolveInvocation,
 		InvocationID: resolution.InvocationID,
 		Outcome:      resolution.Outcome,
-	})
-	if err != nil {
-		return run.Snapshot{}, err
 	}
 
 	invocation := snapshot.Invocations[resolution.InvocationID]
+	if resolution.Outcome == run.OutcomeApplied {
+		command.Usage = invocation.RemainingCharge()
+	}
+	if snapshot.State == run.StateWaitingResolution && (invocation.Outcome == run.OutcomeUnknown || invocation.Outcome == run.OutcomeStillUnknown) &&
+		resolution.Outcome == run.OutcomeApplied && invocation.Write {
+		if invocation.NodeID != "" {
+			command.Checkpoint, err = checkpointWithAppliedWrite(snapshot.Checkpoint, invocation.NodeID, resolution.InvocationID)
+			if err != nil {
+				return run.Snapshot{}, err
+			}
+			command.ReplaceCheckpoint = true
+		}
+	}
+	transition, err := run.Reduce(snapshot, command)
+	if err != nil {
+		return run.Snapshot{}, err
+	}
+	if transition.Next.Revision == snapshot.Revision {
+		return snapshot, nil
+	}
 	settlement := store.BudgetSettlement{ReservationID: resolution.InvocationID}
 	switch resolution.Outcome {
 	case run.OutcomeApplied:
-		settlement.Charged = invocation.Reserved
+		settlement.Charged = command.Usage
 		settlement.Release = true
 	case run.OutcomeNotApplied:
 		settlement.Release = true
 	}
 
-	r.record(observe.Decision{
+	audit := observe.Decision{
 		Name: observe.EventInvocationReconciled, RunID: resolution.RunID,
 		Attributes: []observe.Attribute{
 			observe.Attr(observe.AttrInvocationID, string(resolution.InvocationID)),
 			observe.Attr(observe.AttrIdempotencyKey, invocation.IdempotencyKey),
 			observe.Attr(observe.AttrOutcome, string(resolution.Outcome)),
 		},
-	})
+	}
+	if err := r.deps.Events.Validate(audit); err != nil {
+		return run.Snapshot{}, err
+	}
+	var projections []store.ProjectionFact
+	if transition.Next.State.Terminal() {
+		terminal, projectionErr := terminalResultFact(transition.Next)
+		if projectionErr != nil {
+			return run.Snapshot{}, projectionErr
+		}
+		projections = append(projections, terminal)
+	}
 
+	expectedRevision := snapshot.Revision
+	if resolution.ExpectedRevision != 0 {
+		expectedRevision = resolution.ExpectedRevision
+	}
 	return r.deps.Store.ResolveInvocation(ctx, store.ResolveInvocationCommand{
 		Fence: store.ResolutionFence{
 			RunID:                         resolution.RunID,
-			ExpectedRevision:              snapshot.Revision,
+			ExpectedRevision:              expectedRevision,
 			ExpectedRootCancellationEpoch: snapshot.RootCancellationEpoch,
 			TargetID:                      string(resolution.InvocationID),
 			RequestedBy:                   resolution.ResolvedBy.Ref,
@@ -517,18 +579,17 @@ func (r *runtime) ResolveInvocation(ctx context.Context, resolution InvocationRe
 		Decision: store.InvocationResolution{
 			ID: resolution.InvocationID, Outcome: resolution.Outcome, Reason: resolution.Reason,
 		},
+		Usage:  command.Usage,
 		Budget: settlement,
-		Commit: store.CommitContext{Transition: transition, Events: transition.Events},
+		Commit: store.CommitContext{Transition: transition, Events: transition.Events, Decisions: []observe.Decision{audit}, Projections: projections},
 	})
 }
 
-// record forwards a decision, ignoring the validation error.
-//
-// New has already proven every event the Runtime emits is declared, so a
-// failure here is impossible rather than merely unlikely — and failing a Run
-// because its telemetry did not validate would be worse than the missing event.
-func (r *runtime) record(decision observe.Decision) {
-	_ = r.recorder.Record(decision)
+// record persists a governance decision before the action it explains.
+// A failed audit write stops the action; otherwise the decision ledger could
+// silently omit the very refusal or grant an operator needs to investigate.
+func (r *runtime) record(ctx context.Context, decision observe.Decision) error {
+	return r.recorder.Record(ctx, decision)
 }
 
 func quotaAttributes(decision quota.Decision, scope quota.Scope) []observe.Attribute {

@@ -1,6 +1,9 @@
 package run
 
-import "maps"
+import (
+	"bytes"
+	"maps"
+)
 
 // Reduce applies one Command to one Snapshot and returns what should happen.
 //
@@ -13,8 +16,26 @@ import "maps"
 // On refusal it returns the snapshot unchanged alongside the error, so that a
 // caller which ignores the error still cannot advance the Run by accident.
 func Reduce(snapshot Snapshot, command Command) (Transition, error) {
+	result, err := reduce(snapshot, command)
+	if err == nil && result.Next.Revision > snapshot.Revision {
+		command.Nodes = maps.Clone(command.Nodes)
+		command.Checkpoint = bytes.Clone(command.Checkpoint)
+		result.Command = &command
+	}
+	return result, err
+}
+
+func reduce(snapshot Snapshot, command Command) (Transition, error) {
 	refuse := func(err error) (Transition, error) {
 		return Transition{Next: snapshot}, err
+	}
+	if command.Kind == CommandFenceCancellation {
+		if !snapshot.State.Terminal() || command.CancelEpoch <= snapshot.RootCancellationEpoch {
+			return refuse(NewError("invalid_cancel_fence", ErrorInvalid, RetryNever))
+		}
+		next := snapshot
+		next.RootCancellationEpoch = command.CancelEpoch
+		return advance(snapshot, next), nil
 	}
 
 	// Terminal first, and before anything else. A terminal Run is a fact; a
@@ -60,7 +81,29 @@ func Reduce(snapshot Snapshot, command Command) (Transition, error) {
 		return emit(advance(snapshot, next), snapshot, stateEvent(snapshot, StateRunning)), nil
 
 	case CommandWaitApproval:
-		return parkFromRunning(snapshot, StateWaitingApproval)
+		result, err := parkFromRunning(snapshot, StateWaitingApproval)
+		if err != nil {
+			return result, err
+		}
+		result.Next.PendingApprovalID = command.ApprovalID
+		if command.ReplaceCheckpoint {
+			result.Next.Checkpoint = bytes.Clone(command.Checkpoint)
+		}
+		for i := range result.Events {
+			if result.Events[i].To == StateWaitingApproval {
+				result.Events[i].ApprovalID = command.ApprovalID
+			}
+		}
+		return result, nil
+
+	case CommandAdvanceNodes:
+		if snapshot.State != StateRunning {
+			return refuse(NewError("not_running", ErrorInvalid, RetryNever))
+		}
+		return withProgress(advance(snapshot, snapshot), command), nil
+
+	case CommandSettleInvocation:
+		return settleInvocation(snapshot, command)
 
 	case CommandInvokeModel:
 		return reserveEffect(snapshot, command, EffectModelCall)
@@ -76,20 +119,79 @@ func Reduce(snapshot Snapshot, command Command) (Transition, error) {
 		return resolveInvocation(snapshot, command)
 
 	case CommandSucceed:
-		return terminate(snapshot, StateSucceeded)
+		result, err := terminate(snapshot, StateSucceeded)
+		if err != nil {
+			return result, err
+		}
+		return withProgress(result, command), err
 	case CommandPartial:
-		return terminate(snapshot, StatePartial)
+		result, err := terminate(snapshot, StatePartial)
+		if err != nil {
+			return result, err
+		}
+		return withProgress(result, command), err
 	case CommandFail:
-		return terminate(snapshot, StateFailed)
+		result, err := terminate(snapshot, StateFailed)
+		if err != nil {
+			return result, err
+		}
+		return withProgress(result, command), err
 	case CommandCancel:
 		// Cancellation is accepted from every non-terminal state, including
 		// the waiting ones: a Run parked on a human who never answers must
 		// still be stoppable.
-		return transition(snapshot, StateCancelled), nil
+		if command.CancelEpoch != 0 && command.CancelEpoch <= snapshot.RootCancellationEpoch {
+			return refuse(NewError("stale_cancel_epoch", ErrorInvalid, RetryNever))
+		}
+		result := transition(snapshot, StateCancelled)
+		if command.CancelEpoch != 0 {
+			result.Next.RootCancellationEpoch = command.CancelEpoch
+		}
+		return result, nil
 
 	default:
 		return refuse(NewError("unknown_command", ErrorInvalid, RetryNever))
 	}
+}
+
+func withProgress(result Transition, command Command) Transition {
+	if command.Nodes != nil {
+		result.Next.Nodes = maps.Clone(command.Nodes)
+	}
+	if command.ReplaceCheckpoint {
+		result.Next.Checkpoint = bytes.Clone(command.Checkpoint)
+	}
+	return result
+}
+
+func settleInvocation(snapshot Snapshot, command Command) (Transition, error) {
+	if snapshot.State != StateRunning {
+		return Transition{Next: snapshot}, NewError("not_running", ErrorInvalid, RetryNever)
+	}
+	invocation, ok := snapshot.Invocations[command.InvocationID]
+	if !ok || invocation.Outcome != OutcomeInFlight {
+		return Transition{Next: snapshot}, NewError("invocation_not_in_flight", ErrorInvalid, RetryNever)
+	}
+	if command.Outcome != OutcomeApplied && command.Outcome != OutcomeNotApplied && command.Outcome != OutcomeUnknown {
+		return Transition{Next: snapshot}, NewError("invalid_settlement", ErrorInvalid, RetryNever)
+	}
+	invocation.Outcome = command.Outcome
+	invocation.Charged = invocation.Charged.Add(command.Usage)
+	next := snapshot
+	next.Invocations = putInvocation(snapshot.Invocations, invocation)
+	next.Budget = snapshot.Budget.Settle(invocation.Reserved, command.Usage, command.Outcome != OutcomeUnknown)
+	if command.ReplaceCheckpoint {
+		next.Checkpoint = bytes.Clone(command.Checkpoint)
+	}
+	if command.Outcome != OutcomeUnknown {
+		return advance(snapshot, next), nil
+	}
+	next.State = StateWaitingResolution
+	result := emit(advance(snapshot, next), snapshot,
+		stateEvent(snapshot, StateWaitingResolution),
+		Event{Kind: EventInvocationParked, RunID: snapshot.ID, InvocationID: command.InvocationID})
+	result.Effects = []Effect{{Kind: EffectUnknown, InvocationID: command.InvocationID}}
+	return result, nil
 }
 
 func parkFromRunning(snapshot Snapshot, to State) (Transition, error) {
@@ -125,7 +227,10 @@ func reserveEffect(snapshot Snapshot, command Command, kind EffectKind) (Transit
 	if command.InvocationID != "" {
 		next.Invocations = putInvocation(snapshot.Invocations, Invocation{
 			ID:             command.InvocationID,
+			NodeID:         command.NodeID,
 			Tool:           command.Tool,
+			Write:          command.Write,
+			RequestDigest:  command.RequestDigest,
 			IdempotencyKey: command.IdempotencyKey,
 			Outcome:        OutcomeInFlight,
 			Reserved:       command.Reserve,
@@ -138,6 +243,9 @@ func reserveEffect(snapshot Snapshot, command Command, kind EffectKind) (Transit
 		Reserve: command.Reserve,
 	})
 	result.Effects = []Effect{{Kind: kind, InvocationID: command.InvocationID, Reserve: command.Reserve}}
+	if command.ConsumeApproval {
+		result.Next.Checkpoint = bytes.Clone(command.Checkpoint)
+	}
 	return result, nil
 }
 
@@ -149,8 +257,10 @@ func recordUnknown(snapshot Snapshot, command Command) (Transition, error) {
 		return Transition{Next: snapshot}, NewError("invocation_required", ErrorInvalid, RetryNever)
 	}
 
-	existing := snapshot.Invocations[command.InvocationID]
-	existing.ID = command.InvocationID
+	existing, ok := snapshot.Invocations[command.InvocationID]
+	if !ok || existing.Outcome != OutcomeInFlight {
+		return Transition{Next: snapshot}, NewError("invocation_not_in_flight", ErrorInvalid, RetryNever)
+	}
 	existing.Outcome = OutcomeUnknown
 
 	next := snapshot
@@ -186,6 +296,11 @@ func resolveInvocation(snapshot Snapshot, command Command) (Transition, error) {
 	switch existing.Outcome {
 	case OutcomeUnknown:
 		// Awaiting a decision — this is the case that does work.
+	case OutcomeStillUnknown:
+		// A later investigation may establish the final outcome.
+		if command.Outcome == OutcomeStillUnknown {
+			return Transition{Next: snapshot}, nil
+		}
 	case command.Outcome:
 		// Already resolved the same way. Idempotent: no revision bump, no
 		// event, no error.
@@ -196,13 +311,27 @@ func resolveInvocation(snapshot Snapshot, command Command) (Transition, error) {
 
 	resolved := existing
 	resolved.Outcome = command.Outcome
+	if command.Outcome == OutcomeApplied {
+		resolved.Charged = existing.Charged.Add(command.Usage)
+	}
 
 	next := snapshot
 	next.Invocations = putInvocation(snapshot.Invocations, resolved)
+	if command.Outcome != OutcomeStillUnknown {
+		next.Budget = snapshot.Budget.Settle(existing.Reserved, command.Usage, true)
+	}
+	if command.ReplaceCheckpoint {
+		next.Checkpoint = bytes.Clone(command.Checkpoint)
+	}
 	// still_unknown is an answer, but not one that unblocks anything: the Run
 	// stays parked, now with the fact that somebody looked.
 	if command.Outcome != OutcomeStillUnknown {
 		next.State = StateRunning
+		// Historical writes may have no issuing node. An applied outcome can be
+		// recorded and charged, but the lost node cannot be resumed safely.
+		if command.Outcome == OutcomeApplied && existing.Write && existing.NodeID == "" {
+			next.State = StateFailed
+		}
 	}
 
 	events := []Event{{
@@ -281,10 +410,9 @@ func copyInvocations(invocations map[ID]Invocation) map[ID]Invocation {
 // WithInvocationOutcome returns a copy of the snapshot with one invocation's
 // outcome replaced, leaving the receiver untouched.
 //
-// The settle path builds its Transition by hand rather than through Reduce,
-// because the budget arithmetic it commits is not expressible as a Command. It
-// still has to obey the same rule every reducer case obeys: a Snapshot is
-// copy-on-write, and Invocations is a map, so assigning through
+// Store adapters may overlay their authoritative outcome after the reducer
+// settles a command. They still obey the same rule every reducer case obeys:
+// a Snapshot is copy-on-write, and Invocations is a map, so assigning through
 // snapshot.Invocations[id] writes the map the caller handed in. That map is the
 // one the Store returned from the previous commit, which in an in-process Store
 // is the durable record itself — so an outcome written that way lands whether or
