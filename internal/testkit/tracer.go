@@ -10,10 +10,12 @@ import (
 
 // RecordedSpan is one span a RecordingTracer opened, and how it ended.
 type RecordedSpan struct {
-	Request observe.SpanRequest
-	Context observe.TraceContext
-	Ended   bool
-	Err     error
+	Request     observe.SpanRequest
+	Context     observe.TraceContext
+	Ended       bool
+	Err         error
+	InputBytes  int
+	OutputBytes int
 }
 
 // RecordingTracer keeps every span the Runtime opens. It is the evidence that
@@ -72,6 +74,13 @@ type recordedSpan struct {
 }
 
 func (s *recordedSpan) Context() observe.TraceContext { return s.span.Context }
+
+func (s *recordedSpan) RecordPayloadSizes(inputBytes, outputBytes int) {
+	s.tracer.mu.Lock()
+	defer s.tracer.mu.Unlock()
+	s.span.InputBytes = inputBytes
+	s.span.OutputBytes = outputBytes
+}
 
 func (s *recordedSpan) End(err error) {
 	s.tracer.mu.Lock()

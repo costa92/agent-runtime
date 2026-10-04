@@ -56,6 +56,9 @@ type SpanRequest struct {
 // Span is an open measurement. End is idempotent.
 type Span interface {
 	Context() TraceContext
+	// RecordPayloadSizes records byte lengths only. The host decides whether
+	// its configured capture level permits exporting them.
+	RecordPayloadSizes(inputBytes, outputBytes int)
 	End(err error)
 }
 
@@ -79,5 +82,6 @@ func (NopTracer) Start(ctx context.Context, request SpanRequest) (context.Contex
 
 type nopSpan struct{ parent TraceContext }
 
-func (s nopSpan) Context() TraceContext { return s.parent }
-func (nopSpan) End(error)               {}
+func (s nopSpan) Context() TraceContext     { return s.parent }
+func (nopSpan) RecordPayloadSizes(int, int) {}
+func (nopSpan) End(error)                   {}

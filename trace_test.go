@@ -136,6 +136,9 @@ func TestModelAndToolCallsOpenEffectSpansUnderTheNodeSpan(t *testing.T) {
 	if tools[0].Request.Parent != node || tools[0].Request.InvocationID == "" || tools[0].Request.IdempotencyKey == "" {
 		t.Errorf("tool span = %+v, want parented to the node span with invocation id and idempotency key", tools[0].Request)
 	}
+	if tools[0].InputBytes != 2 || tools[0].OutputBytes != len(`"found"`) {
+		t.Errorf("tool sizes = %d in / %d out", tools[0].InputBytes, tools[0].OutputBytes)
+	}
 	for _, span := range tracer.Spans() {
 		if !span.Ended {
 			t.Errorf("span %q never ended", span.Request.Name)

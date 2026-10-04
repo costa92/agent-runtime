@@ -262,7 +262,7 @@ func (p *governedPorts) Model(ctx context.Context, request llm.Request) (_ llm.R
 }
 
 // Tool invokes a declared tool through the fixed gateway chain.
-func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.RawMessage) (_ json.RawMessage, err error) {
+func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.RawMessage) (output json.RawMessage, err error) {
 	s := p.session
 	s.toolMu.Lock()
 	defer s.toolMu.Unlock()
@@ -283,7 +283,10 @@ func (p *governedPorts) Tool(ctx context.Context, name string, arguments json.Ra
 	// question as much as an event one. The tool name is the only identifier
 	// in a span name — it comes from the frozen registry, never from input.
 	ctx, span := s.effectSpan(ctx, observe.SpanToolCall, "tool."+name, invocationID, string(invocationID))
-	defer func() { span.End(err) }()
+	defer func() {
+		span.RecordPayloadSizes(len(arguments), len(output))
+		span.End(err)
+	}()
 
 	// A denied hold reports the refusal on every request for that tool, rather
 	// than asking for approval again. The Run resumed specifically because a
