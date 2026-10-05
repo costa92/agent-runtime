@@ -3,7 +3,7 @@ package llm
 import (
 	"context"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // CodeCapabilityUnsupported is returned when a request asks for something the

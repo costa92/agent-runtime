@@ -3,8 +3,8 @@ package conformance_test
 import (
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/conformance"
-	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
+	"github.com/costa92/agent-runtime/conformance"
+	"github.com/costa92/agent-runtime/internal/testkit"
 )
 
 func TestScriptedModelConformance(t *testing.T) {

@@ -14,8 +14,8 @@ package workflow
 import (
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // NodeKind is what a node does. It is assigned by the compiler from the

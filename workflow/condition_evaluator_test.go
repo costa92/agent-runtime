@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+	"github.com/costa92/agent-runtime/workflow"
 )
 
 func TestConditionEvaluator(t *testing.T) {

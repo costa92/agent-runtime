@@ -6,11 +6,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/quota"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
+	agentruntime "github.com/costa92/agent-runtime"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/quota"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
 )
 
 // brokenGovernance answers Start normally and then fails every later lookup.

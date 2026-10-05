@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/resource"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/tool"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/resource"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/tool"
 )
 
 // KeySet is a frozen registry seen as the only thing compilation needs from it:

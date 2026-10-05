@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/resource"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/resource"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
 )
 
 // ResourceHarness is what a resource-store adapter supplies.

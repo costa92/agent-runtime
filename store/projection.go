@@ -3,7 +3,7 @@ package store
 import (
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // ProjectionKind is the closed set of durable facts a host may project.

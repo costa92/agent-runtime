@@ -3,8 +3,8 @@ package conformance_test
 import (
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/conformance"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/conformance"
+	"github.com/costa92/agent-runtime/policy"
 )
 
 // 一致性套件本身要被跑过，否则「写了套件」和「套件能用」是两件事。

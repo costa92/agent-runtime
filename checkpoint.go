@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // checkpointProtocol is the version of the Runtime's own resume state.

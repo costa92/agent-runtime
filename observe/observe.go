@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 const auditWriteTimeout = 5 * time.Second

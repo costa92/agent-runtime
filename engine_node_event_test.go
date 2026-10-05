@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
-	"github.com/kart-io/wechat-account/agent-runtime/agent"
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/llm"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
+	agentruntime "github.com/costa92/agent-runtime"
+	"github.com/costa92/agent-runtime/agent"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/llm"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
 )
 
 // nodeEventAgent is shared by both harnesses below. Both nodes register under

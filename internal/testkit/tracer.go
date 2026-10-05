@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/kart-io/wechat-account/agent-runtime/observe"
+	"github.com/costa92/agent-runtime/observe"
 )
 
 // RecordedSpan is one span a RecordingTracer opened, and how it ended.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Registry maps stable keys to implementations.

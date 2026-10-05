@@ -3,7 +3,7 @@ package agentruntime
 import (
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Every budget dimension must be able to name itself on a refusal. An

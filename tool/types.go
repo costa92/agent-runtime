@@ -10,9 +10,9 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Spec is what a tool declares about itself.

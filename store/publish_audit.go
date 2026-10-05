@@ -1,8 +1,8 @@
 package store
 
 import (
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/resource"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/resource"
 )
 
 // PublishAudit is the immutable record of one publish. Every publish writes

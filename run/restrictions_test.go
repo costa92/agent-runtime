@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // A restriction can only remove.

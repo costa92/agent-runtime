@@ -3,8 +3,8 @@ package tool
 import (
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Every decision the policy package can produce is named in the gateway.

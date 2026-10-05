@@ -6,9 +6,9 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/workflow"
 )
 
 func running(nodes map[string]run.NodeState) run.Snapshot {

@@ -11,10 +11,10 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/llm"
-	"github.com/kart-io/wechat-account/agent-runtime/memory"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/llm"
+	"github.com/costa92/agent-runtime/memory"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Request is what an agent is asked to do. It carries references and bounded

@@ -10,7 +10,7 @@ package quota
 import (
 	"fmt"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Window is the period a usage limit is measured over.

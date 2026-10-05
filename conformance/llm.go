@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/llm"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/llm"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // LLMHarness is what a model adapter supplies to be checked.

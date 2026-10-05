@@ -3,8 +3,8 @@ package store
 import (
 	"context"
 
-	"github.com/kart-io/wechat-account/agent-runtime/quota"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/quota"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // QuotaDecision is the outcome of one quota check, with the limit that produced

@@ -3,7 +3,7 @@ package policy
 import (
 	"sort"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Snapshot is the active policy set a Run evaluates against.

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
 )
 
 // Every Kind has a payload type.

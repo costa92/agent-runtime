@@ -1,3 +1,3 @@
-module github.com/kart-io/wechat-account/agent-runtime
+module github.com/costa92/agent-runtime
 
 go 1.26

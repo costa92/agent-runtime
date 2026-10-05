@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/kart-io/wechat-account/agent-runtime/llm"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/llm"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // ScriptedModel is a deterministic model client.

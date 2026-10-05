@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 func stateChange(sequence uint64, from, to run.State) run.Event {

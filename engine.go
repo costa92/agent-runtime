@@ -9,15 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kart-io/wechat-account/agent-runtime/agent"
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/observe"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/quota"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
-	"github.com/kart-io/wechat-account/agent-runtime/tool"
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+	"github.com/costa92/agent-runtime/agent"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/observe"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/quota"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
+	"github.com/costa92/agent-runtime/tool"
+	"github.com/costa92/agent-runtime/workflow"
 )
 
 const maxAbandonGrace = 30 * time.Second

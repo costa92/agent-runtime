@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/authorization"
 )
 
 func runningSnapshot() Snapshot {

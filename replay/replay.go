@@ -24,7 +24,7 @@ package replay
 import (
 	"fmt"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // probeInvocation is the invocation id the successor probe installs, so that

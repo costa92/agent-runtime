@@ -6,7 +6,7 @@
 // governance that drifts is governance nobody can reason about.
 package resource
 
-import "github.com/kart-io/wechat-account/agent-runtime/run"
+import "github.com/costa92/agent-runtime/run"
 
 // Kind names one member of the family. The set is closed here because each
 // Kind needs a converter and a storage version registered alongside it; a Kind

@@ -5,8 +5,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/workflow"
 )
 
 // GraphSource loads a graph that was compiled at publish time.

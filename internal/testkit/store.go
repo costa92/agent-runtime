@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
 )
 
 // Clock is a manually advanced clock. Lease expiry is Store-authoritative, so

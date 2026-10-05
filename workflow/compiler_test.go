@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/tool"
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/tool"
+	"github.com/costa92/agent-runtime/workflow"
 )
 
 type fakeKeys struct {

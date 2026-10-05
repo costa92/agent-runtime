@@ -17,9 +17,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/resource"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/resource"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Lease is exclusive, time-bounded ownership of a Run by one worker.

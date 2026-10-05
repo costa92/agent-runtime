@@ -8,7 +8,7 @@ package policy
 import (
 	"fmt"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Scope is what a Policy applies to.

@@ -49,7 +49,7 @@ var deniedImportPrefixes = []struct {
 // legitimately imports `testing`, and they are excluded from the scan below.
 // Nothing else may be: the whole point of the exclusion is that it is one
 // package, and that no host reaches it from a production import path.
-const conformancePackage = "github.com/kart-io/wechat-account/agent-runtime/conformance"
+const conformancePackage = "github.com/costa92/agent-runtime/conformance"
 
 // packagesExcept lists the module's packages minus the named ones.
 func packagesExcept(t *testing.T, dir string, excluded ...string) []string {
@@ -130,7 +130,7 @@ func TestRuntimeProductionDependencyAllowlist(t *testing.T) {
 			t.Errorf("package %s has no module; cannot be checked against the allowlist", pkg.ImportPath)
 			continue
 		}
-		if pkg.Module.Path == "github.com/kart-io/wechat-account/agent-runtime" {
+		if pkg.Module.Path == "github.com/costa92/agent-runtime" {
 			continue
 		}
 		if _, ok := runtimeModuleAllowlist[pkg.Module.Path]; !ok {

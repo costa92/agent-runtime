@@ -3,7 +3,7 @@ package workflow
 import (
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // A pinned graph that no longer exists is not a conflict.

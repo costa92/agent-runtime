@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Authorizer is the host's answer to "may this principal touch this namespace".

@@ -3,9 +3,9 @@ package store
 import (
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/resource"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/resource"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // AdmissionResult records what one node of the admission chain concluded.

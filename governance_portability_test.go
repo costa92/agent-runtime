@@ -62,8 +62,8 @@ var runStateMachineSymbols = map[string]bool{
 // A Gateway that reached either would only run on a substrate that reproduced
 // them, which is exactly the portability being protected.
 var enginePrivatePackages = []string{
-	"github.com/kart-io/wechat-account/agent-runtime/store",
-	"github.com/kart-io/wechat-account/agent-runtime/workflow",
+	"github.com/costa92/agent-runtime/store",
+	"github.com/costa92/agent-runtime/workflow",
 }
 
 func TestGovernancePackagesDoNotBindToPersistenceOrScheduling(t *testing.T) {

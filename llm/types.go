@@ -10,7 +10,7 @@ package llm
 import (
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // ModelRef names an engine by stable key.

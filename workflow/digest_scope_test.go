@@ -3,8 +3,8 @@ package workflow_test
 import (
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // The digest has to move when execution changes, not only when the node shape

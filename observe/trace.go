@@ -3,7 +3,7 @@ package observe
 import (
 	"context"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // TraceContext is the durable half of a trace, defined with the Run state it is

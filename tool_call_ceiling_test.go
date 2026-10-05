@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
-	"github.com/kart-io/wechat-account/agent-runtime/agent"
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
-	"github.com/kart-io/wechat-account/agent-runtime/llm"
-	"github.com/kart-io/wechat-account/agent-runtime/observe"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/tool"
+	agentruntime "github.com/costa92/agent-runtime"
+	"github.com/costa92/agent-runtime/agent"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/internal/testkit"
+	"github.com/costa92/agent-runtime/llm"
+	"github.com/costa92/agent-runtime/observe"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/tool"
 )
 
 func ceiling(n int) *int { return &n }

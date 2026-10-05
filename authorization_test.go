@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	agentruntime "github.com/kart-io/wechat-account/agent-runtime"
-	"github.com/kart-io/wechat-account/agent-runtime/agent"
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
-	"github.com/kart-io/wechat-account/agent-runtime/tool"
+	agentruntime "github.com/costa92/agent-runtime"
+	"github.com/costa92/agent-runtime/agent"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/internal/testkit"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
+	"github.com/costa92/agent-runtime/tool"
 )
 
 // --- fixtures -------------------------------------------------------------

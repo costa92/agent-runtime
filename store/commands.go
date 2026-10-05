@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/observe"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/observe"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // ExecutionFence is what a worker-driven command proves before it may write:

@@ -13,7 +13,7 @@ package definition
 import (
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // ExecutionMode distinguishes a Definition that executes as a single step from

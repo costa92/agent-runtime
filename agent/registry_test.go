@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/agent"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/agent"
+	"github.com/costa92/agent-runtime/run"
 )
 
 type stubAgent struct{}

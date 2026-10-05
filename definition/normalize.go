@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kart-io/wechat-account/agent-runtime/resource"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/resource"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Normalize validates a Definition's own fields, returns an immutable

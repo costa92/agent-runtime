@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/quota"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
+	"github.com/costa92/agent-runtime/quota"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
 )
 
 // QuotaHarness is what a quota adapter supplies.

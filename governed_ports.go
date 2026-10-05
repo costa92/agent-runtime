@@ -8,16 +8,16 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/kart-io/wechat-account/agent-runtime/agent"
-	"github.com/kart-io/wechat-account/agent-runtime/llm"
-	"github.com/kart-io/wechat-account/agent-runtime/memory"
-	"github.com/kart-io/wechat-account/agent-runtime/observe"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/quota"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
-	"github.com/kart-io/wechat-account/agent-runtime/tool"
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+	"github.com/costa92/agent-runtime/agent"
+	"github.com/costa92/agent-runtime/llm"
+	"github.com/costa92/agent-runtime/memory"
+	"github.com/costa92/agent-runtime/observe"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/quota"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
+	"github.com/costa92/agent-runtime/tool"
+	"github.com/costa92/agent-runtime/workflow"
 )
 
 // governedPorts is the effect surface handed to one agent for one node.

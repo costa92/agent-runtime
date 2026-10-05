@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // The three governed effects must stay distinguishable at the point they are

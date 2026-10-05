@@ -3,7 +3,7 @@ package run
 import (
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/authorization"
 )
 
 // ID identifies a Run, a node, an invocation or an approval. One type rather

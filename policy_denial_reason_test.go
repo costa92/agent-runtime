@@ -3,8 +3,8 @@ package agentruntime
 import (
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/observe"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/observe"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // A refusal that happened before a policy Explanation existed used to record

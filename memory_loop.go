@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/memory"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
-	"github.com/kart-io/wechat-account/agent-runtime/store"
-	"github.com/kart-io/wechat-account/agent-runtime/workflow"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/memory"
+	"github.com/costa92/agent-runtime/run"
+	"github.com/costa92/agent-runtime/store"
+	"github.com/costa92/agent-runtime/workflow"
 )
 
 // memoryScope builds the isolation boundary from the Definition, never from the

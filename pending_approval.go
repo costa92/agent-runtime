@@ -3,7 +3,7 @@ package agentruntime
 import (
 	"encoding/json"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // PendingApproval is the read-only, user-presentable part of the exact tool

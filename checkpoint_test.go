@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Migration owns legacy checkpoint conversion. Once a deployment runs the

@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/authorization"
-	"github.com/kart-io/wechat-account/agent-runtime/internal/testkit"
-	"github.com/kart-io/wechat-account/agent-runtime/memory"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/authorization"
+	"github.com/costa92/agent-runtime/internal/testkit"
+	"github.com/costa92/agent-runtime/memory"
+	"github.com/costa92/agent-runtime/run"
 )
 
 func principal() authorization.PrincipalRef {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/policy"
 )
 
 // PolicyCase is one expectation about a deployment's policy set.

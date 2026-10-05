@@ -10,10 +10,10 @@ import (
 	"slices"
 	"time"
 
-	"github.com/kart-io/wechat-account/agent-runtime/definition"
-	"github.com/kart-io/wechat-account/agent-runtime/observe"
-	"github.com/kart-io/wechat-account/agent-runtime/policy"
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/definition"
+	"github.com/costa92/agent-runtime/observe"
+	"github.com/costa92/agent-runtime/policy"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Stage names one step of the fixed chain. The order is a property of the

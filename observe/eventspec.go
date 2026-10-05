@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kart-io/wechat-account/agent-runtime/run"
+	"github.com/costa92/agent-runtime/run"
 )
 
 // Stability says what a consumer may rely on.
