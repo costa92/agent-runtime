@@ -20,4 +20,4 @@ The architecture tests enforce the dependency boundary. Repository-specific data
 
 ## License
 
-No license has been granted for this repository.
+Licensed under the [MIT License](LICENSE).
