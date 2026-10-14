@@ -5,9 +5,15 @@ package product
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/costa92/agent-runtime/session"
 )
+
+// ErrUnavailable marks a temporary host lookup failure during planning or
+// settlement. Pure product errors are terminal; only this explicit error and
+// caller cancellation leave work active for a later fenced retry.
+var ErrUnavailable = errors.New("product dependency unavailable")
 
 type Kind string
 

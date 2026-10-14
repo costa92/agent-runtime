@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"reflect"
 )
 
 var ErrInvalidLog = errors.New("invalid session event log")
@@ -163,9 +162,12 @@ func Replay(events []Event) (Projection, error) {
 			if err := decode(e.Payload, &x); err != nil {
 				return fail(err.Error())
 			}
-			if !active(t, s, x.TurnID, x.StepID) || s.Kind != StageModel || s.Request != nil || s.Deterministic || x.ConfigDigest != p.ConfigDigest || !reflect.DeepEqual(x.History, p.History) || !validModelRequest(x) || !modelToolsAllowed(x.Tools, s.AllowedTools) {
+			if !active(t, s, x.TurnID, x.StepID) || s.Kind != StageModel || s.Request != nil || s.Deterministic || x.ConfigDigest != p.ConfigDigest || x.HistoryThrough != p.Sequence || !validModelRequest(x) || !modelToolsAllowed(x.Tools, s.AllowedTools) {
 				return fail("model request differs from committed history or pins")
 			}
+			// Historical messages are immutable. Bound the request's view to this
+			// prefix while allowing later History appends to share its backing array.
+			x.History = p.History[:len(p.History):len(p.History)]
 			s.Request = &x
 		case AttemptStarted:
 			var x AttemptStart

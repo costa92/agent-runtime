@@ -25,7 +25,7 @@ func base() []Event {
 }
 
 func toolRequest(name string) ModelRequest {
-	return ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", History: []Message{{Role: "user", Content: "hello"}}, Tools: []ModelToolDef{{Name: name, Parameters: json.RawMessage(`{}`)}}}
+	return ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", HistoryThrough: 4, History: []Message{{Role: "user", Content: "hello"}}, Tools: []ModelToolDef{{Name: name, Parameters: json.RawMessage(`{}`)}}}
 }
 
 func TestSessionParkAndResume(t *testing.T) {
@@ -78,7 +78,7 @@ func TestReasoningContentInModelHistory(t *testing.T) {
 		t.Fatalf("tool reasoning accepted: %v", err)
 	}
 	reasoningOnly := append(base(),
-		event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", History: []Message{{Role: "user", Content: "hello"}}}),
+		event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", HistoryThrough: 4, History: []Message{{Role: "user", Content: "hello"}}}),
 		event(6, AttemptStarted, AttemptStart{TurnID: "t1", StepID: "step1", ID: "reasoning"}),
 		event(7, AttemptFinished, AttemptFinish{TurnID: "t1", StepID: "step1", ID: "reasoning", Outcome: "succeeded", Message: Message{Role: "assistant", ReasoningContent: "thought"}}),
 		event(8, StepEnded, StepEnd{TurnID: "t1", StepID: "step1", Status: "completed", Output: json.RawMessage(`{}`)}),
@@ -156,10 +156,10 @@ func TestInterruptedAttemptAndUnknownToolResult(t *testing.T) {
 
 func TestInvalidOrderAndDuplicateSettlement(t *testing.T) {
 	tests := map[string][]Event{
-		"sequence gap":             func() []Event { x := base(); x[2].Sequence = 4; return x }(),
-		"request history mismatch": append(base(), event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", History: []Message{{Role: "user", Content: "other"}}})),
-		"turn before step end":     append(base(), event(5, TurnEnded, TurnEnd{TurnID: "t1", Status: "completed"})),
-		"tool before model":        append(base(), event(5, ToolCalled, ToolCall{TurnID: "t1", StepID: "step1", ID: "c", Name: "x", IdempotencyKey: "k"})),
+		"sequence gap":            func() []Event { x := base(); x[2].Sequence = 4; return x }(),
+		"request prefix mismatch": append(base(), event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", HistoryThrough: 3})),
+		"turn before step end":    append(base(), event(5, TurnEnded, TurnEnd{TurnID: "t1", Status: "completed"})),
+		"tool before model":       append(base(), event(5, ToolCalled, ToolCall{TurnID: "t1", StepID: "step1", ID: "c", Name: "x", IdempotencyKey: "k"})),
 	}
 	for name, events := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -300,7 +300,7 @@ func TestImageHistoryAndDeclaredToolIdentity(t *testing.T) {
 		event(2, TurnStarted, TurnStart{ID: "t1"}),
 		event(3, MessageAccepted, AcceptedMessage{TurnID: "t1", Message: Message{Role: "user", Images: []ImageRef{{URL: "https://example.test/image.png"}}}}),
 		event(4, StepStarted, StepStart{TurnID: "t1", ID: "step1", StageKey: "writer", Kind: StageModel, Input: json.RawMessage(`{}`), AllowedTools: []string{"inspect"}}),
-		event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", History: []Message{{Role: "user", Images: []ImageRef{{URL: "https://example.test/image.png"}}}}, Tools: []ModelToolDef{{Name: "inspect", Parameters: json.RawMessage(`{}`)}}}),
+		event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", HistoryThrough: 4, History: []Message{{Role: "user", Images: []ImageRef{{URL: "https://example.test/image.png"}}}}, Tools: []ModelToolDef{{Name: "inspect", Parameters: json.RawMessage(`{}`)}}}),
 		event(6, AttemptStarted, AttemptStart{TurnID: "t1", StepID: "step1", ID: "a"}),
 		event(7, AttemptFinished, AttemptFinish{TurnID: "t1", StepID: "step1", ID: "a", Outcome: "succeeded", Message: Message{Role: "assistant", ToolCalls: []ModelToolCall{{ID: "call", Name: "inspect", Arguments: json.RawMessage(`{"detail":true}`)}}}}),
 	}
@@ -382,7 +382,7 @@ func TestCancelledSessionKeepsUnknownEffectReconcileable(t *testing.T) {
 }
 
 func TestCompleteModelRequestAndApprovalBinding(t *testing.T) {
-	events := append(base(), event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "vision-profile", History: []Message{{Role: "user", Content: "hello"}}, Tools: []ModelToolDef{{Name: "tool", Description: "Do work", Parameters: json.RawMessage(`{"type":"object"}`)}}, Temperature: 0.4, MaxTokens: 1024, Reasoning: Reasoning{Enabled: true, Effort: "medium", MaxTokens: 256}}))
+	events := append(base(), event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "vision-profile", HistoryThrough: 4, History: []Message{{Role: "user", Content: "hello"}}, Tools: []ModelToolDef{{Name: "tool", Description: "Do work", Parameters: json.RawMessage(`{"type":"object"}`)}}, Temperature: 0.4, MaxTokens: 1024, Reasoning: Reasoning{Enabled: true, Effort: "medium", MaxTokens: 256}}))
 	p, err := Replay(events)
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +391,7 @@ func TestCompleteModelRequestAndApprovalBinding(t *testing.T) {
 	if r.Profile != "vision-profile" || r.MaxTokens != 1024 || len(r.Tools) != 1 || r.Reasoning.Effort != "medium" {
 		t.Fatalf("model input not pinned: %+v", r)
 	}
-	invalid := append(base(), event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", History: []Message{{Role: "user", Content: "hello"}}, NoTools: true, Tools: []ModelToolDef{{Name: "x", Parameters: json.RawMessage(`{}`)}}}))
+	invalid := append(base(), event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", HistoryThrough: 4, History: []Message{{Role: "user", Content: "hello"}}, NoTools: true, Tools: []ModelToolDef{{Name: "x", Parameters: json.RawMessage(`{}`)}}}))
 	if _, err := Replay(invalid); !errors.Is(err, ErrInvalidLog) {
 		t.Fatalf("conflicting tool options accepted: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestStageFactsAndExactModelStageMessages(t *testing.T) {
 	baseLog := base()
 	baseLog[3] = event(4, StepStarted, StepStart{TurnID: "t1", ID: "step1", StageKey: "draft", Kind: StageModel, Input: json.RawMessage(`{"topic":"hello"}`), Optional: true})
 	stagePrompt := Message{Role: "system", Content: "Write a concise draft"}
-	request := ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", Preamble: []Message{{Role: "system", Content: "Pinned instructions"}}, History: []Message{{Role: "user", Content: "hello"}}, StageMessages: []Message{stagePrompt}}
+	request := ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", Preamble: []Message{{Role: "system", Content: "Pinned instructions"}}, HistoryThrough: 4, History: []Message{{Role: "user", Content: "hello"}}, StageMessages: []Message{stagePrompt}}
 	events := append(baseLog, event(5, ModelRequested, request))
 	p, err := Replay(events)
 	if err != nil {
@@ -432,8 +432,14 @@ func TestStageFactsAndExactModelStageMessages(t *testing.T) {
 		t.Fatalf("stage prompt invisible or corrupted: %+v", p)
 	}
 	badRequest := request
-	badRequest.History = append(append([]Message(nil), request.History...), stagePrompt)
-	if _, err := Replay(append(baseLog, event(5, ModelRequested, badRequest))); !errors.Is(err, ErrInvalidLog) {
+	badEvent := event(5, ModelRequested, badRequest)
+	var forged map[string]any
+	if err := json.Unmarshal(badEvent.Payload, &forged); err != nil {
+		t.Fatal(err)
+	}
+	forged["history"] = append(append([]Message(nil), request.History...), stagePrompt)
+	badEvent.Payload, _ = json.Marshal(forged)
+	if _, err := Replay(append(baseLog, badEvent)); !errors.Is(err, ErrInvalidLog) {
 		t.Fatalf("stage prompt smuggled into base history: %v", err)
 	}
 	badRequest = request
@@ -513,7 +519,7 @@ func TestDeterministicToolStageAndComputeIsolation(t *testing.T) {
 		t.Fatalf("compute invoked external tool: %v", err)
 	}
 	model := append([]Event(nil), toolLog[:4]...)
-	model = append(model, event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", History: []Message{{Role: "user", Content: "hello"}}}))
+	model = append(model, event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "profile", HistoryThrough: 4, History: []Message{{Role: "user", Content: "hello"}}}))
 	if _, err := Replay(model); !errors.Is(err, ErrInvalidLog) {
 		t.Fatalf("tool stage requested model: %v", err)
 	}

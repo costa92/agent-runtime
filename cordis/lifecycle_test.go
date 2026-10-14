@@ -2,10 +2,63 @@ package cordis
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
 )
+
+func TestCloseDeadlineRetainsResourcesUntilHandlerReturns(t *testing.T) {
+	for _, scope := range []string{"fiber", "context"} {
+		t.Run(scope, func(t *testing.T) {
+			root := New()
+			started, release, disposed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			fibers, err := root.Use(Plugin{Name: "blocked", Setup: func(f *Fiber) error {
+				if err := f.On("work", func(context.Context, any) (EventResult, error) {
+					close(started)
+					<-release // deliberately ignores cancellation
+					return EventResult{}, nil
+				}); err != nil {
+					return err
+				}
+				return f.Effect(func() error { close(disposed); return nil })
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			eventDone := make(chan struct{})
+			go func() { _, _ = root.Serial(context.Background(), "work", nil); close(eventDone) }()
+			<-started
+			closeScope := root.Close
+			if scope == "fiber" {
+				closeScope = fibers[0].Close
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			if err := closeScope(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("close=%v", err)
+			}
+			select {
+			case <-disposed:
+				t.Fatal("resource disposed while handler was active")
+			default:
+			}
+			close(release)
+			<-eventDone
+			if err := closeScope(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-disposed:
+			default:
+				t.Fatal("deferred disposal did not complete")
+			}
+			if err := root.Close(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestFiberCloseDrainsHandlerBeforeDisposingResources(t *testing.T) {
 	root := New()
@@ -34,7 +87,7 @@ func TestFiberCloseDrainsHandlerBeforeDisposingResources(t *testing.T) {
 	go func() { _, err := root.Serial(context.Background(), "work", nil); eventDone <- err }()
 	<-started
 	closeDone := make(chan error, 1)
-	go func() { closeDone <- fibers[0].Close() }()
+	go func() { closeDone <- fibers[0].Close(context.Background()) }()
 	deadline := time.Now().Add(time.Second)
 	for {
 		fibers[0].mu.Lock()
@@ -77,10 +130,10 @@ func TestConcurrentFiberCloseWaitsForDisposal(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := make(chan error, 1)
-	go func() { first <- fibers[0].Close() }()
+	go func() { first <- fibers[0].Close(context.Background()) }()
 	<-started
 	second := make(chan error, 1)
-	go func() { second <- fibers[0].Close() }()
+	go func() { second <- fibers[0].Close(context.Background()) }()
 	select {
 	case <-second:
 		t.Error("concurrent Close returned before disposal finished")
@@ -117,7 +170,7 @@ func TestContextCloseWaitsForPendingActivation(t *testing.T) {
 	}()
 	<-started
 	closed := make(chan error, 1)
-	go func() { closed <- root.Close() }()
+	go func() { closed <- root.Close(context.Background()) }()
 	select {
 	case <-closed:
 		t.Fatal("Close returned while activation owns a resource")
@@ -179,7 +232,7 @@ func TestProviderCloseWaitsForDescendantActivation(t *testing.T) {
 	}()
 	<-started
 	closed := make(chan error, 1)
-	go func() { closed <- providers[0].Close() }()
+	go func() { closed <- providers[0].Close(context.Background()) }()
 	select {
 	case <-closed:
 		t.Fatal("provider closed during descendant activation")

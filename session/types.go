@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const ProtocolVersion uint32 = 2
+const ProtocolVersion uint32 = 3
 
 type Kind string
 
@@ -125,21 +125,23 @@ const (
 )
 
 // ModelRequest fixes the exact model-visible input before an attempt starts.
-// Replay verifies History against prior committed facts.
+// HistoryThrough references the immediately preceding committed event prefix.
+// Replay reconstructs History from that prefix; it is not duplicated on wire.
 type ModelRequest struct {
-	TurnID        string         `json:"turn_id"`
-	StepID        string         `json:"step_id"`
-	ConfigDigest  string         `json:"config_digest"`
-	Profile       string         `json:"profile"`
-	Preamble      []Message      `json:"preamble,omitempty"`
-	History       []Message      `json:"history"`
-	StageMessages []Message      `json:"stage_messages,omitempty"`
-	Tools         []ModelToolDef `json:"tools,omitempty"`
-	NoTools       bool           `json:"no_tools,omitempty"`
-	Deterministic bool           `json:"deterministic,omitempty"`
-	Temperature   float64        `json:"temperature,omitempty"`
-	MaxTokens     int            `json:"max_tokens,omitempty"`
-	Reasoning     Reasoning      `json:"reasoning"`
+	TurnID         string         `json:"turn_id"`
+	StepID         string         `json:"step_id"`
+	ConfigDigest   string         `json:"config_digest"`
+	Profile        string         `json:"profile"`
+	Preamble       []Message      `json:"preamble,omitempty"`
+	HistoryThrough uint64         `json:"history_through"`
+	History        []Message      `json:"-"`
+	StageMessages  []Message      `json:"stage_messages,omitempty"`
+	Tools          []ModelToolDef `json:"tools,omitempty"`
+	NoTools        bool           `json:"no_tools,omitempty"`
+	Deterministic  bool           `json:"deterministic,omitempty"`
+	Temperature    float64        `json:"temperature,omitempty"`
+	MaxTokens      int            `json:"max_tokens,omitempty"`
+	Reasoning      Reasoning      `json:"reasoning"`
 }
 
 // Messages is the exact input submitted to the model: committed conversation

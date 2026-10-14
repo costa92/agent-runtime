@@ -29,6 +29,7 @@ type Fiber struct {
 	cancelEvents context.CancelFunc
 	closeDone    chan struct{}
 	closeErr     error
+	closeOnce    sync.Once
 }
 
 // Require only grants services listed in the plugin manifest.
@@ -117,13 +118,27 @@ func (f *Fiber) Provide(name string, value any) error {
 	return nil
 }
 
-// Close cancels and drains event handlers before disposing resources. Invoke
+// Close cancels and drains handlers before disposal, waiting only until the
+// caller's deadline. Timed-out teardown continues with resources retained.
+// Invoke
 // Close from the lifecycle owner, outside Setup, handlers, and disposers in
 // this scope tree: those callbacks must return for the drain to complete.
-func (f *Fiber) Close() error {
-	f.ctx.lifecycleMu.Lock()
-	defer f.ctx.lifecycleMu.Unlock()
-	return f.close()
+func (f *Fiber) Close(ctx context.Context) error {
+	f.closeOnce.Do(func() {
+		go func() {
+			f.ctx.lifecycleMu.Lock()
+			defer f.ctx.lifecycleMu.Unlock()
+			_ = f.close()
+		}()
+	})
+	select {
+	case <-f.closeDone:
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (f *Fiber) close() error {

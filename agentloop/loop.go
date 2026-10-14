@@ -50,6 +50,16 @@ type Loop struct {
 	NewID          func() (string, error)
 }
 
+// New constructs a complete execution loop. Products own all workflow choices;
+// there is no implicit conversation workflow when a Product is missing.
+func New(store session.Store, models model.Service, tools *capability.Service, workflow product.Product, config Config, sources ...ContextSource) (*Loop, error) {
+	l := &Loop{Store: store, Model: models, Tools: tools, Product: workflow, Config: config, ContextSources: append([]ContextSource(nil), sources...)}
+	if err := l.validate(); err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
 // ContextSource snapshots one host-owned input before the first model request
 // of a Turn. Its output is persisted in ModelRequest.Preamble; later steps and
 // recovery use that fact rather than reading mutable host state again.
@@ -143,7 +153,7 @@ func (l *Loop) Submit(ctx context.Context, id, idempotencyKey string, message se
 	if err := l.validate(); err != nil {
 		return session.InboxItem{}, false, err
 	}
-	if id == "" || idempotencyKey == "" || message.Role != "user" || strings.TrimSpace(message.Content) == "" && len(message.Images) == 0 || message.CallID != "" || message.Error != "" || len(message.ToolCalls) > 0 {
+	if id == "" || idempotencyKey == "" || message.Role != "user" || strings.TrimSpace(message.Content) == "" && len(message.Images) == 0 || message.CallID != "" || message.Error != "" || message.ReasoningContent != "" || len(message.ToolCalls) > 0 {
 		return session.InboxItem{}, false, session.ErrInvalidInput
 	}
 	for _, image := range message.Images {
@@ -159,7 +169,7 @@ func (l *Loop) Submit(ctx context.Context, id, idempotencyKey string, message se
 }
 
 func (l *Loop) validate() error {
-	if l == nil || l.Store == nil || l.Model == nil || l.Config.Profile == "" || l.Config.Digest == "" || l.Config.MaxSteps <= 0 || l.Config.MaxAttempts <= 0 || (l.Config.Scope != profile.ProjectScope && l.Config.Scope != profile.PrincipalScope) {
+	if l == nil || l.Store == nil || l.Model == nil || l.Product == nil || l.Config.Profile == "" || l.Config.Digest == "" || l.Config.MaxSteps <= 0 || l.Config.MaxAttempts <= 0 || (l.Config.Scope != profile.ProjectScope && l.Config.Scope != profile.PrincipalScope) {
 		return errors.New("agentloop: incomplete services or profile")
 	}
 	return nil
@@ -291,7 +301,13 @@ func (l *Loop) Drive(ctx context.Context, lease session.Lease) error {
 		}
 		settlement, err := l.settle(ctx, p, s)
 		if err != nil {
-			return err
+			if ctx.Err() != nil || errors.Is(err, product.ErrUnavailable) {
+				return err
+			}
+			if err := l.failStep(ctx, lease, p, t.ID, s, err.Error()); err != nil {
+				return err
+			}
+			continue
 		}
 		if _, err = l.commit(ctx, lease, p, fact{session.StepEnded, session.StepEnd{TurnID: t.ID, StepID: s.ID, Status: settlement.Status, Output: settlement.Output, Warnings: settlement.Warnings}}); err != nil {
 			return err
@@ -391,6 +407,9 @@ func (l *Loop) startModelStep(ctx context.Context, lease session.Lease, p sessio
 		return err
 	}
 	if err := l.authorizeModel(ctx, p, plan); err != nil {
+		if ctx.Err() != nil || errors.Is(err, product.ErrUnavailable) {
+			return err
+		}
 		return l.failStep(ctx, lease, p, turnID, step, "model authorization failed: "+err.Error())
 	}
 	preamble, err := l.snapshotPreamble(ctx, p)
@@ -412,7 +431,7 @@ func (l *Loop) startModelStep(ctx context.Context, lease session.Lease, p sessio
 	for i, tool := range req.Tools {
 		toolDefs[i] = session.ModelToolDef{Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters}
 	}
-	_, err = l.commit(ctx, lease, p, fact{session.ModelRequested, session.ModelRequest{TurnID: turnID, StepID: stepID, ConfigDigest: p.ConfigDigest, Profile: req.Profile, Preamble: preamble, History: p.History, StageMessages: plan.Messages, Tools: toolDefs, NoTools: len(toolDefs) == 0, Temperature: req.Temperature, MaxTokens: req.MaxTokens, Reasoning: l.Config.Reasoning}})
+	_, err = l.commit(ctx, lease, p, fact{session.ModelRequested, session.ModelRequest{TurnID: turnID, StepID: stepID, ConfigDigest: p.ConfigDigest, Profile: req.Profile, Preamble: preamble, HistoryThrough: p.Sequence, StageMessages: plan.Messages, Tools: toolDefs, NoTools: len(toolDefs) == 0, Temperature: req.Temperature, MaxTokens: req.MaxTokens, Reasoning: l.Config.Reasoning}})
 	return err
 }
 
@@ -431,6 +450,9 @@ func (l *Loop) attempt(ctx context.Context, lease session.Lease, p session.Proje
 		return err
 	}
 	if err := l.authorizeModel(ctx, p, plan); err != nil {
+		if ctx.Err() != nil || errors.Is(err, product.ErrUnavailable) {
+			return err
+		}
 		return l.failStep(ctx, lease, p, turnID, step, "model authorization failed: "+err.Error())
 	}
 	request := requestFromEvent(*step.Request)
@@ -502,7 +524,9 @@ func (l *Loop) attempt(ctx context.Context, lease session.Lease, p session.Proje
 	if fatalModel {
 		facts = append(facts, fact{session.StepEnded, session.StepEnd{TurnID: turnID, StepID: stepID, Status: "failed", Output: json.RawMessage(`{}`), Warnings: []string{finish.Error}}})
 	}
-	_, err = l.commit(context.WithoutCancel(ctx), lease, p, facts...)
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, err = l.commit(settleCtx, lease, p, facts...)
 	return err
 }
 

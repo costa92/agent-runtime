@@ -19,9 +19,12 @@ func (l *Loop) openStep(ctx context.Context, lease session.Lease, p session.Proj
 			return err
 		}
 	}
-	plan, err := l.nextPlan(ctx, p, turn)
+	plan, err := l.Product.Next(ctx, p)
 	if err != nil {
-		return err
+		if ctx.Err() != nil || errors.Is(err, product.ErrUnavailable) {
+			return err
+		}
+		return l.failPlanning(ctx, lease, p, turn, err)
 	}
 	if plan.Done {
 		status := plan.FinalStatus
@@ -29,7 +32,7 @@ func (l *Loop) openStep(ctx context.Context, lease session.Lease, p session.Proj
 			status = "completed"
 		}
 		if status != "completed" && status != "failed" && status != "cancelled" {
-			return errors.New("agentloop: invalid product final status")
+			return l.failPlanning(ctx, lease, p, turn, errors.New("agentloop: invalid product final status"))
 		}
 		_, err := l.commit(ctx, lease, p, fact{session.TurnEnded, session.TurnEnd{TurnID: turn.ID, Status: status}})
 		return err
@@ -39,10 +42,10 @@ func (l *Loop) openStep(ctx context.Context, lease session.Lease, p session.Proj
 		return err
 	}
 	if plan.Key == "" || plan.Kind != product.Model && plan.Kind != product.Compute && plan.Kind != product.Tool {
-		return errors.New("agentloop: product returned an invalid stage")
+		return l.failPlanning(ctx, lease, p, turn, errors.New("agentloop: product returned an invalid stage"))
 	}
 	if plan.Internal && (plan.Kind != product.Model || len(plan.AllowedTools) != 0) {
-		return errors.New("agentloop: internal stage must be a model stage without tools")
+		return l.failPlanning(ctx, lease, p, turn, errors.New("agentloop: internal stage must be a model stage without tools"))
 	}
 	for _, name := range plan.AllowedTools {
 		found := false
@@ -53,7 +56,7 @@ func (l *Loop) openStep(ctx context.Context, lease session.Lease, p session.Proj
 			}
 		}
 		if !found {
-			return fmt.Errorf("agentloop: stage %s requests unavailable tool %s", plan.Key, name)
+			return l.failPlanning(ctx, lease, p, turn, fmt.Errorf("agentloop: stage %s requests unavailable tool %s", plan.Key, name))
 		}
 	}
 	input, err := json.Marshal(plan)
@@ -80,18 +83,19 @@ func (l *Loop) openStep(ctx context.Context, lease session.Lease, p session.Proj
 	return err
 }
 
-func (l *Loop) nextPlan(ctx context.Context, p session.Projection, turn session.Turn) (product.Plan, error) {
-	if l.Product != nil {
-		return l.Product.Next(ctx, p)
+// A planning rejection precedes a business Step. Preserve its reason in a
+// failed diagnostic Step without inventing a model attempt or external effect.
+func (l *Loop) failPlanning(ctx context.Context, lease session.Lease, p session.Projection, turn session.Turn, cause error) error {
+	id, err := l.id()
+	if err != nil {
+		return err
 	}
-	if len(turn.Steps) == 0 || len(turn.Steps[len(turn.Steps)-1].DeclaredTools) > 0 {
-		names := make([]string, len(l.Config.Tools))
-		for i, tool := range l.Config.Tools {
-			names[i] = tool.Name
-		}
-		return product.Plan{Key: "conversation", Kind: product.Model, AllowedTools: names}, nil
-	}
-	return product.Plan{Done: true, FinalStatus: "completed"}, nil
+	_, err = l.commit(ctx, lease, p,
+		fact{session.StepStarted, session.StepStart{TurnID: turn.ID, ID: id, StageKey: "runtime/planning", Kind: session.StageCompute, Input: json.RawMessage(`{}`)}},
+		fact{session.StepEnded, session.StepEnd{TurnID: turn.ID, StepID: id, Status: "failed", Output: json.RawMessage(`{}`), Warnings: []string{cause.Error()}}},
+		fact{session.TurnEnded, session.TurnEnd{TurnID: turn.ID, Status: "failed"}},
+	)
+	return err
 }
 
 func planFromStep(s session.Step) (product.Plan, error) {
@@ -107,9 +111,6 @@ func planFromStep(s session.Step) (product.Plan, error) {
 }
 
 func (l *Loop) advanceDeterministic(ctx context.Context, lease session.Lease, p session.Projection, turn session.Turn, step session.Step) error {
-	if l.Product == nil {
-		return errors.New("agentloop: deterministic stage has no product")
-	}
 	plan, err := planFromStep(step)
 	if err != nil {
 		return err
@@ -153,16 +154,16 @@ func (l *Loop) advanceDeterministic(ctx context.Context, lease session.Lease, p 
 	}
 	settlement, err := l.settle(ctx, p, step)
 	if err != nil {
-		return err
+		if ctx.Err() != nil || errors.Is(err, product.ErrUnavailable) {
+			return err
+		}
+		return l.failStep(ctx, lease, p, turn.ID, step, err.Error())
 	}
 	_, err = l.commit(ctx, lease, p, fact{session.StepEnded, session.StepEnd{TurnID: turn.ID, StepID: step.ID, Status: settlement.Status, Output: settlement.Output, Warnings: settlement.Warnings}})
 	return err
 }
 
 func (l *Loop) settle(ctx context.Context, p session.Projection, step session.Step) (product.Settlement, error) {
-	if l.Product == nil {
-		return product.Settlement{Status: "completed", Output: json.RawMessage(`{}`)}, nil
-	}
 	plan, err := planFromStep(step)
 	if err != nil {
 		return product.Settlement{}, err

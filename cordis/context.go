@@ -3,6 +3,7 @@
 package cordis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -24,6 +25,7 @@ type Context struct {
 	closed      bool
 	closeDone   chan struct{}
 	closeErr    error
+	closeOnce   sync.Once
 }
 
 func New() *Context {
@@ -145,13 +147,27 @@ func (c *Context) Require(name string) (any, error) {
 	return nil, fmt.Errorf("cordis: required service %q is unavailable", name)
 }
 
-// Close drains handlers and disposes child scopes and fibers in reverse order.
+// Close requests teardown once and waits for it within the caller's deadline.
+// If the deadline expires, teardown continues and resources remain owned until
+// their handlers finish. A later Close waits for the same teardown operation.
 // Call it outside Setup, handlers, and disposers in this scope tree; those
 // callbacks must return before resources can be safely disposed.
-func (c *Context) Close() error {
-	c.lifecycleMu.Lock()
-	defer c.lifecycleMu.Unlock()
-	return c.close()
+func (c *Context) Close(ctx context.Context) error {
+	c.closeOnce.Do(func() {
+		go func() {
+			c.lifecycleMu.Lock()
+			defer c.lifecycleMu.Unlock()
+			_ = c.close()
+		}()
+	})
+	select {
+	case <-c.closeDone:
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *Context) close() error {

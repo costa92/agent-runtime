@@ -33,13 +33,13 @@ func TestDependencyActivationAndRollback(t *testing.T) {
 	if !reflect.DeepEqual(order, []string{"provider", "consumer"}) {
 		t.Fatalf("activation order: %v", order)
 	}
-	if err := fibers[0].Close(); err != nil {
+	if err := fibers[0].Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ctx.Require("model"); err == nil {
 		t.Fatal("closed provider remained available")
 	}
-	if err := ctx.Close(); err != nil {
+	if err := ctx.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -80,7 +80,7 @@ func TestPluginCannotUseUndeclaredService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fibers[0].Close(); err != nil {
+	if err := fibers[0].Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fibers[0].Require("secret"); !errors.Is(err, ErrClosed) {
@@ -130,7 +130,7 @@ func TestScopesAndReverseDisposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := root.Close(); err != nil {
+	if err := root.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(disposed, []string{"second-2", "second-1", "first"}) {
@@ -186,7 +186,7 @@ func TestProviderRemovalCascadesToDependents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fibers[0].Close(); err != nil {
+	if err := fibers[0].Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(disposed, []string{"grandchild", "consumer"}) {
@@ -304,7 +304,7 @@ func TestEventOrderPropagationAndCleanup(t *testing.T) {
 	if err != nil || !result.Stop || !reflect.DeepEqual(seen, []string{"one:x", "two:x"}) {
 		t.Fatalf("serial: %v, %v, %v", result, err, seen)
 	}
-	if err := fibers[1].Close(); err != nil {
+	if err := fibers[1].Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	seen = nil

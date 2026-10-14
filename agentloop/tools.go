@@ -59,6 +59,9 @@ func (l *Loop) advanceTool(ctx context.Context, lease session.Lease, p session.P
 			if errors.Is(err, session.ErrBudgetExceeded) {
 				return true, l.failStep(ctx, lease, p, t.ID, step, "tool budget exceeded")
 			}
+			if errors.Is(err, capability.ErrDenied) || errors.Is(err, capability.ErrInvalid) {
+				return true, l.failStep(ctx, lease, p, t.ID, step, err.Error())
+			}
 			return false, err
 		}
 		if prepared.Status() == capability.AwaitingApproval {

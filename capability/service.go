@@ -17,6 +17,10 @@ import (
 )
 
 var (
+	// ErrDenied is a permanent authorization or policy rejection. Host
+	// authorizers wrap it only for a definitive denial, not infrastructure errors.
+	ErrDenied           = errors.New("capability: denied")
+	ErrInvalid          = errors.New("capability: invalid invocation")
 	ErrApprovalRequired = errors.New("capability: approval required")
 	ErrDuplicate        = errors.New("capability: duplicate invocation or idempotency key")
 	ErrBeginUnconfirmed = errors.New("capability: durable begin and reservation were not confirmed")
@@ -222,19 +226,19 @@ func (s *Service) Specs() []Spec {
 func (s *Service) Prepare(ctx context.Context, inv Invocation) (*Prepared, error) {
 	registration, ok := s.registrations[inv.Name]
 	if !ok {
-		return nil, fmt.Errorf("capability: unknown tool %q", inv.Name)
+		return nil, fmt.Errorf("%w: unknown tool %q", ErrInvalid, inv.Name)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if inv.ID == "" || inv.SessionID == "" || inv.TurnID == "" || inv.StepID == "" || inv.Principal == "" || inv.Fence == 0 {
-		return nil, errors.New("capability: invocation identity and fence are required")
+		return nil, fmt.Errorf("%w: invocation identity and fence are required", ErrInvalid)
 	}
 	if registration.Spec.Effect == Write && inv.IdempotencyKey == "" {
-		return nil, errors.New("capability: write requires an idempotency key")
+		return nil, fmt.Errorf("%w: write requires an idempotency key", ErrInvalid)
 	}
 	if !json.Valid(inv.Input) {
-		return nil, errors.New("capability: input must be valid JSON")
+		return nil, fmt.Errorf("%w: input must be valid JSON", ErrInvalid)
 	}
 	inv.Input = append(json.RawMessage(nil), inv.Input...)
 	for _, interceptor := range s.hooks.Interceptors {
@@ -243,7 +247,7 @@ func (s *Service) Prepare(ctx context.Context, inv Invocation) (*Prepared, error
 			return nil, err
 		}
 		if !json.Valid(input) {
-			return nil, errors.New("capability: interceptor returned invalid JSON")
+			return nil, fmt.Errorf("%w: interceptor returned invalid JSON", ErrInvalid)
 		}
 		inv.Input = append(json.RawMessage(nil), input...)
 	}
@@ -255,10 +259,10 @@ func (s *Service) Prepare(ctx context.Context, inv Invocation) (*Prepared, error
 		return nil, err
 	}
 	if decision.Effect == Deny {
-		return nil, fmt.Errorf("capability: policy denied %q: %s", inv.Name, decision.Reason)
+		return nil, fmt.Errorf("%w: policy denied %q: %s", ErrDenied, inv.Name, decision.Reason)
 	}
 	if decision.Effect != Allow && decision.Effect != RequireApproval {
-		return nil, errors.New("capability: policy returned invalid effect")
+		return nil, fmt.Errorf("%w: policy returned invalid effect", ErrInvalid)
 	}
 	claim, err := s.hooks.Budget(ctx, inv, registration.Spec)
 	if err != nil {
@@ -272,7 +276,7 @@ func (s *Service) Prepare(ctx context.Context, inv Invocation) (*Prepared, error
 	}
 	if registration.Spec.RequiresApproval || inv.ApprovalID != "" {
 		if !approved {
-			return nil, errors.New("capability: approval does not match invocation")
+			return nil, fmt.Errorf("%w: approval does not match invocation", ErrDenied)
 		}
 	}
 	return prepared, nil
