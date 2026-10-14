@@ -32,7 +32,7 @@ func (l *Loop) advanceTool(ctx context.Context, lease session.Lease, p session.P
 			}
 		}
 		if !allowed {
-			_, err := l.commit(ctx, lease, p, fact{session.StepEnded, session.StepEnd{TurnID: t.ID, StepID: step.ID, Status: "failed", Output: json.RawMessage(`{}`), Warnings: []string{"model declared a tool outside the stage allowance"}}})
+			err := l.failStep(ctx, lease, p, t.ID, step, "model declared a tool outside the stage allowance")
 			return true, err
 		}
 		inv := capability.Invocation{
@@ -49,13 +49,16 @@ func (l *Loop) advanceTool(ctx context.Context, lease session.Lease, p session.P
 				return false, ErrParked
 			}
 			if approval.Decision.Decision == "denied" {
-				_, err := l.commit(ctx, lease, p, fact{session.StepEnded, session.StepEnd{TurnID: t.ID, StepID: step.ID, Status: "failed", Output: json.RawMessage(`{}`), Warnings: []string{"tool approval denied"}}})
+				err := l.failStep(ctx, lease, p, t.ID, step, "tool approval denied")
 				return true, err
 			}
 			inv.ApprovalID = approval.Request.ID
 		}
 		prepared, err := l.Tools.Prepare(ctx, inv)
 		if err != nil {
+			if errors.Is(err, session.ErrBudgetExceeded) {
+				return true, l.failStep(ctx, lease, p, t.ID, step, "tool budget exceeded")
+			}
 			return false, err
 		}
 		if prepared.Status() == capability.AwaitingApproval {
@@ -86,6 +89,9 @@ func (l *Loop) advanceTool(ctx context.Context, lease session.Lease, p session.P
 		}
 		result, err := l.Tools.Execute(ctx, prepared, &toolRecorder{loop: l, lease: lease})
 		if err != nil {
+			if errors.Is(err, session.ErrBudgetExceeded) {
+				return true, l.failStep(ctx, lease, p, t.ID, step, "tool budget exceeded")
+			}
 			return false, err
 		}
 		if result.Status == capability.Unknown {
@@ -94,6 +100,25 @@ func (l *Loop) advanceTool(ctx context.Context, lease session.Lease, p session.P
 		return true, nil
 	}
 	return false, nil
+}
+
+// failStep preserves complete tool transcripts for rejected declarations. A
+// skip is only emitted for calls without durable begin; started uncertain
+// effects must retain their original reconciliation path.
+func (l *Loop) failStep(ctx context.Context, lease session.Lease, p session.Projection, turnID string, step session.Step, reason string) error {
+	var facts []fact
+	for _, declaration := range step.DeclaredTools {
+		if _, started := step.Tools[declaration.ID]; started {
+			continue
+		}
+		if _, skipped := step.SkippedTools[declaration.ID]; skipped {
+			continue
+		}
+		facts = append(facts, fact{session.ToolSkipped, session.ToolSkip{TurnID: turnID, StepID: step.ID, ID: declaration.ID, Reason: reason}})
+	}
+	facts = append(facts, fact{session.StepEnded, session.StepEnd{TurnID: turnID, StepID: step.ID, Status: "failed", Output: json.RawMessage(`{}`), Warnings: []string{reason}}})
+	_, err := l.commit(ctx, lease, p, facts...)
+	return err
 }
 
 type toolRecorder struct {

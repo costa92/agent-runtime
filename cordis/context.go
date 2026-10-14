@@ -14,18 +14,20 @@ var ErrClosed = errors.New("cordis: context or fiber is closed")
 // A child sees its ancestors' services and listeners; its own registrations
 // are invisible to its parent and siblings.
 type Context struct {
-	mu           sync.RWMutex
-	activationMu sync.Mutex
-	parent       *Context
-	children     []*Context
-	fibers       []*Fiber
-	services     map[string]any
-	listeners    map[string][]*listener
-	closed       bool
+	mu          sync.RWMutex
+	lifecycleMu *sync.Mutex
+	parent      *Context
+	children    []*Context
+	fibers      []*Fiber
+	services    map[string]any
+	listeners   map[string][]*listener
+	closed      bool
+	closeDone   chan struct{}
+	closeErr    error
 }
 
 func New() *Context {
-	return &Context{services: make(map[string]any), listeners: make(map[string][]*listener)}
+	return &Context{lifecycleMu: &sync.Mutex{}, services: make(map[string]any), listeners: make(map[string][]*listener), closeDone: make(chan struct{})}
 }
 
 func (c *Context) Scope() (*Context, error) {
@@ -35,6 +37,7 @@ func (c *Context) Scope() (*Context, error) {
 		return nil, ErrClosed
 	}
 	child := New()
+	child.lifecycleMu = c.lifecycleMu
 	child.parent = c
 	c.children = append(c.children, child)
 	return child, nil
@@ -42,7 +45,24 @@ func (c *Context) Scope() (*Context, error) {
 
 // Provide installs a service in this scope. Its disposer only removes this
 // specific registration, so a later scope-local provider is never removed.
+// Provide and its disposer are lifecycle-owner operations. Do not invoke them
+// from Setup, handlers, or disposers in this scope tree; Setup uses Fiber.Provide.
 func (c *Context) Provide(name string, value any) (func() error, error) {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	remove, err := c.provide(name, value)
+	if err != nil {
+		return nil, err
+	}
+	return func() error {
+		c.lifecycleMu.Lock()
+		defer c.lifecycleMu.Unlock()
+		return remove()
+	}, nil
+}
+
+// provide runs inside activation or teardown, which already owns lifecycleMu.
+func (c *Context) provide(name string, value any) (func() error, error) {
 	if name == "" || value == nil {
 		return nil, errors.New("cordis: service name and value are required")
 	}
@@ -91,7 +111,7 @@ func (c *Context) closeDependents(name string) error {
 	walk(c)
 	var errs []error
 	for i := len(fibers) - 1; i >= 0; i-- {
-		errs = append(errs, fibers[i].Close())
+		errs = append(errs, fibers[i].close())
 	}
 	return errors.Join(errs...)
 }
@@ -125,12 +145,25 @@ func (c *Context) Require(name string) (any, error) {
 	return nil, fmt.Errorf("cordis: required service %q is unavailable", name)
 }
 
-// Close disposes child scopes and plugin fibers in reverse creation order.
+// Close drains handlers and disposes child scopes and fibers in reverse order.
+// Call it outside Setup, handlers, and disposers in this scope tree; those
+// callbacks must return before resources can be safely disposed.
 func (c *Context) Close() error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	return c.close()
+}
+
+func (c *Context) close() error {
 	c.mu.Lock()
 	if c.closed {
+		done := c.closeDone
 		c.mu.Unlock()
-		return nil
+		<-done
+		c.mu.RLock()
+		err := c.closeErr
+		c.mu.RUnlock()
+		return err
 	}
 	c.closed = true
 	children := append([]*Context(nil), c.children...)
@@ -138,10 +171,15 @@ func (c *Context) Close() error {
 	c.mu.Unlock()
 	var errs []error
 	for i := len(children) - 1; i >= 0; i-- {
-		errs = append(errs, children[i].Close())
+		errs = append(errs, children[i].close())
 	}
 	for i := len(fibers) - 1; i >= 0; i-- {
-		errs = append(errs, fibers[i].Close())
+		errs = append(errs, fibers[i].close())
 	}
-	return errors.Join(errs...)
+	c.mu.Lock()
+	c.closeErr = errors.Join(errs...)
+	close(c.closeDone)
+	err := c.closeErr
+	c.mu.Unlock()
+	return err
 }

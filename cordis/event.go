@@ -19,12 +19,21 @@ type EventResult struct {
 type EventHandler func(context.Context, any) (EventResult, error)
 
 type listener struct {
+	owner   *Fiber
 	handler EventHandler
 	active  bool
 	mu      sync.RWMutex
 }
 
 func (l *listener) call(ctx context.Context, value any) (EventResult, error) {
+	l.owner.mu.Lock()
+	if l.owner.closed || l.owner.closing {
+		l.owner.mu.Unlock()
+		return EventResult{}, nil
+	}
+	l.owner.inflight.Add(1)
+	l.owner.mu.Unlock()
+	defer l.owner.inflight.Done()
 	l.mu.RLock()
 	if !l.active {
 		l.mu.RUnlock()
@@ -32,7 +41,11 @@ func (l *listener) call(ctx context.Context, value any) (EventResult, error) {
 	}
 	handler := l.handler
 	l.mu.RUnlock()
-	return handler(ctx, value)
+	callCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(l.owner.eventCtx, cancel)
+	defer stop()
+	defer cancel()
+	return handler(callCtx, value)
 }
 
 // On registers a listener at the fiber's scope. It is removed when the fiber
@@ -41,7 +54,7 @@ func (f *Fiber) On(name string, handler EventHandler) error {
 	if name == "" || handler == nil {
 		return errors.New("cordis: event name and handler are required")
 	}
-	l := &listener{handler: handler, active: true}
+	l := &listener{owner: f, handler: handler, active: true}
 	f.ctx.mu.Lock()
 	if f.ctx.closed {
 		f.ctx.mu.Unlock()

@@ -48,7 +48,7 @@ func Replay(events []Event) (Projection, error) {
 		if p.ParkedReason != "" && e.Kind != SessionResumed && e.Kind != SessionCancelled {
 			return fail("session is parked")
 		}
-		if p.Status == "cancelled" {
+		if p.Status == "cancelled" && e.Kind != ToolSettled {
 			return fail("session is cancelled")
 		}
 		switch e.Kind {
@@ -93,9 +93,14 @@ func Replay(events []Event) (Projection, error) {
 			p.Status = "cancelled"
 			p.ParkedReason = ""
 			if t != nil && t.Status == "active" {
-				t.Status = "cancelled"
-				if s != nil && s.Status == "active" {
-					s.Status = "cancelled"
+				if s != nil && s.Status == "active" && hasUnresolvedTool(s) {
+					// Preserve the active tool fact so an outcome that races with
+					// cancellation can still be reconciled after the Session ends.
+				} else {
+					t.Status = "cancelled"
+					if s != nil && s.Status == "active" {
+						s.Status = "cancelled"
+					}
 				}
 			}
 		case HistorySeeded:
@@ -151,7 +156,7 @@ func Replay(events []Event) (Projection, error) {
 			if t == nil || t.Status != "active" || x.TurnID != t.ID || x.ID == "" || x.StageKey == "" || !validStageKind(x.Kind) || !canonicalJSON(x.Input) || !validToolNames(x.AllowedTools) || (x.Kind == StageCompute && len(x.AllowedTools) > 0) || (x.Internal && (x.Kind != StageModel || len(x.AllowedTools) > 0)) || stepIDs[x.ID] || len(t.Messages) == 0 || (s != nil && s.Status == "active") {
 				return fail("step cannot start")
 			}
-			t.Steps = append(t.Steps, Step{ID: x.ID, StageKey: x.StageKey, Kind: x.Kind, Input: append(json.RawMessage(nil), x.Input...), AllowedTools: append([]string(nil), x.AllowedTools...), Optional: x.Optional, Internal: x.Internal, Status: "active", Tools: map[string]ToolState{}, Approvals: map[string]ApprovalState{}, Budget: map[BudgetCategory]uint64{}})
+			t.Steps = append(t.Steps, Step{ID: x.ID, StageKey: x.StageKey, Kind: x.Kind, Input: append(json.RawMessage(nil), x.Input...), AllowedTools: append([]string(nil), x.AllowedTools...), Optional: x.Optional, Internal: x.Internal, Status: "active", Tools: map[string]ToolState{}, SkippedTools: map[string]ToolSkip{}, Approvals: map[string]ApprovalState{}, Budget: map[BudgetCategory]uint64{}})
 			stepIDs[x.ID] = true
 		case ModelRequested:
 			var x ModelRequest
@@ -220,7 +225,7 @@ func Replay(events []Event) (Projection, error) {
 			if err := decode(e.Payload, &x); err != nil {
 				return fail(err.Error())
 			}
-			if !active(t, s, x.TurnID, x.StepID) {
+			if !active(t, s, x.TurnID, x.StepID) || (p.Status == "cancelled" && x.Outcome == "unknown") {
 				return fail("tool result outside step")
 			}
 			state, ok := s.Tools[x.ID]
@@ -243,6 +248,27 @@ func Replay(events []Event) (Projection, error) {
 			if x.Outcome != "unknown" {
 				p.History = append(p.History, Message{Role: "tool", CallID: x.ID, Content: x.Result, Error: x.Error})
 			}
+		case ToolSkipped:
+			var x ToolSkip
+			if err := decode(e.Payload, &x); err != nil {
+				return fail(err.Error())
+			}
+			if !active(t, s, x.TurnID, x.StepID) || x.ID == "" || x.Reason == "" || callIDs[x.ID] {
+				return fail("tool skip outside active declaration or call already recorded")
+			}
+			declared := false
+			for _, call := range s.DeclaredTools {
+				if call.ID == x.ID {
+					declared = true
+					break
+				}
+			}
+			if !declared {
+				return fail("skipped tool was not declared")
+			}
+			s.SkippedTools[x.ID] = x
+			callIDs[x.ID] = true
+			p.History = append(p.History, Message{Role: "tool", CallID: x.ID, Content: "Tool was not executed: " + x.Reason, Error: x.Reason})
 		case ApprovalAsked:
 			var x ApprovalRequest
 			if err := decode(e.Payload, &x); err != nil {
@@ -289,8 +315,11 @@ func Replay(events []Event) (Projection, error) {
 					return fail("unsettled tool call")
 				}
 			}
-			if x.Status == "completed" && !allDeclaredCallsRegistered(s) {
-				return fail("model tool declaration was not invoked")
+			if !allDeclaredCallsRegistered(s) {
+				return fail("tool declaration lacks an execution result or skip")
+			}
+			if x.Status == "completed" && len(s.SkippedTools) > 0 {
+				return fail("completed step contains unexecuted tool declarations")
 			}
 			for _, v := range s.Approvals {
 				if v.Decision == nil {
@@ -344,6 +373,15 @@ func active(t *Turn, s *Step, turnID, stepID string) bool {
 func successful(s *Step) bool {
 	for _, a := range s.Attempts {
 		if a.Outcome == "succeeded" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnresolvedTool(s *Step) bool {
+	for _, tool := range s.Tools {
+		if tool.Result == nil || tool.Result.Outcome == "unknown" {
 			return true
 		}
 	}
@@ -538,7 +576,9 @@ func declaredCall(s *Step, c ToolCall) bool {
 func allDeclaredCallsRegistered(s *Step) bool {
 	for _, d := range s.DeclaredTools {
 		if _, ok := s.Tools[d.ID]; !ok {
-			return false
+			if _, skipped := s.SkippedTools[d.ID]; !skipped {
+				return false
+			}
 		}
 	}
 	return true

@@ -93,6 +93,50 @@ func (l *Loop) CancelSession(ctx context.Context, lease session.Lease) (session.
 	return l.commit(ctx, lease, p, fact{session.SessionCancelled, struct{}{}})
 }
 
+// RequestCancellation persists a cancellation request before attempting to
+// finalize it. A live worker keeps its lease and receives the pending
+// projection; after the lease is available, this method commits the terminal
+// cancellation event without requiring the Session's pinned execution Profile.
+func (l *Loop) RequestCancellation(ctx context.Context, sessionID, workerID string, ttl time.Duration) (session.Projection, error) {
+	if l == nil || l.Store == nil || sessionID == "" || workerID == "" || ttl <= 0 {
+		return session.Projection{}, session.ErrInvalidInput
+	}
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	p, err := l.Store.Inspect(settleCtx, sessionID)
+	if err != nil {
+		return session.Projection{}, err
+	}
+	if p.Status == "cancelled" {
+		return p, nil
+	}
+	if err := l.Store.RequestCancel(settleCtx, sessionID); err != nil {
+		if !errors.Is(err, session.ErrConflict) {
+			return session.Projection{}, err
+		}
+		p, inspectErr := l.Store.Inspect(settleCtx, sessionID)
+		if inspectErr != nil {
+			return session.Projection{}, inspectErr
+		}
+		if p.Status == "cancelled" {
+			return p, nil
+		}
+	}
+	lease, err := l.Store.ClaimSession(settleCtx, sessionID, workerID, ttl)
+	if errors.Is(err, session.ErrLease) {
+		return l.Store.Inspect(settleCtx, sessionID)
+	}
+	if err != nil {
+		return session.Projection{}, err
+	}
+	defer func() {
+		releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer releaseCancel()
+		_ = l.Store.Release(releaseCtx, lease)
+	}()
+	return l.CancelSession(settleCtx, lease)
+}
+
 // Submit validates a model-visible user message before making it durable in
 // the Session inbox. The idempotency key is unique within that Session.
 func (l *Loop) Submit(ctx context.Context, id, idempotencyKey string, message session.Message) (session.InboxItem, bool, error) {
@@ -346,6 +390,9 @@ func (l *Loop) startModelStep(ctx context.Context, lease session.Lease, p sessio
 	if err != nil {
 		return err
 	}
+	if err := l.authorizeModel(ctx, p, plan); err != nil {
+		return l.failStep(ctx, lease, p, turnID, step, "model authorization failed: "+err.Error())
+	}
 	preamble, err := l.snapshotPreamble(ctx, p)
 	if err != nil {
 		_, appendErr := l.commit(ctx, lease, p, fact{session.StepEnded, session.StepEnd{TurnID: turnID, StepID: stepID, Status: "failed", Output: json.RawMessage(`{}`), Warnings: []string{err.Error()}}})
@@ -379,6 +426,13 @@ func (l *Loop) attempt(ctx context.Context, lease session.Lease, p session.Proje
 	if step.Request == nil || step.ID != stepID {
 		return session.ErrConflict
 	}
+	plan, err := planFromStep(step)
+	if err != nil {
+		return err
+	}
+	if err := l.authorizeModel(ctx, p, plan); err != nil {
+		return l.failStep(ctx, lease, p, turnID, step, "model authorization failed: "+err.Error())
+	}
 	request := requestFromEvent(*step.Request)
 	call, err := l.Model.Prepare(ctx, request)
 	if err != nil {
@@ -387,6 +441,13 @@ func (l *Loop) attempt(ctx context.Context, lease session.Lease, p session.Proje
 	}
 	p, err = l.commit(ctx, lease, p, fact{session.AttemptStarted, session.AttemptStart{TurnID: turnID, StepID: stepID, ID: id}}, fact{session.BudgetSettled, session.BudgetSettlement{TurnID: turnID, StepID: stepID, Category: session.BudgetModelCalls, Units: 1}})
 	if err != nil {
+		if errors.Is(err, session.ErrBudgetExceeded) {
+			current, inspectErr := l.Store.Inspect(ctx, lease.SessionID)
+			if inspectErr != nil {
+				return inspectErr
+			}
+			return l.failStep(ctx, lease, current, turnID, step, "model budget exceeded")
+		}
 		return err
 	}
 	response, callErr := call.Complete(ctx)
@@ -443,6 +504,13 @@ func (l *Loop) attempt(ctx context.Context, lease session.Lease, p session.Proje
 	}
 	_, err = l.commit(context.WithoutCancel(ctx), lease, p, facts...)
 	return err
+}
+
+func (l *Loop) authorizeModel(ctx context.Context, p session.Projection, plan product.Plan) error {
+	if authorizer, ok := l.Product.(product.ModelAuthorizer); ok {
+		return authorizer.AuthorizeModel(ctx, p, plan)
+	}
+	return nil
 }
 
 func validateModelMessage(m session.Message) error {

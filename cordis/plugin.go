@@ -17,13 +17,18 @@ type Plugin struct {
 
 // Fiber owns all effects installed by one activation of a plugin.
 type Fiber struct {
-	mu       sync.Mutex
-	ctx      *Context
-	plugin   Plugin
-	effects  []func() error
-	provided []string
-	closing  bool
-	closed   bool
+	mu           sync.Mutex
+	ctx          *Context
+	plugin       Plugin
+	effects      []func() error
+	provided     []string
+	closing      bool
+	closed       bool
+	inflight     sync.WaitGroup
+	eventCtx     context.Context
+	cancelEvents context.CancelFunc
+	closeDone    chan struct{}
+	closeErr     error
 }
 
 // Require only grants services listed in the plugin manifest.
@@ -73,7 +78,7 @@ func (f *Fiber) ensureOpen() error {
 func (f *Fiber) needs(service string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return !f.closed && !f.closing && slices.Contains(f.plugin.Requires, service)
+	return !f.closed && slices.Contains(f.plugin.Requires, service)
 }
 
 func (f *Fiber) Effect(dispose func() error) error {
@@ -96,7 +101,7 @@ func (f *Fiber) Provide(name string, value any) error {
 	if !slices.Contains(f.plugin.Provides, name) {
 		return fmt.Errorf("cordis: plugin %q did not declare service %q", f.plugin.Name, name)
 	}
-	remove, err := f.ctx.Provide(name, value)
+	remove, err := f.ctx.provide(name, value)
 	if err != nil {
 		return err
 	}
@@ -112,39 +117,63 @@ func (f *Fiber) Provide(name string, value any) error {
 	return nil
 }
 
+// Close cancels and drains event handlers before disposing resources. Invoke
+// Close from the lifecycle owner, outside Setup, handlers, and disposers in
+// this scope tree: those callbacks must return for the drain to complete.
 func (f *Fiber) Close() error {
+	f.ctx.lifecycleMu.Lock()
+	defer f.ctx.lifecycleMu.Unlock()
+	return f.close()
+}
+
+func (f *Fiber) close() error {
 	f.mu.Lock()
 	if f.closed {
+		err := f.closeErr
 		f.mu.Unlock()
-		return nil
+		return err
 	}
 	if f.closing {
+		done := f.closeDone
 		f.mu.Unlock()
-		return nil
+		<-done
+		f.mu.Lock()
+		err := f.closeErr
+		f.mu.Unlock()
+		return err
 	}
 	f.closing = true
 	provided := append([]string(nil), f.provided...)
 	f.mu.Unlock()
+	f.cancelEvents()
 	var errs []error
 	for i := len(provided) - 1; i >= 0; i-- {
 		errs = append(errs, f.ctx.closeDependents(provided[i]))
 	}
+	f.inflight.Wait()
 	f.mu.Lock()
-	f.closed = true
 	effects := append([]func() error(nil), f.effects...)
 	f.effects = nil
 	f.mu.Unlock()
 	for i := len(effects) - 1; i >= 0; i-- {
 		errs = append(errs, effects[i]())
 	}
-	return errors.Join(errs...)
+	f.mu.Lock()
+	f.closed = true
+	f.closeErr = errors.Join(errs...)
+	close(f.closeDone)
+	err := f.closeErr
+	f.mu.Unlock()
+	return err
 }
 
 // Use activates a batch in dependency order. The batch is atomic: if any
 // setup fails, all fibers activated by this call are disposed in reverse order.
+// Activation and teardown are serialized across the scope tree. Setup must use
+// Fiber registration methods and must not recursively invoke lifecycle methods.
 func (c *Context) Use(plugins ...Plugin) ([]*Fiber, error) {
-	c.activationMu.Lock()
-	defer c.activationMu.Unlock()
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
 	ordered, err := c.order(plugins)
 	if err != nil {
 		return nil, err
@@ -152,12 +181,13 @@ func (c *Context) Use(plugins ...Plugin) ([]*Fiber, error) {
 	activated := make([]*Fiber, 0, len(ordered))
 	rollback := func(cause error) ([]*Fiber, error) {
 		for i := len(activated) - 1; i >= 0; i-- {
-			cause = errors.Join(cause, activated[i].Close())
+			cause = errors.Join(cause, activated[i].close())
 		}
 		return nil, cause
 	}
 	for _, plugin := range ordered {
-		fiber := &Fiber{ctx: c, plugin: plugin}
+		eventCtx, cancelEvents := context.WithCancel(context.Background())
+		fiber := &Fiber{ctx: c, plugin: plugin, eventCtx: eventCtx, cancelEvents: cancelEvents, closeDone: make(chan struct{})}
 		activated = append(activated, fiber)
 		if err := plugin.Setup(fiber); err != nil {
 			return rollback(fmt.Errorf("cordis: activate %q: %w", plugin.Name, err))

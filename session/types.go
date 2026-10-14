@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const ProtocolVersion uint32 = 1
+const ProtocolVersion uint32 = 2
 
 type Kind string
 
@@ -25,6 +25,7 @@ const (
 	AttemptFinished  Kind = "model/attempt-finish"
 	ToolCalled       Kind = "tool/call"
 	ToolSettled      Kind = "tool/result"
+	ToolSkipped      Kind = "tool/skipped"
 	ApprovalAsked    Kind = "approval/request"
 	ApprovalResolved Kind = "approval/resolve"
 	BudgetSettled    Kind = "budget/settle"
@@ -216,6 +217,15 @@ type ToolResult struct {
 	CostUsages []CostUsage `json:"cost_usages,omitempty"`
 }
 
+// ToolSkip closes a model-visible declaration that was never executed. It is
+// distinct from ToolResult: no external invocation or measured usage exists.
+type ToolSkip struct {
+	TurnID string `json:"turn_id"`
+	StepID string `json:"step_id"`
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
 type ApprovalRequest struct {
 	TurnID                string `json:"turn_id"`
 	StepID                string `json:"step_id"`
@@ -290,6 +300,7 @@ type Step struct {
 	ActiveAttempt string                    `json:"active_attempt,omitempty"`
 	DeclaredTools []ModelToolCall           `json:"declared_tools"`
 	Tools         map[string]ToolState      `json:"tools"`
+	SkippedTools  map[string]ToolSkip       `json:"skipped_tools,omitempty"`
 	Approvals     map[string]ApprovalState  `json:"approvals"`
 	Budget        map[BudgetCategory]uint64 `json:"budget"`
 	Deterministic bool                      `json:"deterministic"`
@@ -303,16 +314,17 @@ type Turn struct {
 }
 
 type Projection struct {
-	ID             string    `json:"id"`
-	Sequence       uint64    `json:"sequence"`
-	TenantID       string    `json:"tenant_id"`
-	PrincipalID    string    `json:"principal_id"`
-	ProjectID      int64     `json:"project_id"`
-	AgentVersionID int64     `json:"agent_version_id,omitempty"`
-	Status         string    `json:"status"`
-	ConfigDigest   string    `json:"config_digest"`
-	PluginDigest   string    `json:"plugin_digest"`
-	ParkedReason   string    `json:"parked_reason,omitempty"`
-	Turns          []Turn    `json:"turns"`
-	History        []Message `json:"history"`
+	ID              string    `json:"id"`
+	Sequence        uint64    `json:"sequence"`
+	TenantID        string    `json:"tenant_id"`
+	PrincipalID     string    `json:"principal_id"`
+	ProjectID       int64     `json:"project_id"`
+	AgentVersionID  int64     `json:"agent_version_id,omitempty"`
+	Status          string    `json:"status"`
+	ConfigDigest    string    `json:"config_digest"`
+	PluginDigest    string    `json:"plugin_digest"`
+	ParkedReason    string    `json:"parked_reason,omitempty"`
+	CancelRequested bool      `json:"cancel_requested,omitempty"`
+	Turns           []Turn    `json:"turns"`
+	History         []Message `json:"history"`
 }

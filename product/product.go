@@ -55,3 +55,11 @@ type Product interface {
 	Compute(context.Context, session.Projection, Plan) (Computed, error)
 	Settle(context.Context, session.Projection, Plan) (Settlement, error)
 }
+
+// ModelAuthorizer is implemented by products whose model plans contain
+// resources requiring current host authorization. Agent Loop invokes it before
+// preparing the first request and every physical attempt, including recovery.
+// The plan comes from the durable Step input, never a newly selected candidate.
+type ModelAuthorizer interface {
+	AuthorizeModel(context.Context, session.Projection, Plan) error
+}

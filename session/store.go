@@ -51,6 +51,9 @@ type AppendCommand struct {
 // parked sessions when an external approval or effect result needs processing.
 type Store interface {
 	Create(ctx context.Context, start Event) (Projection, error)
+	// Enqueue replays an accepted matching key even while its Turn is active.
+	// New keys are rejected while a Turn is active, or cancellation is pending
+	// or complete. A changed payload for an existing key is always a conflict.
 	Enqueue(ctx context.Context, sessionID string, input Input) (InboxItem, bool, error)
 	Claim(ctx context.Context, workerID string, limit int, ttl time.Duration) ([]Lease, error)
 	// ClaimSession targets one Session for an explicit control command even if
@@ -59,6 +62,8 @@ type Store interface {
 	Renew(ctx context.Context, lease Lease, ttl time.Duration) (Lease, error)
 	Append(ctx context.Context, command AppendCommand) (Projection, error)
 	Release(ctx context.Context, lease Lease) error
+	RequestCancel(ctx context.Context, sessionID string) error
+	CancelRequested(ctx context.Context, sessionID string) (bool, error)
 	Wake(ctx context.Context, sessionID string) error
 	Inbox(ctx context.Context, sessionID string) ([]InboxItem, error)
 	Inspect(ctx context.Context, sessionID string) (Projection, error)

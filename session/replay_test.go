@@ -352,6 +352,35 @@ func TestUnknownToolOutcomeRequiresReconciliation(t *testing.T) {
 	}
 }
 
+func TestCancelledSessionKeepsUnknownEffectReconcileable(t *testing.T) {
+	events := append(base(),
+		event(5, ModelRequested, toolRequest("tool")),
+		event(6, AttemptStarted, AttemptStart{TurnID: "t1", StepID: "step1", ID: "a"}),
+		event(7, AttemptFinished, AttemptFinish{TurnID: "t1", StepID: "step1", ID: "a", Outcome: "succeeded", Message: Message{Role: "assistant", ToolCalls: []ModelToolCall{{ID: "c", Name: "tool", Arguments: json.RawMessage(`null`)}}}}),
+		event(8, ToolCalled, ToolCall{TurnID: "t1", StepID: "step1", ID: "c", Name: "tool", Arguments: "null", IdempotencyKey: "idem"}),
+		event(9, ToolSettled, ToolResult{TurnID: "t1", StepID: "step1", ID: "c", Outcome: "unknown", Error: "transport lost"}),
+		event(10, SessionCancelled, struct{}{}),
+	)
+	p, err := Replay(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status != "cancelled" || p.Turns[0].Status != "active" || p.Turns[0].Steps[0].Status != "active" {
+		t.Fatalf("cancel discarded unresolved effect state: %+v", p)
+	}
+	resolved := append(events, event(11, ToolSettled, ToolResult{TurnID: "t1", StepID: "step1", ID: "c", Outcome: "succeeded", Result: "verified"}))
+	p, err = Replay(resolved)
+	if err != nil {
+		t.Fatalf("reconcile after cancellation: %v", err)
+	}
+	if p.Status != "cancelled" || p.Turns[0].Steps[0].Tools["c"].Result.Outcome != "succeeded" {
+		t.Fatalf("cancelled session lost reconciled result: %+v", p)
+	}
+	if _, err = Replay(append(resolved, event(12, SessionResumed, SessionResume{Reason: "must not resume"}))); !errors.Is(err, ErrInvalidLog) {
+		t.Fatalf("cancelled session resumed after reconciliation: %v", err)
+	}
+}
+
 func TestCompleteModelRequestAndApprovalBinding(t *testing.T) {
 	events := append(base(), event(5, ModelRequested, ModelRequest{TurnID: "t1", StepID: "step1", ConfigDigest: "cfg", Profile: "vision-profile", History: []Message{{Role: "user", Content: "hello"}}, Tools: []ModelToolDef{{Name: "tool", Description: "Do work", Parameters: json.RawMessage(`{"type":"object"}`)}}, Temperature: 0.4, MaxTokens: 1024, Reasoning: Reasoning{Enabled: true, Effort: "medium", MaxTokens: 256}}))
 	p, err := Replay(events)
