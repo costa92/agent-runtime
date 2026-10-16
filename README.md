@@ -8,7 +8,7 @@ The module uses the Go standard library only. It has no database driver, HTTP tr
 | --- | --- |
 | `cordis` | Plugin lifecycle and scoped services |
 | `profile` | Published plugin manifests and pinned digests |
-| `session` | Event protocol, incremental replay/checkpoints, budget facts, and Store port |
+| `session` | Event protocol, incremental replay/checkpoints, list summaries, budget facts, and Store port |
 | `agentloop` | Turn and Step execution with durable model and capability decisions |
 | `product` | Deterministic workflow planning from Session facts |
 | `capability` | Governed, typed external effects |

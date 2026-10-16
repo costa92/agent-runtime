@@ -67,7 +67,9 @@ type Store interface {
 	Wake(ctx context.Context, sessionID string) error
 	Inbox(ctx context.Context, sessionID string) ([]InboxItem, error)
 	Inspect(ctx context.Context, sessionID string) (Projection, error)
-	List(ctx context.Context, tenantID, principalID string, projectID int64, after string, limit int) ([]Projection, string, error)
+	// List pages the principal's Sessions newest first as summaries; full
+	// state is read one Session at a time through Inspect.
+	List(ctx context.Context, tenantID, principalID string, projectID int64, after string, limit int) ([]Summary, string, error)
 	Events(ctx context.Context, sessionID string, after uint64, limit int) ([]Event, error)
 	Outbox(ctx context.Context, sessionID string, after uint64, limit int) ([]OutboxRecord, error)
 }
