@@ -11,28 +11,42 @@ import (
 
 var ErrInvalidLog = errors.New("invalid session event log")
 
-// Replay validates a complete event log and derives its state. It never uses
-// snapshots or plugin state, so interrupted work is visible after a restart.
+// Replay validates the complete log using the same reducer as checkpoint
+// recovery. Events remain the sole source of execution facts.
 func Replay(events []Event) (Projection, error) {
-	var p Projection
-	if len(events) == 0 {
-		return p, fmt.Errorf("%w: empty", ErrInvalidLog)
+	return NewReducer().Apply(events)
+}
+
+// Apply consumes a contiguous suffix. The returned projection is borrowed:
+// callers must not mutate it or use it concurrently with another Apply. On
+// error this reducer is invalidated and must be discarded, including any
+// previously borrowed projection. Stores publish results only after commit.
+func (r *Reducer) Apply(events []Event) (result Projection, err error) {
+	if r == nil || r.failed || r.state.TurnIDs == nil {
+		return Projection{}, fmt.Errorf("%w: invalidated reducer", ErrInvalidLog)
 	}
-	turnIDs := map[string]bool{}
-	stepIDs := map[string]bool{}
-	callIDs := map[string]bool{}
-	idempotencyKeys := map[string]bool{}
-	approvalIDs := map[string]bool{}
-	attemptIDs := map[string]bool{}
-	seeded := false
-	for i, e := range events {
-		if e.Version != ProtocolVersion || e.SessionID == "" || e.Sequence != uint64(i+1) || len(e.Payload) == 0 || !json.Valid(e.Payload) {
+	defer func() {
+		if err != nil {
+			r.failed = true
+		}
+	}()
+	p := r.state.Projection
+	if len(events) == 0 && p.Sequence == 0 {
+		return Projection{}, fmt.Errorf("%w: empty", ErrInvalidLog)
+	}
+	turnIDs, stepIDs := r.state.TurnIDs, r.state.StepIDs
+	callIDs, idempotencyKeys := r.state.CallIDs, r.state.IdempotencyKeys
+	approvalIDs, attemptIDs := r.state.ApprovalIDs, r.state.AttemptIDs
+	seeded := r.state.Seeded
+	for _, e := range events {
+		i := int(p.Sequence)
+		if e.Version != ProtocolVersion || e.SessionID == "" || p.Sequence == ^uint64(0) || e.Sequence != p.Sequence+1 || len(e.Payload) == 0 || !json.Valid(e.Payload) {
 			return Projection{}, invalid(i, "envelope or sequence")
 		}
-		if i == 0 && e.Kind != SessionStarted {
+		if p.Sequence == 0 && e.Kind != SessionStarted {
 			return Projection{}, invalid(i, "first event must start session")
 		}
-		if i > 0 && e.SessionID != p.ID {
+		if p.Sequence > 0 && e.SessionID != p.ID {
 			return Projection{}, invalid(i, "session ID changed")
 		}
 		var t *Turn
@@ -357,6 +371,7 @@ func Replay(events []Event) (Projection, error) {
 		}
 		p.Sequence = e.Sequence
 	}
+	r.state.Projection, r.state.Seeded = p, seeded
 	return p, nil
 }
 

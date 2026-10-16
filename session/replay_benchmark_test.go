@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// Exercise the current full-history request contract, so growth in both log
-// bytes and replay work remains visible rather than benchmarking tiny events.
+// Compare full replay with restoration of a checkpoint plus one new turn.
+// Both paths use exactly the same event reducer and conversation fixture.
 func BenchmarkReplayLongConversation(b *testing.B) {
 	for _, turns := range []int{10, 100, 500} {
 		b.Run(fmt.Sprintf("turns_%d", turns), func(b *testing.B) {
@@ -43,14 +43,37 @@ func BenchmarkReplayLongConversation(b *testing.B) {
 			for _, event := range events {
 				bytes += len(event.Payload)
 			}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				if _, err := Replay(events); err != nil {
-					b.Fatal(err)
-				}
+			for _, mode := range []string{"full", "checkpoint"} {
+				b.Run(mode, func(b *testing.B) {
+					r := NewReducer()
+					if _, err := r.Apply(events[:len(events)-8]); err != nil {
+						b.Fatal(err)
+					}
+					checkpoint, err := r.Checkpoint()
+					if err != nil {
+						b.Fatal(err)
+					}
+					b.ReportAllocs()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						if mode == "full" {
+							if _, err := Replay(events); err != nil {
+								b.Fatal(err)
+							}
+						} else {
+							restored, err := RestoreCheckpoint(checkpoint)
+							if err != nil {
+								b.Fatal(err)
+							}
+							if _, err := restored.Apply(events[len(events)-8:]); err != nil {
+								b.Fatal(err)
+							}
+						}
+					}
+					b.ReportMetric(float64(bytes), "log_bytes")
+					b.ReportMetric(float64(len(checkpoint)), "checkpoint_bytes")
+				})
 			}
-			b.ReportMetric(float64(bytes), "log_bytes")
 		})
 	}
 }
