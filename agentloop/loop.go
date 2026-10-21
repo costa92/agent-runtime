@@ -48,6 +48,20 @@ type Loop struct {
 	ContextSources []ContextSource
 	Now            func() time.Time
 	NewID          func() (string, error)
+	// OnDelta, when set, receives a visible model step's text as it streams.
+	// It must not block: it runs on the provider's read loop.
+	OnDelta func(Delta)
+}
+
+// Delta is a piece of model text for live display. It is never an event: the
+// attempt's finish event stays the record, and a client that missed deltas
+// loses nothing but the animation.
+type Delta struct {
+	SessionID string `json:"session_id"`
+	TurnID    string `json:"turn_id"`
+	StepID    string `json:"step_id"`
+	AttemptID string `json:"attempt_id"`
+	Content   string `json:"content"`
 }
 
 // New constructs a complete execution loop. Products own all workflow choices;
@@ -472,7 +486,18 @@ func (l *Loop) attempt(ctx context.Context, lease session.Lease, p session.Proje
 		}
 		return err
 	}
-	response, callErr := call.Complete(ctx)
+	var response model.Response
+	var callErr error
+	if l.OnDelta != nil && !step.Internal {
+		response, callErr = call.Stream(ctx, func(chunk model.Chunk) error {
+			if chunk.Content != "" {
+				l.OnDelta(Delta{SessionID: lease.SessionID, TurnID: turnID, StepID: stepID, AttemptID: id, Content: chunk.Content})
+			}
+			return nil
+		})
+	} else {
+		response, callErr = call.Complete(ctx)
+	}
 	fatalModel := false
 	if callErr == nil {
 		if len(response.ToolCalls) > 0 && len(response.Message.ToolCalls) > 0 && !reflect.DeepEqual(response.ToolCalls, response.Message.ToolCalls) {
