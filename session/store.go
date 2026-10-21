@@ -64,6 +64,12 @@ type Store interface {
 	Release(ctx context.Context, lease Lease) error
 	RequestCancel(ctx context.Context, sessionID string) error
 	CancelRequested(ctx context.Context, sessionID string) (bool, error)
+	// RequestTurnCancel asks the driving worker to stop turnID only. It is a
+	// conflict unless turnID is the Session's active Turn. The Store forgets
+	// the request once that Turn is no longer active.
+	RequestTurnCancel(ctx context.Context, sessionID, turnID string) error
+	// TurnCancelRequested returns the Turn awaiting a stop, or "" for none.
+	TurnCancelRequested(ctx context.Context, sessionID string) (string, error)
 	Wake(ctx context.Context, sessionID string) error
 	Inbox(ctx context.Context, sessionID string) ([]InboxItem, error)
 	Inspect(ctx context.Context, sessionID string) (Projection, error)

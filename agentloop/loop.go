@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -115,6 +117,75 @@ func (l *Loop) CancelSession(ctx context.Context, lease session.Lease) (session.
 		return p, nil
 	}
 	return l.commit(ctx, lease, p, fact{session.SessionCancelled, struct{}{}})
+}
+
+const stoppedByUser = "stopped by user"
+
+// StopTurn ends turnID as cancelled and leaves the Session open for the next
+// message. The caller holds the lease and has already stopped driving. A Turn
+// that has ended or been replaced is left alone. An open approval is denied:
+// stopping is the user's answer to it. A running or unreconciled tool call is
+// a conflict, because its outcome is still to be recorded.
+func (l *Loop) StopTurn(ctx context.Context, lease session.Lease, turnID string) (session.Projection, error) {
+	p, err := l.Store.Inspect(ctx, lease.SessionID)
+	if err != nil {
+		return session.Projection{}, err
+	}
+	if len(p.Turns) == 0 || p.Turns[len(p.Turns)-1].ID != turnID || p.Turns[len(p.Turns)-1].Status != "active" {
+		return p, nil
+	}
+	if !session.Stoppable(p, turnID) || session.ToolRunning(p) {
+		return p, session.ErrConflict
+	}
+	t := p.Turns[len(p.Turns)-1]
+	var facts []fact
+	if len(t.Steps) > 0 && t.Steps[len(t.Steps)-1].Status == "active" {
+		s := t.Steps[len(t.Steps)-1]
+		if s.ActiveAttempt != "" {
+			facts = append(facts, fact{session.AttemptFinished, session.AttemptFinish{TurnID: t.ID, StepID: s.ID, ID: s.ActiveAttempt, Outcome: "failed", Error: stoppedByUser}})
+		}
+		for _, id := range slices.Sorted(maps.Keys(s.Approvals)) {
+			if s.Approvals[id].Decision == nil {
+				facts = append(facts, fact{session.ApprovalResolved, session.ApprovalDecision{TurnID: t.ID, StepID: s.ID, ID: id, Decision: "denied"}})
+			}
+		}
+		for _, call := range s.DeclaredTools {
+			_, called := s.Tools[call.ID]
+			_, skipped := s.SkippedTools[call.ID]
+			if !called && !skipped {
+				facts = append(facts, fact{session.ToolSkipped, session.ToolSkip{TurnID: t.ID, StepID: s.ID, ID: call.ID, Reason: stoppedByUser}})
+			}
+		}
+		facts = append(facts, fact{session.StepEnded, session.StepEnd{TurnID: t.ID, StepID: s.ID, Status: "cancelled", Output: json.RawMessage(`{}`)}})
+	}
+	facts = append(facts, fact{session.TurnEnded, session.TurnEnd{TurnID: t.ID, Status: "cancelled"}})
+	return l.commit(ctx, lease, p, facts...)
+}
+
+// RequestTurnStop records a stop for turnID and ends the Turn itself unless a
+// live worker holds the lease; that worker ends it from its heartbeat.
+func (l *Loop) RequestTurnStop(ctx context.Context, sessionID, turnID, workerID string, ttl time.Duration) (session.Projection, error) {
+	if l == nil || l.Store == nil || sessionID == "" || turnID == "" || workerID == "" || ttl <= 0 {
+		return session.Projection{}, session.ErrInvalidInput
+	}
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := l.Store.RequestTurnCancel(settleCtx, sessionID, turnID); err != nil {
+		return session.Projection{}, err
+	}
+	lease, err := l.Store.ClaimSession(settleCtx, sessionID, workerID, ttl)
+	if errors.Is(err, session.ErrLease) {
+		return l.Store.Inspect(settleCtx, sessionID)
+	}
+	if err != nil {
+		return session.Projection{}, err
+	}
+	defer func() {
+		releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer releaseCancel()
+		_ = l.Store.Release(releaseCtx, lease)
+	}()
+	return l.StopTurn(settleCtx, lease, turnID)
 }
 
 // RequestCancellation persists a cancellation request before attempting to
