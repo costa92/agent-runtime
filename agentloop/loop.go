@@ -121,6 +121,11 @@ func (l *Loop) CancelSession(ctx context.Context, lease session.Lease) (session.
 
 const stoppedByUser = "stopped by user"
 
+// ErrTurnStopped is the cancellation cause a driver passes when the user stops
+// the current Turn, so the interrupted attempt records the stop rather than
+// the provider's cancellation error.
+var ErrTurnStopped = errors.New(stoppedByUser)
+
 // StopTurn ends turnID as cancelled and leaves the Session open for the next
 // message. The caller holds the lease and has already stopped driving. A Turn
 // that has ended or been replaced is left alone. An open approval is denied:
@@ -604,6 +609,9 @@ func (l *Loop) attempt(ctx context.Context, lease session.Lease, p session.Proje
 	if callErr != nil {
 		finish.Outcome = "failed"
 		finish.Error = callErr.Error()
+		if errors.Is(context.Cause(ctx), ErrTurnStopped) {
+			finish.Error = stoppedByUser
+		}
 		finish.Message = session.Message{}
 	} else if err := validateModelMessage(finish.Message); err != nil {
 		finish.Outcome = "failed"

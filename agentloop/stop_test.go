@@ -51,12 +51,15 @@ func TestStopTurnEndsAnInterruptedAnswerAndKeepsTheSessionOpen(t *testing.T) {
 	if err = loop.Drive(t.Context(), lease); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	go func() { <-started; cancel() }()
+	ctx, cancel := context.WithCancelCause(t.Context())
+	go func() { <-started; cancel(agentloop.ErrTurnStopped) }()
 	if err = loop.Drive(ctx, lease); !errors.Is(err, context.Canceled) {
 		t.Fatalf("drive = %v", err)
 	}
 	before, _ := store.Inspect(t.Context(), "s")
+	if got := before.Turns[0].Steps[0].Attempts[0].Error; got != agentloop.ErrTurnStopped.Error() {
+		t.Fatalf("interrupted attempt error = %q, want the stop rather than the provider's cancellation", got)
+	}
 	p, err := loop.StopTurn(t.Context(), lease, before.Turns[0].ID)
 	if err != nil {
 		t.Fatal(err)
