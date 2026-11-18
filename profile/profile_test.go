@@ -9,19 +9,19 @@ import (
 
 func sample() (Profile, Catalog) {
 	return Profile{
-			Key: "article_writer", Version: 2, Scope: ProjectScope,
-			Plugins: []PluginConfig{
-				{Name: "writer", ConfigVersion: 3, Config: json.RawMessage(`{"temperature":0.2,"model":{"name":"m","limit":9007199254740993}}`)},
-				{Name: "model", ConfigVersion: 1, Config: json.RawMessage(`{"region":"a"}`)},
-			},
-			RequiredServices: []string{"model", "policy"}, Capabilities: []string{"article", "llm"},
-		}, Catalog{
-			BaseServices: []string{"policy"},
-			Plugins: []InstalledPlugin{
-				{Name: "writer", ImplementationVersion: "2.1.0", ConfigVersion: 3, Requires: []string{"policy", "model"}, Provides: []string{"article"}, Capabilities: []string{"article"}},
-				{Name: "model", ImplementationVersion: "1.4.0", ConfigVersion: 1, Provides: []string{"model"}, Capabilities: []string{"llm"}},
-			},
-		}
+		Key: "article_writer", Version: 2, Scope: ProjectScope,
+		Plugins: []PluginConfig{
+			{Name: "writer", ConfigVersion: 3, Config: json.RawMessage(`{"temperature":0.2,"model":{"name":"m","limit":9007199254740993}}`)},
+			{Name: "model", ConfigVersion: 1, Config: json.RawMessage(`{"region":"a"}`)},
+		},
+		RequiredServices: []string{"model", "policy"}, Capabilities: []string{"article", "llm"},
+	}, Catalog{
+		BaseServices: []string{"policy"},
+		Plugins: []InstalledPlugin{
+			{Name: "writer", ImplementationVersion: "2.1.0", ConfigVersion: 3, Requires: []string{"policy", "model"}, Provides: []string{"article"}, Capabilities: []string{"article"}},
+			{Name: "model", ImplementationVersion: "1.4.0", ConfigVersion: 1, Provides: []string{"model"}, Capabilities: []string{"llm"}},
+		},
+	}
 }
 
 func TestCanonicalDigestIgnoresDeclarationAndJSONObjectOrder(t *testing.T) {
